@@ -32,6 +32,7 @@ typedef struct ValoFontCollection ValoFontCollection;
 typedef struct ValoParagraphBuilder ValoParagraphBuilder;
 typedef struct ValoParagraph ValoParagraph;
 typedef struct ValoSystemFonts ValoSystemFonts;
+typedef struct ValoColorFilter ValoColorFilter;
 
 /* ── by-value types ─────────────────────────────────────────────────── */
 
@@ -81,6 +82,9 @@ typedef struct ValoPaint {
   float stroke_miter_limit;
   int32_t mask_blur_style;
   float mask_blur_sigma;
+  /* Borrowed, or NULL. Recolours what this paint drew, before mask_blur
+   * spreads it. The handle only has to outlive the call. */
+  const ValoColorFilter *color_filter;
 } ValoPaint;
 
 /* families_utf8 is a NEWLINE-separated family list, tried in order per
@@ -239,6 +243,20 @@ void valo_builder_draw_display_list(ValoDisplayListBuilder *builder,
 void valo_builder_draw_paragraph(ValoDisplayListBuilder *builder,
                                  const ValoParagraph *paragraph, float x,
                                  float y);
+
+/* ── colour filters ─────────────────────────────────────────────────── */
+
+/* 20 row-major floats, a 4x5 over UNPREMULTIPLIED colour in 0..1:
+ * out[row] = clamp(row . [r, g, b, a, 1]).
+ *
+ * Flutter's ColorFilter.matrix passes the translation column (entries 4, 9,
+ * 14, 19) in unnormalized 0..255 space — divide those four by 255 first, or
+ * every offset lands 255x too strong. Returns NULL for a NULL matrix. */
+ValoColorFilter *valo_color_filter_matrix(const float *matrix);
+/* Blend `color` AS THE SOURCE over what was drawn (Flutter's
+ * ColorFilter.mode); `mode` indexes the same 29 modes as ValoPaint. */
+ValoColorFilter *valo_color_filter_blend(ValoColor color, int32_t mode);
+void valo_color_filter_dispose(ValoColorFilter *filter);
 
 /* ── paths ──────────────────────────────────────────────────────────── */
 

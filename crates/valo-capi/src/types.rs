@@ -76,6 +76,9 @@ pub struct ValoPaint {
     pub stroke_miter_limit: f32,
     pub mask_blur_style: i32,
     pub mask_blur_sigma: f32,
+    /// Borrowed [`crate::ValoColorFilter`], or null. The handle only has to
+    /// outlive the call — the draw copies what it needs.
+    pub color_filter: *const crate::ValoColorFilter,
 }
 
 impl From<ValoColor> for Color {
@@ -113,15 +116,16 @@ impl ValoCornerRadii {
     }
 }
 
-impl From<ValoPaint> for Paint {
-    fn from(p: ValoPaint) -> Paint {
-        Paint {
-            color: p.color.into(),
-            blend_mode: blend_mode(p.blend_mode),
-            shader: None,
-            mask_blur: mask_blur(p.mask_blur_style, p.mask_blur_sigma),
-            style: paint_style(&p),
-        }
+/// # Safety
+/// `p.color_filter` must be null or a live [`crate::ValoColorFilter`] handle.
+pub(crate) unsafe fn paint_of(p: ValoPaint) -> Paint {
+    Paint {
+        color: p.color.into(),
+        blend_mode: blend_mode(p.blend_mode),
+        shader: None,
+        mask_blur: mask_blur(p.mask_blur_style, p.mask_blur_sigma),
+        color_filter: unsafe { crate::color_filter_of(p.color_filter) },
+        style: paint_style(&p),
     }
 }
 
@@ -165,7 +169,7 @@ fn mask_blur(style: i32, sigma: f32) -> Option<MaskBlur> {
 }
 
 /// The 29 modes in valo-dl's declaration order — the header's enum table.
-fn blend_mode(value: i32) -> BlendMode {
+pub(crate) fn blend_mode(value: i32) -> BlendMode {
     use BlendMode::*;
     match value {
         0 => Clear,

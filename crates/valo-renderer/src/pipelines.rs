@@ -31,11 +31,15 @@ pub enum Frag {
     /// Mask layer composite: texture → coverage in alpha
     /// (luminance or alpha per payload flag), drawn with DstIn.
     MaskComposite,
-    /// Gradients past 8 stops sampling a baked 1D ramp texture (plan
-    /// 011 R2, Impeller's texture-gradient path).
+    /// Gradients past 8 stops sampling a baked 1D ramp texture (Impeller's
+    /// texture-gradient path).
     LinearRamp,
     RadialRamp,
     SweepRamp,
+    /// Colour filters over a layer's texture (filter passes only): a 4×5
+    /// matrix, or a constant colour blended as the source.
+    ColorMatrix,
+    ColorBlend,
 }
 
 impl Frag {
@@ -55,6 +59,8 @@ impl Frag {
             Frag::LinearRamp => "fs_linear_ramp",
             Frag::RadialRamp => "fs_radial_ramp",
             Frag::SweepRamp => "fs_sweep_ramp",
+            Frag::ColorMatrix => "fs_color_matrix",
+            Frag::ColorBlend => "fs_color_blend",
         }
     }
 }
@@ -269,7 +275,9 @@ impl PipelineCache {
             | Some(Frag::MaskComposite)
             | Some(Frag::LinearRamp)
             | Some(Frag::RadialRamp)
-            | Some(Frag::SweepRamp) => &self.textured_layout,
+            | Some(Frag::SweepRamp)
+            | Some(Frag::ColorMatrix)
+            | Some(Frag::ColorBlend) => &self.textured_layout,
             _ => &self.plain_layout,
         };
         let depth_stencil = match key.kind {
@@ -366,6 +374,30 @@ pub fn blur_style_id(style: valo_dl::BlurStyle) -> u32 {
         valo_dl::BlurStyle::Solid => 1,
         valo_dl::BlurStyle::Inner => 2,
         valo_dl::BlurStyle::Outer => 3,
+    }
+}
+
+/// The mode id `fs_color_blend` switches on: Porter-Duff and the two
+/// separable pipeline modes keep Skia's numbering, and the dst-reading modes
+/// follow at +15 so one uniform covers the whole blend set.
+pub fn blend_filter_id(mode: BlendMode) -> u32 {
+    match mode {
+        BlendMode::Clear => 0,
+        BlendMode::Src => 1,
+        BlendMode::Dst => 2,
+        BlendMode::SrcOver => 3,
+        BlendMode::DstOver => 4,
+        BlendMode::SrcIn => 5,
+        BlendMode::DstIn => 6,
+        BlendMode::SrcOut => 7,
+        BlendMode::DstOut => 8,
+        BlendMode::SrcAtop => 9,
+        BlendMode::DstAtop => 10,
+        BlendMode::Xor => 11,
+        BlendMode::Plus => 12,
+        BlendMode::Modulate => 13,
+        BlendMode::Screen => 14,
+        advanced => 15 + advanced_mode_id(advanced),
     }
 }
 

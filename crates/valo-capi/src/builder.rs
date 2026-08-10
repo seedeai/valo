@@ -7,7 +7,7 @@ use std::sync::Arc;
 use valo::{DisplayList, DisplayListBuilder, DrawParagraphExt};
 
 use crate::{
-    borrow, borrow_mut, clip_op, dispose_handle, fill_rule, into_handle, ValoCornerRadii,
+    borrow, borrow_mut, clip_op, dispose_handle, fill_rule, into_handle, paint_of, ValoCornerRadii,
     ValoImage, ValoPaint, ValoParagraph, ValoPath, ValoRect, ValoTransform,
 };
 
@@ -81,7 +81,7 @@ builder_op!(
     /// A composited layer: `paint`'s alpha, blend mode, and mask blur
     /// apply to the layer as a whole on restore.
     valo_builder_save_layer(paint: ValoPaint),
-    |b| b.save_layer(None, &paint.into())
+    |b| b.save_layer(None, &paint_of(paint))
 );
 builder_op!(valo_builder_restore(), |b| b.restore());
 builder_op!(valo_builder_translate(x: f32, y: f32), |b| b.translate(x, y));
@@ -151,14 +151,14 @@ pub unsafe extern "C" fn valo_builder_clip_path(
 // ── draws ───────────────────────────────────────────────────────────────
 
 builder_op!(valo_builder_draw_rect(rect: ValoRect, paint: ValoPaint), |b| b
-    .draw_rect(rect, &paint.into()));
+    .draw_rect(rect, &paint_of(paint)));
 builder_op!(
     valo_builder_draw_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, paint: ValoPaint),
-    |b| b.draw_rrect_radii_elliptical(rect, radii.to_elliptical(), &paint.into())
+    |b| b.draw_rrect_radii_elliptical(rect, radii.to_elliptical(), &paint_of(paint))
 );
 builder_op!(
     valo_builder_draw_circle(center_x: f32, center_y: f32, radius: f32, paint: ValoPaint),
-    |b| b.draw_circle((center_x, center_y), radius, &paint.into())
+    |b| b.draw_circle((center_x, center_y), radius, &paint_of(paint))
 );
 
 /// `rule`: 0 non-zero, 1 even-odd.
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn valo_builder_draw_path(
     };
     handle
         .builder
-        .draw_path(&path.built(), fill_rule(rule), &paint.into());
+        .draw_path(&path.built(), fill_rule(rule), &paint_of(paint));
 }
 
 /// Draw `source` (texel rect) of the image into `destination`. The
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn valo_builder_draw_image_rect(
         source.into(),
         destination.into(),
         crate::types::sampling(sampling),
-        &paint.into(),
+        &paint_of(paint),
     );
 }
 

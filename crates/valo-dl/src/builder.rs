@@ -672,10 +672,15 @@ impl DisplayListBuilder {
 /// compositing the group at α: true for SrcOver and Plus (both linear in
 /// src), false for dst-multiplying and advanced modes.
 fn supports_opacity(paint: &Paint) -> bool {
-    matches!(
-        paint.blend_mode,
-        crate::BlendMode::SrcOver | crate::BlendMode::Plus
-    )
+    // A colour filter is affine, not linear: distributing the group's alpha
+    // into the paint colour would filter the DIMMED colour, and
+    // `matrix(c · α) != matrix(c) · α` wherever the matrix translates or
+    // clamps. Filtered draws keep their own layer.
+    paint.color_filter.is_none()
+        && matches!(
+            paint.blend_mode,
+            crate::BlendMode::SrcOver | crate::BlendMode::Plus
+        )
 }
 
 /// Solid + mask blur = the closed-form quad (Impeller's shadow gate,

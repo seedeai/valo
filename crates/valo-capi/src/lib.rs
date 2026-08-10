@@ -15,6 +15,7 @@
 //! - Angles are radians; colors are straight-alpha floats in [0, 1].
 
 mod builder;
+mod color_filter;
 mod context;
 mod path;
 mod system_fonts;
@@ -22,6 +23,7 @@ mod text;
 mod types;
 
 pub use builder::*;
+pub use color_filter::*;
 pub use context::*;
 pub use path::*;
 pub use system_fonts::*;

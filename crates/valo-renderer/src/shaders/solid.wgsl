@@ -392,6 +392,72 @@ fn fs_blend_texture(in: VsOut) -> @location(0) vec4<f32> {
     return composite_advanced(mode, src, dst_sample(in.pos));
 }
 
+// ── colour filters (filter passes only) ─────────────────────────────────────
+// Run over a layer's texture BEFORE any blur, so the blur spreads filtered
+// pixels. payload[1] maps this pass's local space to source uv, exactly as the
+// blur passes do. Impeller runs colour matrices as a pass over a snapshot too
+// (ColorMatrixFilterContents) rather than folding them into every draw shader.
+
+/// payload[17..21] = the 4×5's rows, payload[21] = its translation column.
+@fragment
+fn fs_color_matrix(in: VsOut) -> @location(0) vec4<f32> {
+    let m = u.payload[1];
+    let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    // Colour matrices are defined on STRAIGHT colour; layers are premultiplied.
+    let color = vec4(unpremul(texel), texel.a);
+    let filtered = clamp(
+        vec4(
+            dot(u.payload[17], color),
+            dot(u.payload[18], color),
+            dot(u.payload[19], color),
+            dot(u.payload[20], color),
+        ) + u.payload[21],
+        vec4(0.0),
+        vec4(1.0),
+    );
+    return vec4(filtered.rgb * filtered.a, filtered.a);
+}
+
+/// Porter-Duff over PREMULTIPLIED colour: result = src·fs + dst·fd, with the
+/// three modes that aren't a plain factor pair returning directly.
+fn composite_porter_duff(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
+    var fs = 0.0;
+    var fd = 0.0;
+    switch mode {
+        case 0u: {}                                        // Clear
+        case 1u: { fs = 1.0; }                             // Src
+        case 2u: { fd = 1.0; }                             // Dst
+        case 3u: { fs = 1.0; fd = 1.0 - src.a; }           // SrcOver
+        case 4u: { fs = 1.0 - dst.a; fd = 1.0; }           // DstOver
+        case 5u: { fs = dst.a; }                           // SrcIn
+        case 6u: { fd = src.a; }                           // DstIn
+        case 7u: { fs = 1.0 - dst.a; }                     // SrcOut
+        case 8u: { fd = 1.0 - src.a; }                     // DstOut
+        case 9u: { fs = dst.a; fd = 1.0 - src.a; }         // SrcAtop
+        case 10u: { fs = 1.0 - dst.a; fd = src.a; }        // DstAtop
+        case 11u: { fs = 1.0 - dst.a; fd = 1.0 - src.a; }  // Xor
+        case 12u: { return min(src + dst, vec4(1.0)); }    // Plus (clamped)
+        case 13u: { return src * dst; }                    // Modulate
+        default: { return src + dst - src * dst; }         // Screen
+    }
+    return src * fs + dst * fd;
+}
+
+/// A constant colour blended AS THE SOURCE over the layer — Flutter's
+/// `ColorFilter.mode`. payload[17] = that colour premultiplied; payload[2].x =
+/// the mode, pipeline-blendable ids first, advanced ones offset by 15.
+@fragment
+fn fs_color_blend(in: VsOut) -> @location(0) vec4<f32> {
+    let m = u.payload[1];
+    let dst = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    let src = u.payload[17];
+    let mode = u32(u.payload[2].x);
+    if mode >= 15u {
+        return composite_advanced(mode - 15u, src, dst);
+    }
+    return composite_porter_duff(mode, src, dst);
+}
+
 // ── gaussian blur, one direction ────────────────────────────────────────────
 // Separable: H then V turns O(r²) taps per pixel into O(2r). Runs in filter
 // passes (1-sample, no depth). payload[2] = (sigma, radius, step.x, step.y)

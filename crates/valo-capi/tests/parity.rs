@@ -40,6 +40,7 @@ fn fill(red: f32, green: f32, blue: f32) -> ValoPaint {
         stroke_miter_limit: 0.0,
         mask_blur_style: 0,
         mask_blur_sigma: 0.0,
+        color_filter: std::ptr::null(),
     }
 }
 
@@ -188,6 +189,22 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
         valo_builder_transform_matrix(builder, tilted_matrix().as_ptr());
         valo_builder_draw_rect(builder, rect(0.0, 0.0, 120.0, 36.0), fill(0.55, 0.45, 0.9));
         valo_builder_restore(builder);
+
+        // A colour-filtered card. The handle is released right after the
+        // draw, which the header promises is enough.
+        let tint = valo_color_filter_blend(
+            ValoColor {
+                red: 0.98,
+                green: 0.55,
+                blue: 0.1,
+                alpha: 1.0,
+            },
+            5, // srcIn
+        );
+        let mut filtered = fill(0.2, 0.7, 0.35);
+        filtered.color_filter = tint;
+        valo_builder_draw_rect(builder, rect(20.0, 214.0, 90.0, 20.0), filtered);
+        valo_color_filter_dispose(tint);
     }
     let list = unsafe { valo_builder_build(builder) };
     let mut c_pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
@@ -287,6 +304,17 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
         &valo::Paint::from_color(valo::Color::rgb(0.55, 0.45, 0.9)),
     );
     b.restore();
+    b.draw_rect(
+        valo::Rect::new(20.0, 214.0, 90.0, 20.0),
+        &valo::Paint {
+            color: valo::Color::rgb(0.2, 0.7, 0.35),
+            color_filter: Some(valo::ColorFilter::Blend(
+                valo::Color::rgb(0.98, 0.55, 0.1),
+                valo::BlendMode::SrcIn,
+            )),
+            ..valo::Paint::default()
+        },
+    );
     let rust_pixels =
         context.render_to_rgba(&b.build(), size, Some(valo::Color::rgb(0.07, 0.07, 0.09)));
 
@@ -576,6 +604,9 @@ fn null_handles_never_crash() {
         );
         valo_builder_transform_matrix(std::ptr::null_mut(), std::ptr::null());
 
+        valo_color_filter_dispose(std::ptr::null_mut());
+        assert!(valo_color_filter_matrix(std::ptr::null()).is_null());
+
         valo_path_dispose(std::ptr::null_mut());
         valo_path_line_to(std::ptr::null_mut(), 1.0, 1.0);
         valo_path_add_arc(
@@ -662,16 +693,15 @@ fn header_declares_exactly_the_exported_symbols() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let header = std::fs::read_to_string(root.join("include/valo.h")).expect("include/valo.h");
 
+    // Every module in src, not a hand-kept list — a new module must not be
+    // able to escape this check by being forgotten here.
     let mut exported = std::collections::BTreeSet::new();
-    for source in [
-        "builder.rs",
-        "context.rs",
-        "path.rs",
-        "system_fonts.rs",
-        "text.rs",
-    ] {
-        let code = std::fs::read_to_string(root.join("src").join(source)).expect(source);
-        collect_exported_functions(&code, &mut exported);
+    for entry in std::fs::read_dir(root.join("src")).expect("src") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let code = std::fs::read_to_string(&path).expect("module source");
+            collect_exported_functions(&code, &mut exported);
+        }
     }
     assert!(!exported.is_empty());
 

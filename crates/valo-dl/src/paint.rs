@@ -116,6 +116,62 @@ impl MaskBlur {
     }
 }
 
+/// A per-pixel colour transform over what a draw or layer produced —
+/// Flutter's `ColorFilter`, Skia's `SkColorFilter`. Applied BEFORE
+/// [`MaskBlur`], matching Impeller: the filter runs on the shape's own
+/// pixels and the blur spreads the filtered result.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum ColorFilter {
+    /// Row-major 4×5 over UNPREMULTIPLIED colour in 0..1: each output
+    /// channel is `row · [r, g, b, a, 1]`, clamped. Skia's `SkColorMatrix`
+    /// convention.
+    ///
+    /// Flutter's `ColorFilter.matrix` hands the translation column in
+    /// unnormalized 0..255 space instead, so a Flutter matrix needs entries
+    /// 4, 9, 14 and 19 divided by 255 before it arrives here. Getting that
+    /// wrong still produces a plausible-looking image, which is why it is
+    /// called out rather than absorbed.
+    Matrix([f32; 20]),
+    /// Blend a constant colour AS THE SOURCE over what was drawn — Flutter's
+    /// `ColorFilter.mode`, the tint behind every coloured icon.
+    Blend(Color, BlendMode),
+}
+
+impl ColorFilter {
+    /// A solid paint's colour after this filter — the CPU fold that skips
+    /// the layer and the filter pass entirely (Impeller folds on the CPU
+    /// first for the same reason).
+    ///
+    /// `None` when the filter needs the drawn pixels as its destination, so
+    /// only the GPU can answer it.
+    pub fn folded_into(&self, color: Color) -> Option<Color> {
+        match self {
+            ColorFilter::Matrix(matrix) => Some(apply_color_matrix(matrix, color)),
+            ColorFilter::Blend(..) => None,
+        }
+    }
+}
+
+/// `out[row] = clamp(matrix_row · [r, g, b, a, 1])`. Straight (unpremultiplied)
+/// in and out, which is what [`Color`] already holds.
+fn apply_color_matrix(matrix: &[f32; 20], color: Color) -> Color {
+    let input = [color.r, color.g, color.b, color.a, 1.0];
+    let channel = |row: usize| {
+        let start = row * 5;
+        (0..5)
+            .map(|column| matrix[start + column] * input[column])
+            .sum::<f32>()
+            .clamp(0.0, 1.0)
+    };
+    Color {
+        r: channel(0),
+        g: channel(1),
+        b: channel(2),
+        a: channel(3),
+    }
+}
+
 /// Fill the shape's interior, or stroke its outline.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -137,6 +193,8 @@ pub struct Paint {
     pub shader: Option<crate::Shader>,
     /// Soft coverage for shadows, glows, and insets.
     pub mask_blur: Option<MaskBlur>,
+    /// Recolour what this paint produced, before any blur spreads it.
+    pub color_filter: Option<ColorFilter>,
     pub style: PaintStyle,
 }
 
@@ -147,6 +205,7 @@ impl Default for Paint {
             blend_mode: BlendMode::SrcOver,
             shader: None,
             mask_blur: None,
+            color_filter: None,
             style: PaintStyle::Fill,
         }
     }
@@ -179,7 +238,10 @@ impl Paint {
     /// A plain-alpha composite (what an elidable saveLayer needs): SrcOver,
     /// no shader — only `color.a` matters.
     pub fn is_opacity_only(&self) -> bool {
-        self.blend_mode == BlendMode::SrcOver && self.shader.is_none() && self.mask_blur.is_none()
+        self.blend_mode == BlendMode::SrcOver
+            && self.shader.is_none()
+            && self.mask_blur.is_none()
+            && self.color_filter.is_none()
     }
 
     /// Record-time bounds padding: ±3σ holds >99.7% of a gaussian's spread.

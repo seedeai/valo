@@ -51,6 +51,7 @@ Present and read-back belong to the host. valo never owns a window, a surface lo
 - Depth clips: z = slot/(slots+1), depth clears to 0, draws test `GreaterEqual`, and ceilings are written at the expiry slot. The restore that closes a clip scope owns one slot, and that slot is every inner clip's expiry.
 - MSAA is ×4 everywhere. msaa+depth are stored only for segments a later segment resumes; the final segment of every target discards, which skips the tile flush on tiled GPUs.
 - Recording is GPU-free. If `valo-dl` or `valo-text` ever needs a device, the layering broke.
+- A layer's post-effects run in Impeller's order (`Paint::WithFilters`): the colour filter recolours the layer's own pixels, then the blur spreads the filtered result. Colour matrices are defined on straight colour, so the filter pass unpremultiplies, applies, clamps, and premultiplies again.
 
 ## Working here
 

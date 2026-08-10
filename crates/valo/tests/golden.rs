@@ -820,6 +820,145 @@ fn arcs_and_stroked_text_golden() {
     valo_harness::assert_golden(goldens_dir(), "arcs_and_stroked_text", size, &rgba);
 }
 
+/// Colour filters — Flutter's `ColorFilter`, both constructors. Each card
+/// probes one part of the implementation, so a wrong answer names itself:
+/// the matrix's row order and its translation column, the unpremultiply the
+/// matrix needs, a Porter-Duff blend, and a dst-reading one (which reaches
+/// `composite_advanced` through the +15 id offset).
+#[test]
+fn color_filters_golden() {
+    use valo::{GradientStop, Point, Shader, SpreadMode};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP color_filters_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let size = [660u32, 200u32];
+    let offscreen = Offscreen::new(&device, size);
+    let background = Color::rgb(0.07, 0.07, 0.09);
+
+    let card = |index: u32| Rect::new(40.0 + index as f32 * 160.0, 40.0, 120.0, 120.0);
+    let mut b = DisplayListBuilder::new();
+
+    // 1. Swap red and blue, and lift green by a quarter — the translation
+    //    column, which Flutter hands over in 0..255 space and we take in 0..1.
+    #[rustfmt::skip]
+    let swap_and_lift = [
+        0.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0, 0.25,
+        1.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    b.draw_rect(
+        card(0),
+        &Paint {
+            color: Color::rgb(0.9, 0.2, 0.3),
+            color_filter: Some(valo::ColorFilter::Matrix(swap_and_lift)),
+            ..Default::default()
+        },
+    );
+
+    // 2. Luminance grayscale over a gradient, so the filter has to run per
+    //    pixel rather than fold into one colour.
+    #[rustfmt::skip]
+    let grayscale = [
+        0.2126, 0.7152, 0.0722, 0.0, 0.0,
+        0.2126, 0.7152, 0.0722, 0.0, 0.0,
+        0.2126, 0.7152, 0.0722, 0.0, 0.0,
+        0.0,    0.0,    0.0,    1.0, 0.0,
+    ];
+    b.draw_rect(
+        card(1),
+        &Paint {
+            color: Color::WHITE,
+            shader: Some(Shader::Linear {
+                start: Point::new(card(1).x, 0.0),
+                end: Point::new(card(1).right(), 0.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgb(0.95, 0.15, 0.1),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgb(0.1, 0.3, 0.95),
+                    },
+                ],
+                spread: SpreadMode::Pad,
+                local: Default::default(),
+            }),
+            color_filter: Some(valo::ColorFilter::Matrix(grayscale)),
+            ..Default::default()
+        },
+    );
+
+    // 3. SrcIn with a constant colour: the tint every coloured icon uses.
+    let tint = Color::rgb(0.98, 0.55, 0.1);
+    b.draw_rect(
+        card(2),
+        &Paint {
+            color: Color::rgb(0.2, 0.7, 0.35),
+            color_filter: Some(valo::ColorFilter::Blend(tint, BlendMode::SrcIn)),
+            ..Default::default()
+        },
+    );
+
+    // 4. Multiply — a dst-reading mode, so this one travels the advanced path.
+    b.draw_rect(
+        card(3),
+        &Paint {
+            color: Color::rgb(0.8, 0.8, 0.2),
+            color_filter: Some(valo::ColorFilter::Blend(
+                Color::rgb(0.5, 0.5, 1.0),
+                BlendMode::Multiply,
+            )),
+            ..Default::default()
+        },
+    );
+
+    let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
+    assert_eq!(
+        stats.layers_rendered, 4,
+        "each filtered draw takes exactly one layer"
+    );
+    let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+
+    let centre = |index: u32| {
+        let rect = card(index);
+        let (x, y) = ((rect.x + 60.0) as u32, (rect.y + 60.0) as u32);
+        let i = ((y * size[0] + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    };
+    let close = |got: u8, want: f32| got.abs_diff((want * 255.0).round() as u8) <= 3;
+
+    let swapped = centre(0);
+    assert!(
+        close(swapped[0], 0.3) && close(swapped[1], 0.45) && close(swapped[2], 0.9),
+        "channels should swap and green lift by 0.25, got {swapped:?}"
+    );
+
+    let gray = centre(1);
+    assert!(
+        gray[0].abs_diff(gray[1]) <= 2 && gray[1].abs_diff(gray[2]) <= 2,
+        "grayscale should leave the channels equal, got {gray:?}"
+    );
+
+    let tinted = centre(2);
+    assert!(
+        close(tinted[0], 0.98) && close(tinted[1], 0.55) && close(tinted[2], 0.1),
+        "SrcIn should replace the fill with the tint, got {tinted:?}"
+    );
+
+    let multiplied = centre(3);
+    assert!(
+        close(multiplied[0], 0.4) && close(multiplied[1], 0.4) && close(multiplied[2], 0.2),
+        "multiply should be the product of the two colours, got {multiplied:?}"
+    );
+
+    valo_harness::assert_golden(goldens_dir(), "color_filters", size, &rgba);
+}
+
 /// F3: mask layers. Content = an opaque two-tone card; masks =
 /// a luminance gradient bar (soft left-to-right reveal), an ALPHA circle,
 /// and — bottom row — proof that content OUTSIDE the mask ink disappears

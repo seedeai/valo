@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 use valo_dl::{
-    BlendMode, BlurStyle, ClipOp, DisplayList, FocalCircle, GlyphPos, Image, MaskBlur, MaskKind,
-    Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
+    BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, FocalCircle, GlyphPos, Image, MaskBlur,
+    MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
 };
 
 use valo_geometry::{
@@ -19,7 +19,8 @@ use crate::glyphs::{GlyphStore, PageRef};
 use crate::host_buffer::{DrawSlot, HostBuffer, VertexSlot, UNIFORM_SIZE};
 use crate::images::ImageStore;
 use crate::pipelines::{
-    advanced_mode_id, blur_style_id, Frag, PipelineCache, PipelineKey, PipelineKind, TextMode,
+    advanced_mode_id, blend_filter_id, blur_style_id, Frag, PipelineCache, PipelineKey,
+    PipelineKind, TextMode,
 };
 use crate::pool::{TargetPool, FILTER_SIZE_BUCKET};
 use crate::raster::{FillTarget, ListRasterCache, QuadSource, RasterVerdict};
@@ -107,6 +108,8 @@ const PAYLOAD_COLORS: usize = 5; // ..13: 8 premultiplied stop colors
 const PAYLOAD_LOCAL: usize = 13; // ..15: inverse gradient local matrix
 const PAYLOAD_CONICAL: usize = 15; // two-point conical case + constants
 const PAYLOAD_CONICAL_FLAGS: usize = 16; // (swapped, focal on circle, well behaved)
+const PAYLOAD_COLOR_MATRIX: usize = 17; // ..22: 4 matrix rows + the translation column;
+                                        // doubles as the blend filter's source colour
 
 struct UniformRecord {
     bytes: [u8; UNIFORM_SIZE as usize],
@@ -175,10 +178,37 @@ struct LayerInfo {
     /// Parent-space z of the composite draw.
     composite_z: f32,
     resolve: wgpu::TextureView,
-    /// Blur the layer's texture before compositing (σ in DEVICE px here) —
-    /// the general mask-blur path. Non-Normal styles add a
+    /// What runs over the texture before it composites.
+    effects: LayerEffects,
+}
+
+/// A layer's post-effects, applied in Impeller's order (`Paint::WithFilters`):
+/// the colour filter recolours the layer's own pixels, then the blur spreads
+/// the filtered result.
+#[derive(Clone, Copy, Default)]
+struct LayerEffects {
+    color_filter: Option<ColorFilter>,
+    /// σ is in DEVICE px by the time it lands here. Non-Normal styles add a
     /// combine pass merging the blur with the sharp layer.
     blur: Option<MaskBlur>,
+}
+
+impl LayerEffects {
+    /// The effects a paint asks of its layer. `scale` converts the blur's
+    /// local σ into device px.
+    fn of(paint: &Paint, scale: f32) -> Self {
+        Self {
+            color_filter: paint.color_filter,
+            blur: paint.mask_blur.map(|mask| MaskBlur {
+                sigma: (mask.sigma * scale).max(0.05),
+                style: mask.style,
+            }),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.color_filter.is_none() && self.blur.is_none()
+    }
 }
 
 /// One shared backdrop key's blur, registered by the first tile replayed;
@@ -194,9 +224,9 @@ struct SharedBlur {
     sigma: f32,
 }
 
-/// A finished blur chain: sample `view` up to `uv_max` (the used corner of
+/// A finished filter chain: sample `view` up to `uv_max` (the used corner of
 /// the bucketed, possibly downsampled target).
-struct BlurOutput {
+struct FilteredTexture {
     view: wgpu::TextureView,
     uv_max: [f32; 2],
 }
@@ -653,19 +683,16 @@ impl<'a> Planner<'a> {
             return Opened::Elided;
         }
         self.stats.layers_rendered += 1;
-        // A blurred layer paint: σ is local, scaled to
-        // device here — same convention as plan_via_blur_layer.
-        let blur = composite.paint.mask_blur.map(|mask| MaskBlur {
-            sigma: (mask.sigma * base.max_scale()).max(0.05),
-            style: mask.style,
-        });
+        // The layer paint's σ is local, scaled to device here — same
+        // convention as plan_via_effect_layer.
+        let effects = LayerEffects::of(&composite.paint, base.max_scale());
         // span + 1 = the composite's distance from the scope's base.
         self.push_layer_frame_rebased(
             rect,
             (composite_slot - base_slot) as f32,
             composite,
             composite_z,
-            blur,
+            effects,
             base_slot,
         );
         Opened::Layer
@@ -699,10 +726,10 @@ impl<'a> Planner<'a> {
         z_denom: f32,
         paint: Paint,
         composite_z: f32,
-        blur: Option<MaskBlur>,
+        effects: LayerEffects,
     ) {
         let composite = Composite { paint, mask: None };
-        self.push_layer_frame_rebased(rect, z_denom, composite, composite_z, blur, 0);
+        self.push_layer_frame_rebased(rect, z_denom, composite, composite_z, effects, 0);
     }
 
     /// `base_slot` rebases recorded slots into this frame's depth space
@@ -714,7 +741,7 @@ impl<'a> Planner<'a> {
         z_denom: f32,
         composite: Composite,
         composite_z: f32,
-        blur: Option<MaskBlur>,
+        effects: LayerEffects,
         base_slot: u32,
     ) {
         let Composite { mut paint, mask } = composite;
@@ -747,7 +774,7 @@ impl<'a> Planner<'a> {
                 mask_composite: mask,
                 composite_z,
                 resolve: target.resolve,
-                blur,
+                effects,
             }),
         });
     }
@@ -804,14 +831,29 @@ impl<'a> Planner<'a> {
     fn composite_source(&mut self, info: &LayerInfo) -> (wgpu::TextureView, [f32; 4]) {
         let size = layer_texture_size(&info.rect);
         let sample = Rect::new(info.rect.x, info.rect.y, size[0] as f32, size[1] as f32);
-        let Some(mask) = info.blur else {
+        if info.effects.is_empty() {
             return (info.resolve.clone(), full_rect_uv(&sample));
-        };
+        }
         let whole = Rect::new(0.0, 0.0, size[0] as f32, size[1] as f32);
-        let blurred = self.plan_blur(&info.resolve, size, &whole, mask.sigma, Vec::new());
+
+        // Colour first, blur second: the blur spreads filtered pixels, and a
+        // styled blur combines against the filtered layer, not the raw one.
+        let recoloured = info
+            .effects
+            .color_filter
+            .map(|filter| self.push_color_filter(&info.resolve, size, &whole, filter));
+        let sharp = recoloured
+            .as_ref()
+            .map_or_else(|| info.resolve.clone(), |out| out.view.clone());
+
+        let Some(mask) = info.effects.blur else {
+            let filtered = recoloured.expect("empty effects returned early");
+            return (filtered.view, region_uv(&sample, filtered.uv_max));
+        };
+        let blurred = self.plan_blur(&sharp, size, &whole, mask.sigma, Vec::new());
         let styled = match mask.style {
             BlurStyle::Normal => blurred,
-            style => self.push_mask_combine(&blurred, &info.resolve, &whole, style),
+            style => self.push_mask_combine(&blurred, &sharp, &whole, style),
         };
         (styled.view, region_uv(&sample, styled.uv_max))
     }
@@ -957,12 +999,12 @@ impl<'a> Planner<'a> {
 
     fn plan_rect(&mut self, rect: &Rect, paint: &Paint, current: &Matrix, z: f32) {
         self.stats.draws += 1;
-        if paint.mask_blur.is_some() {
+        if needs_effect_layer(paint) {
             // Only shader paints land here blurred (solid ones recorded the
             // analytic op) — general path: sharp draw in a layer, blur it.
             let local = rect.expand(paint.mask_padding());
-            let (rect2, paint2, current2) = (*rect, sharpened(paint), *current);
-            self.plan_via_blur_layer(&local, paint, current, z, move |p| {
+            let (rect2, paint2, current2) = (*rect, plain(paint), *current);
+            self.plan_via_effect_layer(&local, paint, current, z, move |p| {
                 p.plan_paint_quad(
                     PipelineKind::Draw(paint_frag(&paint2)),
                     &rect2,
@@ -1019,11 +1061,11 @@ impl<'a> Planner<'a> {
     ) {
         self.stats.draws += 1;
         let bounds = path.bounds();
-        if paint.mask_blur.is_some() {
+        if needs_effect_layer(paint) {
             let local = bounds.expand(paint.mask_padding() + paint.stroke_padding());
             let path2 = path.clone();
-            let (paint2, current2) = (sharpened(paint), *current);
-            self.plan_via_blur_layer(&local, paint, current, z, move |p| {
+            let (paint2, current2) = (plain(paint), *current);
+            self.plan_via_effect_layer(&local, paint, current, z, move |p| {
                 p.plan_path_geometry(&path2, rule, &paint2, &current2, 0.5);
             });
             return;
@@ -1047,7 +1089,7 @@ impl<'a> Planner<'a> {
                 let padded = bounds.expand(paint.stroke_padding());
                 let device_bounds = current.map_rect(&padded);
                 let path2 = path.clone();
-                let (paint2, current2) = (sharpened(paint), *current);
+                let (paint2, current2) = (plain(paint), *current);
                 self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
                     p.plan_path_geometry(&path2, rule, &paint2, &current2, 0.5);
                 });
@@ -1141,11 +1183,11 @@ impl<'a> Planner<'a> {
         z: f32,
     ) {
         self.stats.draws += 1;
-        if paint.mask_blur.is_some() {
+        if needs_effect_layer(paint) {
             let local = dst.expand(paint.mask_padding());
             let (image2, src2, dst2, paint2, current2) =
-                (image.clone(), *src, *dst, sharpened(paint), *current);
-            self.plan_via_blur_layer(&local, paint, current, z, move |p| {
+                (image.clone(), *src, *dst, plain(paint), *current);
+            self.plan_via_effect_layer(&local, paint, current, z, move |p| {
                 p.plan_image_step(&image2, &src2, &dst2, sampling, &paint2, &current2, 0.5);
             });
             return;
@@ -1285,16 +1327,17 @@ impl<'a> Planner<'a> {
             blend_mode: mode,
             ..Default::default()
         };
-        self.push_layer_frame(rect, 2.0, paint, z, None);
+        self.push_layer_frame(rect, 2.0, paint, z, LayerEffects::default());
         inner(self);
         self.close_layer();
     }
 
-    /// Mask blur, general path: render the draw SHARP into an
-    /// implicit layer over its padded bounds, blur the layer at scale, and
-    /// composite the blurred texture with the paint's blend (advanced modes
-    /// keep their snapshot dance — `composite_layer` handles both).
-    fn plan_via_blur_layer(
+    /// The general effect path: render the draw PLAIN into an implicit layer
+    /// over its padded bounds, run the paint's colour filter and blur over
+    /// that texture, and composite the result with the paint's blend
+    /// (advanced modes keep their snapshot dance — `composite_layer` handles
+    /// both).
+    fn plan_via_effect_layer(
         &mut self,
         local_bounds: &Rect,
         paint: &Paint,
@@ -1302,12 +1345,12 @@ impl<'a> Planner<'a> {
         z: f32,
         inner: impl FnOnce(&mut Self),
     ) {
-        self.plan_via_blur_layer_at(current.map_rect(local_bounds), paint, current, z, inner);
+        self.plan_via_effect_layer_at(current.map_rect(local_bounds), paint, current, z, inner);
     }
 
     /// Same, from device-space bounds (glyph runs carry theirs on the op —
     /// glyph extents aren't derivable at plan time).
-    fn plan_via_blur_layer_at(
+    fn plan_via_effect_layer_at(
         &mut self,
         device_bounds: Rect,
         paint: &Paint,
@@ -1318,24 +1361,14 @@ impl<'a> Planner<'a> {
         let Some(rect) = device_bounds.intersect(&self.frame().cull_rect) else {
             return;
         };
-        let mask = paint.mask_blur.expect("blur path");
-        let device_sigma = (mask.sigma * current.max_scale()).max(0.05);
         self.stats.layers_rendered += 1;
         let composite = Paint {
             color: Color::WHITE,
             blend_mode: paint.blend_mode,
             ..Default::default()
         };
-        self.push_layer_frame(
-            rect,
-            2.0,
-            composite,
-            z,
-            Some(MaskBlur {
-                sigma: device_sigma,
-                style: mask.style,
-            }),
-        );
+        let effects = LayerEffects::of(paint, current.max_scale());
+        self.push_layer_frame(rect, 2.0, composite, z, effects);
         inner(self);
         self.close_layer();
     }
@@ -1424,15 +1457,15 @@ impl<'a> Planner<'a> {
         z: f32,
     ) {
         self.stats.draws += 1;
-        if paint.mask_blur.is_some() {
-            let (paint2, glyphs2, current2) = (sharpened(paint), glyphs.clone(), *current);
-            self.plan_via_blur_layer_at(device_bounds, paint, current, z, move |p| {
+        if needs_effect_layer(paint) {
+            let (paint2, glyphs2, current2) = (plain(paint), glyphs.clone(), *current);
+            self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
                 p.plan_glyph_tiers(font, size, &paint2, &glyphs2, &current2, 0.5);
             });
             return;
         }
         if let Some(mode) = advanced_mode(paint) {
-            let (paint2, glyphs2, current2) = (sharpened(paint), glyphs.clone(), *current);
+            let (paint2, glyphs2, current2) = (plain(paint), glyphs.clone(), *current);
             self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
                 p.plan_glyph_tiers(font, size, &paint2, &glyphs2, &current2, 0.5);
             });
@@ -1787,7 +1820,7 @@ impl<'a> Planner<'a> {
     /// End the segment, snapshot `region` from the target, and blur it —
     /// the copy rides the blur chain's FIRST pass (which runs between this
     /// frame's segments), not the frame's next segment.
-    fn blur_of_target_region(&mut self, region: &Rect, sigma: f32) -> BlurOutput {
+    fn blur_of_target_region(&mut self, region: &Rect, sigma: f32) -> FilteredTexture {
         self.emit_segment();
         self.stats.snapshots += 1;
         let (size, origin, src) = {
@@ -1848,7 +1881,7 @@ impl<'a> Planner<'a> {
         region: &Rect,
         sigma: f32,
         pre_copies: Vec<TextureCopy>,
-    ) -> BlurOutput {
+    ) -> FilteredTexture {
         let scale = blur_scale(sigma);
         let work = [
             (region.width * scale).round().max(1.0),
@@ -1897,7 +1930,7 @@ impl<'a> Planner<'a> {
             [0.0, 1.0 / h_bucket[1]],
             Vec::new(),
         );
-        BlurOutput {
+        FilteredTexture {
             view: v_view,
             uv_max: [work[0] / v_bucket[0], work[1] / v_bucket[1]],
         }
@@ -1931,15 +1964,68 @@ impl<'a> Planner<'a> {
         (target.view, [bucket[0] as f32, bucket[1] as f32])
     }
 
+    /// Recolour a layer's texture in one filter pass — Impeller's
+    /// ColorMatrixFilterContents, as a pass over the layer rather than a
+    /// stage folded into every draw shader.
+    fn push_color_filter(
+        &mut self,
+        source: &wgpu::TextureView,
+        source_size: [u32; 2],
+        whole: &Rect,
+        filter: ColorFilter,
+    ) -> FilteredTexture {
+        let work = [whole.width, whole.height];
+        let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
+        let target = self.pool.take_filter(bucket, self.format);
+        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(whole), bucket, 0.0), [0.0; 4]);
+        record.set_local_rect(whole);
+        record.set_payload(PAYLOAD_GEOM, source_region_uv(whole, source_size, work));
+        let frag = match filter {
+            ColorFilter::Matrix(matrix) => {
+                // Rows 0..3 of the 4×5, then the translation column: the same
+                // mat4-plus-vec4 split Impeller's shader takes.
+                for row in 0..4 {
+                    let start = row * 5;
+                    record.set_payload(
+                        PAYLOAD_COLOR_MATRIX + row,
+                        [
+                            matrix[start],
+                            matrix[start + 1],
+                            matrix[start + 2],
+                            matrix[start + 3],
+                        ],
+                    );
+                }
+                record.set_payload(
+                    PAYLOAD_COLOR_MATRIX + 4,
+                    [matrix[4], matrix[9], matrix[14], matrix[19]],
+                );
+                Frag::ColorMatrix
+            }
+            ColorFilter::Blend(color, mode) => {
+                let premultiplied = color.premultiplied();
+                record.set_payload(PAYLOAD_COLOR_MATRIX, premultiplied);
+                record.set_payload(PAYLOAD_MISC, [blend_filter_id(mode) as f32, 0.0, 0.0, 0.0]);
+                Frag::ColorBlend
+            }
+        };
+        let bind = self.texture_bind(source);
+        self.push_filter(target.view.clone(), frag, record, bind, Vec::new());
+        FilteredTexture {
+            view: target.view,
+            uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
+        }
+    }
+
     /// Merge blur B with the SHARP layer M into one texture (fs_mask_combine)
     /// so styled masks composite like any other draw — advanced blends too.
     fn push_mask_combine(
         &mut self,
-        blur: &BlurOutput,
+        blur: &FilteredTexture,
         sharp: &wgpu::TextureView,
         whole: &Rect,
         style: BlurStyle,
-    ) -> BlurOutput {
+    ) -> FilteredTexture {
         let work = [whole.width, whole.height];
         let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
         let target = self.pool.take_filter(bucket, self.format);
@@ -1966,7 +2052,7 @@ impl<'a> Planner<'a> {
             bind,
             Vec::new(),
         );
-        BlurOutput {
+        FilteredTexture {
             view: target.view,
             uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
         }
@@ -2789,12 +2875,20 @@ fn flush_chunk(chunk: &mut Vec<Vec<Step>>, out: &mut Vec<Step>, hoisted: &mut u3
 
 /// The in-layer version of a blurred draw: geometry and color only — blur
 /// and blend ride the composite.
-fn sharpened(paint: &Paint) -> Paint {
+/// The paint the inner draw of an effect layer uses: the effects moved to
+/// the layer, and the blend deferred to the composite.
+fn plain(paint: &Paint) -> Paint {
     Paint {
         blend_mode: BlendMode::SrcOver,
         mask_blur: None,
+        color_filter: None,
         ..paint.clone()
     }
+}
+
+/// Does this paint need its own layer for the renderer to apply its effects?
+fn needs_effect_layer(paint: &Paint) -> bool {
+    paint.mask_blur.is_some() || paint.color_filter.is_some()
 }
 
 /// The frame-local integer pixel region under `coverage` (absolute replay
