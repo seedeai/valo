@@ -133,36 +133,81 @@ fn fs_linear(in: VsOut) -> @location(0) vec4<f32> {
     return ramp(linear_t(in.local)) * u.color;
 }
 
-fn radial_t(local: vec2<f32>) -> f32 {
-    let g = u.payload[1]; // (cx, cy, radius, fx); fy in payload[2].w
+/// Two-point conical `t`, plus a validity flag: some points of a general
+/// conical gradient are covered by NEITHER circle and must stay
+/// transparent. `payload[15] = (kind, r1_in_unit_space, focal, sign)` and
+/// `payload[16] = (swapped, focal_on_circle, well_behaved, _)`, both settled
+/// on the CPU — the position arriving here is already in focal space when
+/// the general case needs it.
+fn radial_t(local: vec2<f32>) -> vec2<f32> {
+    let setup = u.payload[15];
+    let kind = setup.x;
     let p = gradient_point(local);
-    let center = g.xy;
-    let r = max(g.z, 1e-6);
-    let focus = vec2<f32>(g.w, u.payload[2].w);
-    let d = center - focus;
-    var t: f32;
-    if dot(d, d) < 1e-9 {
-        // Classic centered gradient — the exact pre-focal math.
-        t = length(p - center) / r;
-    } else {
-        // SVG focal (r0 = 0 two-point conical): t solves
-        // |P − F − t·d| = t·r, i.e. t²(|d|²−r²) − 2t(P−F)·d + |P−F|² = 0.
-        // With the focus inside the circle the leading term is negative,
-        // so the one positive root in its stable rationalized form is
-        // |P−F|² / (b + √(b² − a·|P−F|²)).
-        let pf = p - focus;
-        let a = dot(d, d) - r * r;
-        let b = dot(pf, d);
-        let cc = dot(pf, pf);
-        let s = sqrt(max(b * b - a * cc, 0.0));
-        t = cc / max(b + s, 1e-6);
+
+    // Concentric: t is just the fraction of the way between the two radii.
+    if kind == 0.0 {
+        let g = u.payload[1];
+        let start_radius = setup.y;
+        let end_radius = setup.z;
+        let distance = length(p - g.xy);
+        return vec2(spread((distance - start_radius) / (end_radius - start_radius)), 1.0);
     }
-    return spread(t);
+    // Identical circles paint nothing at all.
+    if kind == 2.0 {
+        return vec2(0.0, 0.0);
+    }
+    // Equal radii: the gradient sweeps the strip between the circles' common
+    // tangents, and everything beyond those tangents is uncovered.
+    if kind == 3.0 {
+        let radius_squared = setup.y;
+        let half_span = radius_squared - p.y * p.y;
+        if half_span < 0.0 {
+            return vec2(0.0, 0.0);
+        }
+        return vec2(spread(p.x + sqrt(half_span)), 1.0);
+    }
+
+    // The general case, continuing Skia's algorithm from step 5.
+    let flags = u.payload[16];
+    let is_swapped = flags.x > 0.5;
+    let is_focal_on_circle = flags.y > 0.5;
+    let is_well_behaved = flags.z > 0.5;
+    let radius_in_unit_space = setup.y;
+    let focal = setup.z;
+    let radius_sign = setup.w;
+
+    var x_t = -1.0;
+    if is_focal_on_circle {
+        x_t = dot(p, p) / p.x;
+    } else if is_well_behaved {
+        x_t = length(p) - p.x / radius_in_unit_space;
+    } else {
+        let discriminant = p.x * p.x - p.y * p.y;
+        if discriminant >= 0.0 {
+            let root = sqrt(discriminant);
+            if is_swapped || radius_sign < 0.0 {
+                x_t = -root - p.x / radius_in_unit_space;
+            } else {
+                x_t = root - p.x / radius_in_unit_space;
+            }
+        }
+    }
+    // Behind the focal cone: outside the gradient entirely.
+    if !is_well_behaved && x_t < 0.0 {
+        return vec2(0.0, 0.0);
+    }
+
+    var t = focal + radius_sign * x_t;
+    if is_swapped {
+        t = 1.0 - t;
+    }
+    return vec2(spread(t), 1.0);
 }
 
 @fragment
 fn fs_radial(in: VsOut) -> @location(0) vec4<f32> {
-    return ramp(radial_t(in.local)) * u.color;
+    let solved = radial_t(in.local);
+    return ramp(solved.x) * u.color * solved.y;
 }
 
 const TAU: f32 = 6.28318530718;
@@ -196,7 +241,8 @@ fn fs_linear_ramp(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_radial_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return sample_ramp(radial_t(in.local)) * u.color;
+    let solved = radial_t(in.local);
+    return sample_ramp(solved.x) * u.color * solved.y;
 }
 
 @fragment

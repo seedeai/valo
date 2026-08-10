@@ -78,6 +78,13 @@ Comments explain **why**, never what the code already says. A comment that names
 
 **Image-ish steps must tint with `alpha_tint(...)`, never the raw paint color.** `fs_image` multiplies by the paint color and `Paint::default()` is black, so a new step that forwards the paint straight through renders solid black. This bug shipped twice. The `m3_images` golden is the tripwire.
 
+**A paint that can leave pixels uncovered must never be judged opaque.** The
+opaque-promotion pass gives a draw the depth-writing pipeline with blending
+off, which REPLACES the destination — so any gradient that paints nothing
+somewhere (a two-point conical outside its cone, most visibly the strip case)
+renders those pixels as solid black instead of leaving the background. Opaque
+stops are not enough on their own; the shape of the coverage matters too.
+
 **Winding flips in NDC** because the ortho matrix has a negative y-scale. Irrelevant to `!= 0` stencil tests, which are sign-agnostic, but check it before adding sign-sensitive stencil logic.
 
 **A non-blocking `poll` per frame is enough to reclaim GPU resources** at paced frame rates. Blocking waits belong only on CPU read-back paths; an unthrottled submit loop is the one case that needs an explicit wait, and it is not how hosts run.

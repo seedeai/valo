@@ -36,8 +36,8 @@ pub use surface::{Offscreen, Surface, SurfaceFrame};
 
 pub use valo_dl::{
     BackdropGroup, BlendMode, BlurStyle, ClipOp, DisplayList, DisplayListBuilder, Filter,
-    GradientStop, Image, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode,
-    TileMode,
+    FocalCircle, GradientStop, Image, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader,
+    SpreadMode, TileMode,
 };
 pub use valo_geometry::{
     constrain_radii, constrain_radii_elliptical, Cap, Color, Dash, FillRule, Join, Matrix, Path,

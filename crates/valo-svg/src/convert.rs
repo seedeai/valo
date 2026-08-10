@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use usvg::tiny_skia_path;
-use valo_dl::{GradientStop, Paint, PaintStyle, Shader, SpreadMode};
+use valo_dl::{FocalCircle, GradientStop, Paint, PaintStyle, Shader, SpreadMode};
 use valo_geometry::{Cap, Color, Dash, FillRule, Join, Matrix, Path, PathBuilder, Point, Stroke};
 
 use crate::translate::Missing;
@@ -173,7 +173,7 @@ fn radial(g: &usvg::RadialGradient, m: &mut Missing) -> Result<Shader, Gap> {
 /// The focal point, clamped INSIDE the circle when the document puts it
 /// on or past the rim — the spec's UA behavior (Skia clamps the same
 /// way), and the domain valo's focal solve needs.
-fn focus(g: &usvg::RadialGradient) -> Option<Point> {
+fn focus(g: &usvg::RadialGradient) -> Option<FocalCircle> {
     let (dx, dy) = (g.fx() - g.cx(), g.fy() - g.cy());
     let d = (dx * dx + dy * dy).sqrt();
     if d < 1e-4 {
@@ -181,7 +181,9 @@ fn focus(g: &usvg::RadialGradient) -> Option<Point> {
     }
     let r = g.r().get();
     let k = if d >= r { r * 0.999 / d } else { 1.0 };
-    Some((g.cx() + dx * k, g.cy() + dy * k).into())
+    Some(FocalCircle::point(
+        (g.cx() + dx * k, g.cy() + dy * k).into(),
+    ))
 }
 
 fn invertible(t: usvg::Transform) -> Result<Matrix, Gap> {

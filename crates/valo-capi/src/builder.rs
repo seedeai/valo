@@ -121,11 +121,11 @@ pub unsafe extern "C" fn valo_builder_transform_matrix(
 builder_op!(
     /// `operation`: 0 intersect, 1 difference.
     valo_builder_clip_rect(rect: ValoRect, operation: i32),
-    |b| b.clip_rect(rect.into(), clip_op(operation))
+    |b| b.clip_rect(rect, clip_op(operation))
 );
 builder_op!(
     valo_builder_clip_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, operation: i32),
-    |b| b.clip_rrect_radii_elliptical(rect.into(), radii.to_elliptical(), clip_op(operation))
+    |b| b.clip_rrect_radii_elliptical(rect, radii.to_elliptical(), clip_op(operation))
 );
 
 /// `rule`: 0 non-zero, 1 even-odd; `operation`: 0 intersect, 1 difference.
@@ -151,10 +151,10 @@ pub unsafe extern "C" fn valo_builder_clip_path(
 // ── draws ───────────────────────────────────────────────────────────────
 
 builder_op!(valo_builder_draw_rect(rect: ValoRect, paint: ValoPaint), |b| b
-    .draw_rect(rect.into(), &paint.into()));
+    .draw_rect(rect, &paint.into()));
 builder_op!(
     valo_builder_draw_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, paint: ValoPaint),
-    |b| b.draw_rrect_radii_elliptical(rect.into(), radii.to_elliptical(), &paint.into())
+    |b| b.draw_rrect_radii_elliptical(rect, radii.to_elliptical(), &paint.into())
 );
 builder_op!(
     valo_builder_draw_circle(center_x: f32, center_y: f32, radius: f32, paint: ValoPaint),

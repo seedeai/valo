@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 use valo_dl::{
-    BlendMode, BlurStyle, ClipOp, DisplayList, GlyphPos, Image, MaskBlur, MaskKind, Op, Paint,
-    PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
+    BlendMode, BlurStyle, ClipOp, DisplayList, FocalCircle, GlyphPos, Image, MaskBlur, MaskKind,
+    Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
 };
 
 use valo_geometry::{
@@ -105,6 +105,8 @@ const PAYLOAD_OFFSETS: usize = 3; // ..5: 8 stop offsets
 const PAYLOAD_RADII: usize = 3; // rrect-blur corner radii (no gradient there)
 const PAYLOAD_COLORS: usize = 5; // ..13: 8 premultiplied stop colors
 const PAYLOAD_LOCAL: usize = 13; // ..15: inverse gradient local matrix
+const PAYLOAD_CONICAL: usize = 15; // two-point conical case + constants
+const PAYLOAD_CONICAL_FLAGS: usize = 16; // (swapped, focal on circle, well behaved)
 
 struct UniformRecord {
     bytes: [u8; UNIFORM_SIZE as usize],
@@ -1497,7 +1499,11 @@ impl<'a> Planner<'a> {
     ) {
         let tiers = self.glyphs.tiers;
         let device_px = size * current.max_scale();
-        if device_px >= tiers.path_min {
+        // Atlas rasters are FILL coverage, so a stroked run has no tier to
+        // sit in — it goes to outlines at every size. Skia can cache stroked
+        // masks because its scaler applies the stroke while rasterizing;
+        // valo's rasterizer only makes fill masks.
+        if device_px >= tiers.path_min || matches!(paint.style, PaintStyle::Stroke(_)) {
             self.stats.text_tiers[2] += 1;
             self.plan_glyph_outlines(font, size, paint, glyphs, current, z);
             return;
@@ -1664,10 +1670,13 @@ impl<'a> Planner<'a> {
         current: &Matrix,
         z: f32,
     ) {
-        // Shaders on text stay deferred (NOTES); outlines fill solid.
+        // Shader-painted text desugars into a layer before it gets here, so
+        // outlines paint solid — but the STYLE rides along, which is what
+        // makes stroked text stroke.
         let paint = Paint {
             color: paint.color,
             blend_mode: paint.blend_mode,
+            style: paint.style.clone(),
             ..Default::default()
         };
         let hide_notdef = self.glyphs.hides_missing_glyphs();
@@ -1678,23 +1687,26 @@ impl<'a> Planner<'a> {
                 continue;
             };
             let at = current.then(&Matrix::translation(g.x, g.y));
-            let Some(mesh) = self.stencil_fan_mesh(&path, &at) else {
-                continue;
-            };
-            self.push_fan(FillRule::NonZero, &at, mesh, z);
-            self.plan_paint_quad(
-                PipelineKind::Cover(Frag::Solid),
-                &path.bounds(),
-                &paint,
-                &at,
-                z,
-            );
+            self.plan_path_geometry(&path, FillRule::NonZero, &paint, &at, z);
         }
         // Color glyphs (emoji) have no outlines — clamp them to the biggest
         // mask raster instead of vanishing.
         if !no_outline.is_empty() {
             let px = (size * current.max_scale()).min(MAX_COLOR_GLYPH_PX);
-            self.plan_glyph_quads(font, px, false, size, &paint, &no_outline, current, z);
+            let bitmap_paint = Paint {
+                style: PaintStyle::Fill,
+                ..paint.clone()
+            };
+            self.plan_glyph_quads(
+                font,
+                px,
+                false,
+                size,
+                &bitmap_paint,
+                &no_outline,
+                current,
+                z,
+            );
         }
     }
 
@@ -2285,6 +2297,145 @@ fn alpha_tint(a: f32) -> [f32; 4] {
     [a, a, a, a]
 }
 
+/// Which formula the fragment runs for a radial gradient, plus the constants
+/// it needs. Skia's two-point conical algorithm (skia.org/docs/dev/design/
+/// conical) splits into cases by where the focal point lands; the choice and
+/// all of its precomputation are per-draw, so they happen here rather than
+/// per fragment the way Impeller does it.
+struct ConicalSetup {
+    /// `(kind, local_r1, f, d_radius_sign)` — see `radial_t` in the shader.
+    constants: [f32; 4],
+    /// `(is_swapped, is_focal_on_circle, is_well_behaved, unused)`.
+    flags: [f32; 4],
+    /// Gradient space → focal space, when the general case needs it.
+    focal_map: Option<Matrix>,
+}
+
+/// Kinds, mirrored in `radial_t`.
+const CONICAL_CONCENTRIC: f32 = 0.0;
+const CONICAL_GENERAL: f32 = 1.0;
+const CONICAL_EMPTY: f32 = 2.0;
+const CONICAL_STRIP: f32 = 3.0;
+
+impl ConicalSetup {
+    const UNUSED: Self = Self {
+        constants: [CONICAL_CONCENTRIC, 0.0, 0.0, 0.0],
+        flags: [0.0; 4],
+        focal_map: None,
+    };
+
+    /// Skia's `SkConicalGradient` decomposition, run once per draw.
+    fn solve(center: Point, radius: f32, focus: Option<FocalCircle>) -> Self {
+        const NEARLY_ZERO: f32 = 1.0 / (1 << 12) as f32;
+        let start = focus.unwrap_or(FocalCircle::point(center));
+        let separation = (center.x - start.center.x).hypot(center.y - start.center.y);
+
+        // Concentric circles need no focal machinery: t is just how far the
+        // point sits between the two radii.
+        if separation < NEARLY_ZERO {
+            if (radius - start.radius).abs() < NEARLY_ZERO {
+                return Self {
+                    constants: [CONICAL_EMPTY, 0.0, 0.0, 0.0],
+                    ..Self::UNUSED
+                };
+            }
+            return Self {
+                constants: [CONICAL_CONCENTRIC, start.radius, radius, 0.0],
+                flags: [0.0; 4],
+                focal_map: None,
+            };
+        }
+
+        // Equal radii have no focal point at all — the circles sweep a strip
+        // between their common tangents, and `focal` below would divide by
+        // zero. Skia and Impeller both carve this out as its own case.
+        if (radius - start.radius).abs() < NEARLY_ZERO {
+            let radius_in_unit_space = start.radius / separation;
+            return Self {
+                constants: [
+                    CONICAL_STRIP,
+                    radius_in_unit_space * radius_in_unit_space,
+                    0.0,
+                    0.0,
+                ],
+                flags: [0.0; 4],
+                focal_map: Some(map_to_unit_x(start.center, center)),
+            };
+        }
+
+        // Steps 1-2: the focal parameter, and the swap that keeps it finite
+        // when the two radii are equal.
+        let (mut first, mut second) = (start.center, center);
+        let mut focal = start.radius / (start.radius - radius);
+        let is_swapped = (focal - 1.0).abs() < NEARLY_ZERO;
+        if is_swapped {
+            std::mem::swap(&mut first, &mut second);
+            focal = 0.0f32;
+        }
+
+        // Steps 3-4: map [focal centre, end centre] onto [(0,0), (1,0)], then
+        // scale so the end circle becomes the unit circle.
+        let focal_center = Point::new(
+            first.x * (1.0 - focal) + second.x * focal,
+            first.y * (1.0 - focal) + second.y * focal,
+        );
+        let radius_in_unit_space = (radius - start.radius).abs() / separation;
+        let is_focal_on_circle = (radius_in_unit_space - 1.0).abs() < NEARLY_ZERO;
+        let span = (1.0 - focal).abs();
+        let (scale_x, scale_y) = if is_focal_on_circle {
+            (span * 0.5, span * 0.5)
+        } else {
+            let squared = radius_in_unit_space * radius_in_unit_space;
+            (
+                span * radius_in_unit_space / (squared - 1.0),
+                span / (squared - 1.0).abs().sqrt(),
+            )
+        };
+
+        let is_well_behaved = !is_focal_on_circle && radius_in_unit_space > 1.0;
+        Self {
+            constants: [
+                CONICAL_GENERAL,
+                radius_in_unit_space,
+                focal,
+                (1.0 - focal).signum(),
+            ],
+            flags: [
+                is_swapped as u32 as f32,
+                is_focal_on_circle as u32 as f32,
+                is_well_behaved as u32 as f32,
+                0.0,
+            ],
+            focal_map: Some(scale_after(
+                map_to_unit_x(focal_center, second),
+                scale_x,
+                scale_y,
+            )),
+        }
+    }
+}
+
+/// Maps `[from, to]` onto `[(0, 0), (1, 0)]`.
+fn map_to_unit_x(from: Point, to: Point) -> Matrix {
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    let length = dx.hypot(dy);
+    let (ux, uy) = (dx / length, dy / length);
+    Matrix::from_affine(
+        ux / length,
+        -uy / length,
+        uy / length,
+        ux / length,
+        -(ux * from.x + uy * from.y) / length,
+        (uy * from.x - ux * from.y) / length,
+    )
+}
+
+/// `scale(x, y) ∘ matrix` for an affine 2D matrix.
+fn scale_after(matrix: Matrix, x: f32, y: f32) -> Matrix {
+    let [a, b, c, d, tx, ty] = matrix.to_affine();
+    Matrix::from_affine(a * x, b * y, c * x, d * y, tx * x, ty * y)
+}
+
 /// Gradient geometry + stops into the payload (see the WGSL layout
 /// contract). A focal radial's fx/fy ride the two spare floats
 /// (GEOM.w / MISC.w); focus == center encodes "classic". The INVERSE of
@@ -2303,7 +2454,7 @@ fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texel
             focus,
             ..
         } => {
-            let f = focus.unwrap_or(*center);
+            let f = focus.map_or(*center, |circle| circle.center);
             ([center.x, center.y, *radius, f.x], 0.0, f.y)
         }
         Shader::Sweep {
@@ -2316,9 +2467,29 @@ fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texel
 
     let (Shader::Linear { local, .. } | Shader::Radial { local, .. } | Shader::Sweep { local, .. }) =
         shader;
-    let inverse = local
+    let mut inverse = local
         .invert()
         .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+
+    // A two-point conical gradient is solved in a space where the focal
+    // point sits at the origin and the end circle is the unit circle. That
+    // mapping is constant per draw, so it folds into the inverse local
+    // matrix here and the fragment only runs the per-pixel half.
+    let conical = match shader {
+        Shader::Radial {
+            center,
+            radius,
+            focus,
+            ..
+        } => ConicalSetup::solve(*center, *radius, *focus),
+        _ => ConicalSetup::UNUSED,
+    };
+    if let Some(focal_map) = conical.focal_map {
+        inverse = focal_map.then(&inverse);
+    }
+    record.set_payload(PAYLOAD_CONICAL, conical.constants);
+    record.set_payload(PAYLOAD_CONICAL_FLAGS, conical.flags);
+
     // Gradient locals are affine by construction — the 2D block is exact.
     let [a, b, c, d, tx, ty] = inverse.to_affine();
     record.set_payload(PAYLOAD_LOCAL, [a, b, c, d]);
@@ -2528,6 +2699,22 @@ fn is_opaque_paint(paint: &Paint) -> bool {
 }
 
 fn shader_opaque(shader: &Shader) -> bool {
+    // A two-point conical gradient with a real start circle does not cover
+    // the plane: outside its cone — the whole region beyond the tangents in
+    // the strip case — nothing is painted at all. Opaque promotion would
+    // turn those pixels into replaced black, so a gradient that can leave
+    // gaps never qualifies, however opaque its stops are. Nested circles do
+    // cover everything, but proving that per draw buys back only a depth
+    // optimisation, so this stays conservative.
+    if let Shader::Radial {
+        focus: Some(circle),
+        ..
+    } = shader
+    {
+        if circle.radius > 0.0 {
+            return false;
+        }
+    }
     let stops = match shader {
         Shader::Linear { stops, .. }
         | Shader::Radial { stops, .. }

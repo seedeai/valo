@@ -62,6 +62,76 @@ impl Path {
         self.points.len() * std::mem::size_of::<Point>() + self.verbs.len()
     }
 
+    /// Is `point` inside this path under `fill_rule`? Exact: the query runs
+    /// on the curves themselves, not on a flattened approximation, so it
+    /// needs no tolerance and never disagrees with itself between zooms.
+    /// Every contour closes implicitly, matching how fills are drawn, and a
+    /// point exactly on the outline counts as inside.
+    pub fn contains(&self, point: Point, fill_rule: FillRule) -> bool {
+        if !self.bounds.contains(point) {
+            return false;
+        }
+        let crossings = self.walk_crossings(point);
+        match fill_rule {
+            FillRule::NonZero => crossings.is_inside_non_zero(),
+            FillRule::EvenOdd => crossings.is_inside_even_odd(),
+        }
+    }
+
+    /// Ray-cast the whole path, one segment at a time.
+    fn walk_crossings(&self, point: Point) -> crate::winding::Crossings {
+        let mut crossings = crate::winding::Crossings::default();
+        let mut index = 0usize;
+        let mut cursor = Point::ZERO;
+        let mut contour_start = Point::ZERO;
+        let mut contour_open = false;
+        for verb in &self.verbs {
+            match verb {
+                Verb::Move => {
+                    // A new contour closes the previous one: fills always see
+                    // that last→first edge, whether or not Close was recorded.
+                    if contour_open {
+                        crossings.line(cursor, contour_start, point);
+                    }
+                    contour_open = true;
+                    contour_start = self.points[index];
+                    cursor = contour_start;
+                    index += 1;
+                }
+                Verb::Line => {
+                    crossings.line(cursor, self.points[index], point);
+                    cursor = self.points[index];
+                    index += 1;
+                }
+                Verb::Quad => {
+                    crossings.quad(cursor, self.points[index], self.points[index + 1], point);
+                    cursor = self.points[index + 1];
+                    index += 2;
+                }
+                Verb::Cubic => {
+                    crossings.cubic(
+                        cursor,
+                        self.points[index],
+                        self.points[index + 1],
+                        self.points[index + 2],
+                        point,
+                    );
+                    cursor = self.points[index + 2];
+                    index += 3;
+                }
+                Verb::Close => {
+                    crossings.line(cursor, contour_start, point);
+                    cursor = contour_start;
+                    contour_open = false;
+                }
+            }
+        }
+        if contour_open {
+            crossings.line(cursor, contour_start, point);
+        }
+        crossings
+    }
+
     /// Flatten to polygonal contours at `tolerance` (max deviation, in the
     /// path's own units). Fills treat last→first as an implicit edge for
     /// every contour; strokes branch on [`Contour::closed`].
@@ -207,6 +277,123 @@ impl PathBuilder {
             .close()
     }
 
+    /// Circular arc — Canvas2D's `arc`, the equal-radii case of
+    /// [`Self::ellipse`]. Angles are radians from the +x axis, and a
+    /// positive `sweep_angle` turns toward +y (clockwise on screen, since
+    /// valo is y-down).
+    pub fn arc(
+        &mut self,
+        center: impl Into<Point>,
+        radius: f32,
+        start_angle: f32,
+        sweep_angle: f32,
+    ) -> &mut Self {
+        self.ellipse(center, [radius; 2], 0.0, start_angle, sweep_angle)
+    }
+
+    /// Elliptical arc — Canvas2D's `ellipse`. The ellipse has half-extents
+    /// `radii`, is turned by `x_axis_rotation`, and is swept from
+    /// `start_angle` for `sweep_angle` radians. Canvas2D semantics: an open
+    /// contour is joined to the arc's first point by a straight line, and a
+    /// closed one starts there.
+    ///
+    /// Each ≤90° piece is the classic k = 4/3·tan(Δ/4) cubic approximation —
+    /// the same construction [`Self::circle`] and the rounded-rect corners
+    /// already use. Skia represents arcs exactly, with conics; valo has only
+    /// quads and cubics, and the approximation's radial error tops out near
+    /// 2.7e-4 of the radius, under a tenth of a pixel below r ≈ 370.
+    pub fn ellipse(
+        &mut self,
+        center: impl Into<Point>,
+        radii: [f32; 2],
+        x_axis_rotation: f32,
+        start_angle: f32,
+        sweep_angle: f32,
+    ) -> &mut Self {
+        let center = center.into();
+        let [radius_x, radius_y] = radii;
+        let finite = radius_x.is_finite()
+            && radius_y.is_finite()
+            && start_angle.is_finite()
+            && sweep_angle.is_finite();
+        if !finite || radius_x < 0.0 || radius_y < 0.0 {
+            return self;
+        }
+
+        let unit_circle_to_ellipse = unit_circle_map(center, radii, x_axis_rotation);
+        let first = unit_circle_to_ellipse.map_point(unit_circle_point(start_angle));
+        if self.contour_open {
+            self.line_to(first);
+        } else {
+            self.move_to(first);
+        }
+        if sweep_angle != 0.0 {
+            self.push_arc_cubics(&unit_circle_to_ellipse, start_angle, sweep_angle);
+        }
+        self
+    }
+
+    /// Canvas2D's `arcTo`: the circle of `radius` tangent to both the segment
+    /// running from the current point to `corner` and the one running from
+    /// `corner` to `next`, reached by a straight line. Degenerate input —
+    /// zero radius, coincident points, a straight-through corner — falls back
+    /// to a line to `corner`, as the spec requires.
+    pub fn arc_to(
+        &mut self,
+        corner: impl Into<Point>,
+        next: impl Into<Point>,
+        radius: f32,
+    ) -> &mut Self {
+        let (corner, next) = (corner.into(), next.into());
+        self.ensure_contour(corner);
+        let start = *self.points.last().expect("ensure_contour opened a contour");
+
+        // Skia's construction, in f64: the tangent length follows from the
+        // half-angle at the corner, and the centre sits one radius along the
+        // inward normal of the incoming edge.
+        let incoming = normalize(
+            corner.x as f64 - start.x as f64,
+            corner.y as f64 - start.y as f64,
+        );
+        let outgoing = normalize(
+            next.x as f64 - corner.x as f64,
+            next.y as f64 - corner.y as f64,
+        );
+        let (Some(incoming), Some(outgoing)) = (incoming, outgoing) else {
+            return self.line_to(corner);
+        };
+        let cosine = incoming.0 * outgoing.0 + incoming.1 * outgoing.1;
+        let sine = incoming.0 * outgoing.1 - incoming.1 * outgoing.0;
+        if radius <= 0.0 || !radius.is_finite() || sine.abs() < 1.0 / (1 << 12) as f64 {
+            return self.line_to(corner);
+        }
+
+        let tangent_length = (radius as f64 * (1.0 - cosine) / sine).abs();
+        let entry = Point::new(
+            corner.x - (tangent_length * incoming.0) as f32,
+            corner.y - (tangent_length * incoming.1) as f32,
+        );
+        // The turn's sign puts the centre on the side the arc bends toward.
+        let turn = sine.signum() as f32;
+        let center = Point::new(
+            entry.x + radius * turn * -(incoming.1 as f32),
+            entry.y + radius * turn * incoming.0 as f32,
+        );
+        let exit = Point::new(
+            corner.x + (tangent_length * outgoing.0) as f32,
+            corner.y + (tangent_length * outgoing.1) as f32,
+        );
+
+        let start_angle = (entry.y - center.y).atan2(entry.x - center.x);
+        let end_angle = (exit.y - center.y).atan2(exit.x - center.x);
+        let sweep = shortest_sweep(start_angle, end_angle, turn);
+
+        self.line_to(entry);
+        let map = unit_circle_map(center, [radius; 2], 0.0);
+        self.push_arc_cubics(&map, start_angle, sweep);
+        self
+    }
+
     pub fn circle(&mut self, center: impl Into<Point>, radius: f32) -> &mut Self {
         let c = center.into();
         let (r, k) = (radius, radius * KAPPA);
@@ -227,6 +414,32 @@ impl PathBuilder {
     }
 
     // ── internals ──────────────────────────────────────────────────────────
+
+    /// Walk an arc as ≤90° cubic pieces, assuming the current point already
+    /// sits at its start. `map` carries the unit circle into place, so this
+    /// stays pure angle bookkeeping.
+    fn push_arc_cubics(&mut self, map: &Matrix, start_angle: f32, sweep_angle: f32) {
+        let piece_count = (sweep_angle.abs() / std::f32::consts::FRAC_PI_2)
+            .ceil()
+            .max(1.0);
+        let step = sweep_angle / piece_count;
+        // Control-point offset for a Bézier matching an arc of `step`: at a
+        // quarter turn this is exactly KAPPA.
+        let reach = 4.0 / 3.0 * (step / 4.0).tan();
+
+        let mut angle = start_angle;
+        for _ in 0..piece_count as u32 {
+            let (from, to) = (unit_circle_point(angle), unit_circle_point(angle + step));
+            let first = Point::new(from.x - reach * from.y, from.y + reach * from.x);
+            let second = Point::new(to.x + reach * to.y, to.y - reach * to.x);
+            self.cubic_to(
+                map.map_point(first),
+                map.map_point(second),
+                map.map_point(to),
+            );
+            angle += step;
+        }
+    }
 
     /// A curve/line without a preceding move starts a contour at that point
     /// (Skia's implicit moveTo(0,0) is a footgun; starting at the target isn't).
@@ -255,6 +468,48 @@ impl PathBuilder {
 
 /// Circle-from-cubics constant (4/3·tan(π/8)).
 const KAPPA: f32 = 0.552_284_8;
+
+/// The point at `angle` on the unit circle.
+fn unit_circle_point(angle: f32) -> Point {
+    let (sine, cosine) = angle.sin_cos();
+    Point::new(cosine, sine)
+}
+
+/// Maps the unit circle onto the ellipse at `center` with half-extents
+/// `radii`, turned by `rotation`.
+fn unit_circle_map(center: Point, radii: [f32; 2], rotation: f32) -> Matrix {
+    let [radius_x, radius_y] = radii;
+    let (sine, cosine) = rotation.sin_cos();
+    Matrix::from_affine(
+        radius_x * cosine,
+        radius_x * sine,
+        -radius_y * sine,
+        radius_y * cosine,
+        center.x,
+        center.y,
+    )
+}
+
+/// The sweep from `start` to `end` that turns in `direction`'s sense and
+/// stays under a full turn — an arc between two tangent points never needs
+/// the long way around.
+fn shortest_sweep(start: f32, end: f32, direction: f32) -> f32 {
+    let mut sweep = end - start;
+    let turn = std::f32::consts::TAU;
+    while sweep > 0.0 && direction < 0.0 {
+        sweep -= turn;
+    }
+    while sweep < 0.0 && direction > 0.0 {
+        sweep += turn;
+    }
+    sweep
+}
+
+/// A unit vector, or `None` when the input has no direction.
+fn normalize(x: f64, y: f64) -> Option<(f64, f64)> {
+    let length = (x * x + y * y).sqrt();
+    (length.is_finite() && length > 0.0).then(|| (x / length, y / length))
+}
 
 /// Skia's radii rule: shrink ALL four corners by ONE factor until every
 /// adjacent pair fits its side — corners never overlap and the shape keeps
@@ -541,5 +796,197 @@ mod tests {
         assert!(points
             .iter()
             .any(|p| (p.x - 200.0).abs() < 0.5 && (p.y - 10.0).abs() < 0.5));
+    }
+
+    // ── arcs ────────────────────────────────────────────────────────────────
+
+    /// Every point of a swept circle sits on the circle, to well under a
+    /// tenth of a pixel — the cubic approximation's whole claim.
+    #[test]
+    fn swept_arc_stays_on_its_circle() {
+        let (center, radius) = (Point::new(50.0, 60.0), 40.0);
+        let mut b = PathBuilder::new();
+        b.arc(center, radius, 0.0, std::f32::consts::TAU);
+        for point in &b.build().flatten(0.01)[0].points {
+            let offset = (point.x - center.x).hypot(point.y - center.y);
+            assert!(
+                (offset - radius).abs() < 0.05,
+                "point {point:?} is {offset} from the centre, not {radius}"
+            );
+        }
+    }
+
+    /// A quarter turn ends exactly where trigonometry says it does.
+    #[test]
+    fn quarter_arc_ends_where_it_should() {
+        let mut b = PathBuilder::new();
+        b.arc((0.0, 0.0), 100.0, 0.0, std::f32::consts::FRAC_PI_2);
+        let points = &b.build().flatten(0.01)[0].points;
+        let (first, last) = (points[0], *points.last().unwrap());
+        assert!(
+            (first.x - 100.0).abs() < 0.01 && first.y.abs() < 0.01,
+            "{first:?}"
+        );
+        assert!(
+            last.x.abs() < 0.05 && (last.y - 100.0).abs() < 0.05,
+            "{last:?}"
+        );
+    }
+
+    /// An ellipse reaches its own half-extents on each axis.
+    #[test]
+    fn ellipse_reaches_both_radii() {
+        let mut b = PathBuilder::new();
+        b.ellipse((0.0, 0.0), [80.0, 20.0], 0.0, 0.0, std::f32::consts::TAU);
+        let points = &b.build().flatten(0.01)[0].points;
+        let widest = points.iter().fold(0.0f32, |m, p| m.max(p.x.abs()));
+        let tallest = points.iter().fold(0.0f32, |m, p| m.max(p.y.abs()));
+        assert!((widest - 80.0).abs() < 0.1, "widest {widest}");
+        assert!((tallest - 20.0).abs() < 0.1, "tallest {tallest}");
+    }
+
+    /// The rotation turns the ellipse: a 90° turn swaps which axis is long.
+    #[test]
+    fn ellipse_rotation_swaps_the_axes() {
+        let mut b = PathBuilder::new();
+        b.ellipse(
+            (0.0, 0.0),
+            [80.0, 20.0],
+            std::f32::consts::FRAC_PI_2,
+            0.0,
+            std::f32::consts::TAU,
+        );
+        let points = &b.build().flatten(0.01)[0].points;
+        let widest = points.iter().fold(0.0f32, |m, p| m.max(p.x.abs()));
+        let tallest = points.iter().fold(0.0f32, |m, p| m.max(p.y.abs()));
+        assert!((widest - 20.0).abs() < 0.1, "widest {widest}");
+        assert!((tallest - 80.0).abs() < 0.1, "tallest {tallest}");
+    }
+
+    /// A right-angle `arc_to` with radius r touches down r before the corner
+    /// and leaves r after it, and every point between is r from the centre
+    /// the two tangents share.
+    #[test]
+    fn arc_to_rounds_a_right_angle() {
+        let radius = 20.0f32;
+        let mut b = PathBuilder::new();
+        b.move_to((0.0, 0.0))
+            .arc_to((100.0, 0.0), (100.0, 100.0), radius);
+        let points = &b.build().flatten(0.01)[0].points;
+
+        let entry = Point::new(100.0 - radius, 0.0);
+        let exit = Point::new(100.0, radius);
+        assert!(points
+            .iter()
+            .any(|p| (p.x - entry.x).abs() < 0.1 && (p.y - entry.y).abs() < 0.1));
+        assert!(points
+            .iter()
+            .any(|p| (p.x - exit.x).abs() < 0.1 && (p.y - exit.y).abs() < 0.1));
+
+        let center = Point::new(100.0 - radius, radius);
+        for point in points.iter().filter(|p| p.x > entry.x - 0.01) {
+            let offset = (point.x - center.x).hypot(point.y - center.y);
+            assert!(
+                (offset - radius).abs() < 0.1,
+                "{point:?} is {offset} from the centre"
+            );
+        }
+    }
+
+    /// Collinear points and a zero radius both degenerate to a plain line,
+    /// which is what the Canvas2D algorithm prescribes.
+    #[test]
+    fn degenerate_arc_to_falls_back_to_a_line() {
+        for (corner, next, radius) in [
+            ((50.0, 0.0), (100.0, 0.0), 20.0), // straight through
+            ((50.0, 0.0), (50.0, 50.0), 0.0),  // no radius
+        ] {
+            let mut b = PathBuilder::new();
+            b.move_to((0.0, 0.0)).arc_to(corner, next, radius);
+            let points = &b.build().flatten(0.01)[0].points;
+            assert_eq!(points.len(), 2, "expected a bare line, got {points:?}");
+            assert!((points[1].x - corner.0).abs() < 0.01 && (points[1].y - corner.1).abs() < 0.01);
+        }
+    }
+
+    // ── containment ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn rect_contains_what_it_covers() {
+        let mut b = PathBuilder::new();
+        b.rect(Rect::new(10.0, 10.0, 80.0, 60.0));
+        let path = b.build();
+        assert!(path.contains(Point::new(50.0, 40.0), FillRule::NonZero));
+        assert!(!path.contains(Point::new(5.0, 40.0), FillRule::NonZero));
+        assert!(!path.contains(Point::new(50.0, 80.0), FillRule::NonZero));
+        // Exactly on the outline counts as inside.
+        assert!(path.contains(Point::new(10.0, 40.0), FillRule::NonZero));
+    }
+
+    /// Containment runs on the CURVE, so it agrees with the true circle at
+    /// every angle — a flattened test would drift inside the chords.
+    #[test]
+    fn circle_containment_is_exact_all_the_way_round() {
+        let (center, radius) = (Point::new(0.0, 0.0), 100.0f32);
+        let mut b = PathBuilder::new();
+        b.circle(center, radius);
+        let path = b.build();
+        for step in 0..64 {
+            let angle = step as f32 / 64.0 * std::f32::consts::TAU;
+            let (sine, cosine) = angle.sin_cos();
+            let inside = Point::new(cosine * radius * 0.99, sine * radius * 0.99);
+            let outside = Point::new(cosine * radius * 1.01, sine * radius * 1.01);
+            assert!(
+                path.contains(inside, FillRule::NonZero),
+                "{inside:?} should be in"
+            );
+            assert!(
+                !path.contains(outside, FillRule::NonZero),
+                "{outside:?} should be out"
+            );
+        }
+    }
+
+    /// The two fill rules disagree exactly where they should: a hole wound
+    /// the same way as its parent is solid under non-zero, empty under
+    /// even-odd.
+    #[test]
+    fn fill_rules_disagree_about_a_same_wound_hole() {
+        let mut b = PathBuilder::new();
+        b.rect(Rect::new(0.0, 0.0, 100.0, 100.0));
+        b.rect(Rect::new(25.0, 25.0, 50.0, 50.0));
+        let path = b.build();
+        let middle = Point::new(50.0, 50.0);
+        assert!(path.contains(middle, FillRule::NonZero));
+        assert!(!path.contains(middle, FillRule::EvenOdd));
+        // Between the rings both rules agree it is filled.
+        let ring = Point::new(10.0, 50.0);
+        assert!(path.contains(ring, FillRule::NonZero));
+        assert!(path.contains(ring, FillRule::EvenOdd));
+    }
+
+    /// An unclosed contour still fills, so it must still contain.
+    #[test]
+    fn open_contour_closes_implicitly() {
+        let mut b = PathBuilder::new();
+        b.move_to((0.0, 0.0))
+            .line_to((100.0, 0.0))
+            .line_to((100.0, 100.0));
+        let path = b.build();
+        assert!(path.contains(Point::new(80.0, 40.0), FillRule::NonZero));
+        assert!(!path.contains(Point::new(20.0, 60.0), FillRule::NonZero));
+    }
+
+    /// Curved segments contribute their real crossings, not a chord's.
+    #[test]
+    fn containment_handles_curves_that_double_back() {
+        let mut b = PathBuilder::new();
+        b.move_to((0.0, 0.0))
+            .cubic_to((120.0, 120.0), (-20.0, 120.0), (100.0, 0.0))
+            .close();
+        let path = b.build();
+        assert!(path.contains(Point::new(50.0, 40.0), FillRule::NonZero));
+        assert!(!path.contains(Point::new(50.0, -10.0), FillRule::NonZero));
+        assert!(!path.contains(Point::new(-30.0, 40.0), FillRule::NonZero));
     }
 }

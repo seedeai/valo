@@ -578,6 +578,33 @@ fn null_handles_never_crash() {
 
         valo_path_dispose(std::ptr::null_mut());
         valo_path_line_to(std::ptr::null_mut(), 1.0, 1.0);
+        valo_path_add_arc(
+            std::ptr::null_mut(),
+            ValoPoint { x: 0.0, y: 0.0 },
+            4.0,
+            0.0,
+            1.0,
+        );
+        valo_path_add_ellipse(
+            std::ptr::null_mut(),
+            ValoPoint { x: 0.0, y: 0.0 },
+            4.0,
+            2.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        valo_path_arc_to(
+            std::ptr::null_mut(),
+            ValoPoint { x: 1.0, y: 0.0 },
+            ValoPoint { x: 1.0, y: 1.0 },
+            1.0,
+        );
+        assert!(!valo_path_contains(
+            std::ptr::null_mut(),
+            ValoPoint { x: 0.0, y: 0.0 },
+            0
+        ));
 
         valo_fonts_dispose(std::ptr::null_mut());
         assert_eq!(

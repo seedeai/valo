@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use valo::{Path, PathBuilder};
 
-use crate::{borrow_mut, dispose_handle, into_handle, ValoCornerRadii, ValoPoint, ValoRect};
+use crate::{
+    borrow_mut, dispose_handle, fill_rule, into_handle, ValoCornerRadii, ValoPoint, ValoRect,
+};
 
 pub struct ValoPath {
     builder: PathBuilder,
@@ -79,7 +81,51 @@ path_op!(
 path_op!(valo_path_close(), |b| b.close());
 path_op!(valo_path_add_rect(rect: ValoRect), |b| b.rect(rect.into()));
 path_op!(valo_path_add_rounded_rect(rect: ValoRect, radii: ValoCornerRadii), |b| b
-    .rrect_radii_elliptical(rect.into(), radii.to_elliptical()));
+    .rrect_radii_elliptical(rect, radii.to_elliptical()));
 path_op!(valo_path_add_circle(center: ValoPoint, radius: f32), |b| b
     .circle((center.x, center.y), radius));
+path_op!(
+    valo_path_add_arc(center: ValoPoint, radius: f32, start_angle: f32, sweep_angle: f32),
+    |b| b.arc((center.x, center.y), radius, start_angle, sweep_angle)
+);
+path_op!(
+    valo_path_add_ellipse(
+        center: ValoPoint,
+        radius_x: f32,
+        radius_y: f32,
+        x_axis_rotation: f32,
+        start_angle: f32,
+        sweep_angle: f32
+    ),
+    |b| b.ellipse(
+        (center.x, center.y),
+        [radius_x, radius_y],
+        x_axis_rotation,
+        start_angle,
+        sweep_angle
+    )
+);
+path_op!(
+    valo_path_arc_to(corner: ValoPoint, next: ValoPoint, radius: f32),
+    |b| b.arc_to((corner.x, corner.y), (next.x, next.y), radius)
+);
 path_op!(valo_path_reset(), |b| *b = PathBuilder::new());
+
+/// Hit-test the path under `point` — Canvas2D's `isPointInPath`, Flutter's
+/// `Path.contains`. `rule`: 0 non-zero, 1 even-odd.
+///
+/// # Safety
+/// `path` must be a live handle (or null, which contains nothing).
+#[no_mangle]
+pub unsafe extern "C" fn valo_path_contains(
+    path: *mut ValoPath,
+    point: ValoPoint,
+    rule: i32,
+) -> bool {
+    match unsafe { borrow_mut(path) } {
+        Some(p) => p
+            .built()
+            .contains(valo::Point::new(point.x, point.y), fill_rule(rule)),
+        None => false,
+    }
+}

@@ -255,7 +255,22 @@ void valo_path_add_rect(ValoPath *path, ValoRect rect);
 void valo_path_add_rounded_rect(ValoPath *path, ValoRect rect,
                                 ValoCornerRadii radii);
 void valo_path_add_circle(ValoPath *path, ValoPoint center, float radius);
+/* Angles are radians from the +x axis; a positive sweep turns toward +y,
+ * which is clockwise on screen. An open contour is joined to the arc's first
+ * point by a line, a closed one starts there. */
+void valo_path_add_arc(ValoPath *path, ValoPoint center, float radius,
+                       float start_angle, float sweep_angle);
+void valo_path_add_ellipse(ValoPath *path, ValoPoint center, float radius_x,
+                           float radius_y, float x_axis_rotation,
+                           float start_angle, float sweep_angle);
+/* The circle of `radius` tangent to both the segment from the current point
+ * to `corner` and the one from `corner` to `next`, reached by a line.
+ * Degenerate input falls back to a line to `corner`. */
+void valo_path_arc_to(ValoPath *path, ValoPoint corner, ValoPoint next,
+                      float radius);
 void valo_path_reset(ValoPath *path);
+/* Hit test: `rule` 0 non-zero, 1 even-odd. */
+bool valo_path_contains(ValoPath *path, ValoPoint point, int32_t rule);
 
 /* ── text ───────────────────────────────────────────────────────────── */
 

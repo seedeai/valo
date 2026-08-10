@@ -204,7 +204,7 @@ fn focal_radials_translate_and_rim_focus_clamps_inside() {
         panic!("expected focal radial");
     };
     // Raw gradient-space coords (bbox units) — the local matrix maps them.
-    assert!((f.x - 0.3).abs() < 1e-4 && (f.y - 0.4).abs() < 1e-4);
+    assert!((f.center.x - 0.3).abs() < 1e-4 && (f.center.y - 0.4).abs() < 1e-4);
 
     // Focus ON the rim: clamped just inside (the spec's UA behavior).
     let (list, _) = vector(
@@ -213,7 +213,7 @@ fn focal_radials_translate_and_rim_focus_clamps_inside() {
     let Some(Shader::Radial { focus: Some(f), .. }) = &draw_paints(&list)[0].shader else {
         panic!("expected clamped focal radial");
     };
-    assert!(f.x > 0.99 && f.x < 1.0 && (f.y - 0.5).abs() < 1e-4);
+    assert!(f.center.x > 0.99 && f.center.x < 1.0 && (f.center.y - 0.5).abs() < 1e-4);
 }
 
 #[test]

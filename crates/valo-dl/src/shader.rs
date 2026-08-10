@@ -22,11 +22,10 @@ pub enum Shader {
         radius: f32,
         stops: Vec<GradientStop>,
         spread: SpreadMode,
-        /// SVG's focal point (`fx`/`fy`, radius-0 inner circle): stops
-        /// emanate from here instead of the center. Must lie INSIDE the
-        /// circle; `None` = the classic centered gradient. This is the
-        /// r0=0 two-point conical — the general form stays deferred.
-        focus: Option<Point>,
+        /// The gradient's START circle — Canvas2D's `(x0, y0, r0)` and
+        /// SVG's focal point. `None` is the classic centred gradient, where
+        /// the ramp runs from the centre out to `radius`.
+        focus: Option<FocalCircle>,
         /// See `Linear::local` — this is how a radial becomes an ellipse.
         local: Matrix,
     },
@@ -63,6 +62,26 @@ pub struct GradientStop {
     /// 0..=1 along the gradient; callers should supply sorted offsets.
     pub offset: f32,
     pub color: Color,
+}
+
+/// A two-point conical gradient's start circle. A zero `radius` is SVG's
+/// focal point (`fx`/`fy`); any positive radius is the general form, which
+/// is what Canvas2D's `createRadialGradient` describes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FocalCircle {
+    pub center: Point,
+    pub radius: f32,
+}
+
+impl FocalCircle {
+    /// SVG's focal point: a start circle with no radius.
+    pub fn point(center: Point) -> Self {
+        Self {
+            center,
+            radius: 0.0,
+        }
+    }
 }
 
 pub const MAX_GRADIENT_STOPS: usize = 8;

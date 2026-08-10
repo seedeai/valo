@@ -535,7 +535,8 @@ fn f2_focal_scene() -> valo::DisplayList {
         let x = 40.0 + i as f32 * 190.0;
         let center = Point::new(x + 85.0, 125.0);
         // Focus offset toward the upper-left, well inside r=70.
-        let focus = focal.then(|| Point::new(center.x - 35.0, center.y - 35.0));
+        let focus =
+            focal.then(|| valo::FocalCircle::point(Point::new(center.x - 35.0, center.y - 35.0)));
         b.draw_rect(
             Rect::new(x, 40.0, 170.0, 170.0),
             &Paint::from_shader(Shader::Radial {
@@ -567,6 +568,256 @@ fn f2_focal_radials_golden() {
     assert_eq!(stats.draws, 3);
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
     valo_harness::assert_golden(goldens_dir(), "f2_focal_radials", size, &rgba);
+}
+
+/// Two-point conical gradients — Canvas2D's `createRadialGradient` in full,
+/// with a start circle that has its own radius. The four panels are the
+/// cases Skia's decomposition splits on: a sphere highlight (small start
+/// circle inside the end circle), equal radii (the degenerate "strip"),
+/// a shrinking gradient (start circle larger than end), and a start circle
+/// sitting exactly on the end circle's rim.
+fn conical_scene() -> valo::DisplayList {
+    use valo::{FocalCircle, GradientStop, Point, Shader, SpreadMode};
+    let stops = vec![
+        GradientStop {
+            offset: 0.0,
+            color: Color::WHITE,
+        },
+        GradientStop {
+            offset: 1.0,
+            color: Color::rgb(0.15, 0.2, 0.85),
+        },
+    ];
+    let mut b = DisplayListBuilder::new();
+    for (index, (start_offset, start_radius, end_radius)) in [
+        ((-28.0f32, -28.0f32), 8.0f32, 70.0f32), // sphere highlight
+        ((40.0, 0.0), 45.0, 45.0),               // equal radii: the strip case
+        ((25.0, 0.0), 70.0, 22.0),               // shrinking outward
+        ((70.0, 0.0), 6.0, 70.0),                // start circle on the rim
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = 40.0 + index as f32 * 190.0;
+        let center = Point::new(x + 85.0, 125.0);
+        b.draw_rect(
+            Rect::new(x, 40.0, 170.0, 170.0),
+            &Paint::from_shader(Shader::Radial {
+                center,
+                radius: end_radius,
+                stops: stops.clone(),
+                spread: SpreadMode::Pad,
+                focus: Some(FocalCircle {
+                    center: Point::new(center.x + start_offset.0, center.y + start_offset.1),
+                    radius: start_radius,
+                }),
+                local: Default::default(),
+            }),
+        );
+    }
+    b.build()
+}
+
+#[test]
+fn conical_gradients_golden() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP conical_gradients_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let size = [800u32, 250u32];
+    let offscreen = Offscreen::new(&device, size);
+    let background = Color::rgb(0.07, 0.07, 0.09);
+    let stats = ctx.render(&conical_scene(), &offscreen.target(Some(background)));
+    assert_eq!(stats.draws, 4);
+    let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+
+    let at = |x: u32, y: u32| {
+        let i = ((y * size[0] + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    };
+    // The start circle's own interior is the ramp's 0 end: white, not the
+    // single colour a radius-0 focal point would have produced.
+    let highlight = at(40 + 85 - 28, 125 - 28);
+    assert!(
+        highlight.iter().all(|c| *c > 230),
+        "sphere highlight should be at the white end of the ramp, got {highlight:?}"
+    );
+    // Equal radii degenerate to a STRIP: only the band between the two
+    // circles' common tangents is covered, and everything above or below it
+    // stays transparent. A radius-0 focal solve cannot express that — it
+    // covers the whole plane — so this is the case that proves the general
+    // algorithm is live. The strip is 45 tall about y = 125; probe well
+    // outside it.
+    let outside = at(230 + 85, 45);
+    let background_bytes = [
+        (background.r * 255.0).round() as u8,
+        (background.g * 255.0).round() as u8,
+        (background.b * 255.0).round() as u8,
+    ];
+    assert!(
+        outside
+            .iter()
+            .zip(background_bytes)
+            .all(|(got, want)| got.abs_diff(want) <= 2),
+        "outside the cone should stay background, got {outside:?}"
+    );
+
+    valo_harness::assert_golden(goldens_dir(), "conical_gradients", size, &rgba);
+}
+
+/// Arcs and stroked text — the path primitives Canvas2D leans on. The pie
+/// slice and ring come from `arc`, the tab's shoulders from `arc_to`, the
+/// tilted oval from `ellipse`; the word below is drawn twice, once filled
+/// and once stroked, and stroking forces the outline tier because atlas
+/// rasters only ever carry fill coverage.
+#[test]
+fn arcs_and_stroked_text_golden() {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    use valo::{
+        Cap, DrawGlyphRunExt, Join, PaintStyle, ParagraphBuilder, PathBuilder, Point, Stroke,
+        TextStyle,
+    };
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP arcs_and_stroked_text_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let fonts = text_fonts();
+    ctx.set_fonts(fonts.clone());
+    let size = [660u32, 340u32];
+    let offscreen = Offscreen::new(&device, size);
+    let background = Color::rgb(0.07, 0.07, 0.09);
+
+    let stroke_of = |width: f32| {
+        PaintStyle::Stroke(Stroke {
+            width,
+            cap: Cap::Round,
+            join: Join::Round,
+            miter_limit: 4.0,
+            dash: None,
+        })
+    };
+
+    let mut b = DisplayListBuilder::new();
+
+    // A pie slice: centre, out along the start angle, round, and back.
+    let pie_center = Point::new(100.0, 100.0);
+    let mut pie = PathBuilder::new();
+    pie.move_to(pie_center)
+        .arc(pie_center, 70.0, -FRAC_PI_2, TAU * 0.7)
+        .close();
+    b.draw_path(
+        &pie.build(),
+        valo::FillRule::NonZero,
+        &Paint::from_color(Color::rgb(0.96, 0.62, 0.20)),
+    );
+
+    // A stroked ring segment — an arc with no fill behind it.
+    let mut ring = PathBuilder::new();
+    ring.arc(Point::new(250.0, 100.0), 60.0, PI * 0.15, PI * 1.2);
+    b.draw_path(
+        &ring.build(),
+        valo::FillRule::NonZero,
+        &Paint {
+            color: Color::rgb(0.35, 0.75, 0.95),
+            style: stroke_of(12.0),
+            ..Default::default()
+        },
+    );
+
+    // Two `arc_to` shoulders make a tab.
+    let mut tab = PathBuilder::new();
+    tab.move_to((360.0, 160.0))
+        .line_to((360.0, 90.0))
+        .arc_to((360.0, 45.0), (405.0, 45.0), 28.0)
+        .line_to((470.0, 45.0))
+        .arc_to((515.0, 45.0), (515.0, 90.0), 28.0)
+        .line_to((515.0, 160.0));
+    b.draw_path(
+        &tab.build(),
+        valo::FillRule::NonZero,
+        &Paint {
+            color: Color::rgb(0.85, 0.35, 0.55),
+            style: stroke_of(9.0),
+            ..Default::default()
+        },
+    );
+
+    // A tilted ellipse, filled.
+    let mut oval = PathBuilder::new();
+    oval.ellipse((580.0, 100.0), [58.0, 26.0], PI / 5.0, 0.0, TAU);
+    b.draw_path(
+        &oval.build(),
+        valo::FillRule::NonZero,
+        &Paint::from_color(Color::rgb(0.55, 0.85, 0.45)),
+    );
+
+    // The same word filled and stroked, so the two can be compared.
+    let word = |text: &str| {
+        let mut builder = ParagraphBuilder::new(&fonts);
+        builder.add_text(text, &TextStyle::new("Fira Sans", 72.0, Color::WHITE));
+        let mut paragraph = builder.build();
+        paragraph.layout(600.0);
+        paragraph
+    };
+    b.draw_paragraph(&word("Stroke"), (40.0, 190.0));
+    b.draw_paragraph_with(
+        &word("Stroke"),
+        (330.0, 190.0),
+        &Paint {
+            color: Color::WHITE,
+            style: stroke_of(2.5),
+            ..Default::default()
+        },
+    );
+
+    let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
+    let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+
+    // Same font, same 72px, same transform — the ONLY difference is the
+    // paint style, and it alone moves the stroked word off the atlas: one
+    // mask-tier run, no SDF, one outline run.
+    assert_eq!(
+        stats.text_tiers,
+        [1, 0, 1],
+        "the stroked word should be the only one on the outline tier"
+    );
+
+    // Outlined glyphs are HOLLOW, and that is what a scanline sees: crossing
+    // a filled stem inks one run, crossing an outlined one inks two, with the
+    // gap between them showing through. Counting runs across the same word
+    // drawn both ways is a direct read of the difference, and unlike total
+    // ink it does not depend on how the stroke width compares to the stem.
+    let ink_runs = |x0: u32, x1: u32, y: u32| {
+        let mut runs = 0;
+        let mut was_ink = false;
+        for x in x0..x1 {
+            let i = ((y * size[0] + x) * 4) as usize;
+            let is_ink = rgba[i] > 128 && rgba[i + 1] > 128 && rgba[i + 2] > 128;
+            if is_ink && !was_ink {
+                runs += 1;
+            }
+            was_ink = is_ink;
+        }
+        runs
+    };
+    // A scanline through the x-height of both words.
+    let scanline = 190 + 44;
+    let filled_runs = ink_runs(40, 320, scanline);
+    let outlined_runs = ink_runs(330, 610, scanline);
+    assert!(
+        filled_runs >= 4,
+        "filled word looks blank: {filled_runs} runs"
+    );
+    assert!(
+        outlined_runs > filled_runs,
+        "outlined text should break into more runs than filled \
+         ({outlined_runs} vs {filled_runs}) — the counters should show through"
+    );
+
+    valo_harness::assert_golden(goldens_dir(), "arcs_and_stroked_text", size, &rgba);
 }
 
 /// F3: mask layers. Content = an opaque two-tone card; masks =

@@ -15,6 +15,7 @@ mod path;
 mod point;
 mod rect;
 mod stroke;
+mod winding;
 
 pub use color::Color;
 pub use matrix::{Matrix, MatrixKind};

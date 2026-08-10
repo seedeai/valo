@@ -412,7 +412,7 @@ impl DisplayListBuilder {
         if glyphs.is_empty() || paint.is_nop() {
             return;
         }
-        let padded = local_bounds.expand(paint.mask_padding());
+        let padded = local_bounds.expand(paint.mask_padding() + paint.stroke_padding());
         let Some(bounds) = self.clipped_device_bounds(&padded) else {
             return;
         };
