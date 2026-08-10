@@ -188,23 +188,27 @@ impl DisplayListBuilder {
 
     // ── clips (depth slots; expiry backpatched when the scope closes) ──────
 
-    pub fn clip_rect(&mut self, rect: Rect, op: ClipOp) {
+    pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp) {
+        let rect = rect.into();
         self.clip_path(&rect_path(rect), FillRule::NonZero, op);
     }
 
-    pub fn clip_rrect(&mut self, rect: Rect, radius: f32, op: ClipOp) {
+    pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp) {
+        let rect = rect.into();
         self.clip_rrect_radii(rect, [radius; 4], op);
     }
 
     /// Per-corner radii, clockwise from top-left: `[tl, tr, br, bl]`.
-    pub fn clip_rrect_radii(&mut self, rect: Rect, radii: [f32; 4], op: ClipOp) {
+    pub fn clip_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], op: ClipOp) {
+        let rect = rect.into();
         let mut p = PathBuilder::new();
         p.rrect_radii(rect, radii);
         self.clip_path(&p.build(), FillRule::NonZero, op);
     }
 
     /// [`Self::clip_rrect_radii`] with per-corner elliptical radii.
-    pub fn clip_rrect_radii_elliptical(&mut self, rect: Rect, radii: [[f32; 2]; 4], op: ClipOp) {
+    pub fn clip_rrect_radii_elliptical(&mut self, rect: impl Into<Rect>, radii: [[f32; 2]; 4], op: ClipOp) {
+        let rect = rect.into();
         if let Some(circular) = circular_radii(radii) {
             return self.clip_rrect_radii(rect, circular, op);
         }
@@ -237,7 +241,8 @@ impl DisplayListBuilder {
 
     // ── draws (one slot each; bounds pre-clipped for the culling oracle) ───
 
-    pub fn draw_rect(&mut self, rect: Rect, paint: &Paint) {
+    pub fn draw_rect(&mut self, rect: impl Into<Rect>, paint: &Paint) {
+        let rect = rect.into();
         if paint.is_nop() {
             return;
         }
@@ -296,12 +301,14 @@ impl DisplayListBuilder {
         self.draw_path(&p.build(), FillRule::NonZero, paint);
     }
 
-    pub fn draw_rrect(&mut self, rect: Rect, radius: f32, paint: &Paint) {
+    pub fn draw_rrect(&mut self, rect: impl Into<Rect>, radius: f32, paint: &Paint) {
+        let rect = rect.into();
         self.draw_rrect_radii(rect, [radius; 4], paint);
     }
 
     /// Per-corner radii, clockwise from top-left: `[tl, tr, br, bl]`.
-    pub fn draw_rrect_radii(&mut self, rect: Rect, radii: [f32; 4], paint: &Paint) {
+    pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
+        let rect = rect.into();
         if rect.is_empty() || paint.is_nop() {
             return;
         }
@@ -318,7 +325,8 @@ impl DisplayListBuilder {
     /// top-left) — the full CSS/Flutter rounded-rect. Circular corners
     /// (every `rx == ry`) keep the analytic fast paths; genuinely
     /// elliptical corners draw through the path pipeline.
-    pub fn draw_rrect_radii_elliptical(&mut self, rect: Rect, radii: [[f32; 2]; 4], paint: &Paint) {
+    pub fn draw_rrect_radii_elliptical(&mut self, rect: impl Into<Rect>, radii: [[f32; 2]; 4], paint: &Paint) {
+        let rect = rect.into();
         if let Some(circular) = circular_radii(radii) {
             return self.draw_rrect_radii(rect, circular, paint);
         }

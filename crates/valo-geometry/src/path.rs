@@ -181,7 +181,8 @@ impl PathBuilder {
     /// 4]` for `[tl, tr, br, bl]` — the full CSS/Flutter rounded-rect
     /// (8 scalars). Radii are constrained together per axis (see
     /// [`constrain_radii_elliptical`]).
-    pub fn rrect_radii_elliptical(&mut self, r: Rect, radii: [[f32; 2]; 4]) -> &mut Self {
+    pub fn rrect_radii_elliptical(&mut self, r: impl Into<Rect>, radii: [[f32; 2]; 4]) -> &mut Self {
+        let r = r.into();
         let [tl, tr, br, bl] = constrain_radii_elliptical(&r, radii);
         if [tl, tr, br, bl].iter().all(|[x, y]| *x == 0.0 && *y == 0.0) {
             return self.rect(r);
