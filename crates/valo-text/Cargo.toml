@@ -1,0 +1,36 @@
+[package]
+name = "valo-text"
+description = "Typographer and paragraph layout for valo: shaping, bidi, wrapping, glyph raster, SDF"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+valo-geometry = { workspace = true }
+harfrust = { workspace = true }
+skrifa = { workspace = true }
+swash = { workspace = true }
+unicode-bidi = { workspace = true }
+unicode-linebreak = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+# COLRv1 rasterization backend: pure-Rust CPU compositor for
+# the paint-graph callbacks — measured at +343 KB raw / +112 KB gzip wasm.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+
+# WOFF2 unwrapping at registration (feature `woff2`): native hosts accept
+# compressed icon/web fonts directly; wasm hosts leave it off (the browser
+# or the pipeline decompresses) so the brotli decoder never ships.
+woff2-patched = { version = "0.4", optional = true }
+
+[[example]]
+name = "emoji_probe"
+required-features = ["woff2"]
+
+[features]
+woff2 = ["dep:woff2-patched"]
+

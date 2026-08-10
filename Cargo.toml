@@ -1,0 +1,59 @@
+# valo — a 2D render engine in Rust on wgpu. A display list is recorded with a
+# record-time oracle (bounds, depth slots), planned into GPU passes, and drawn
+# alongside a Skia-shaped text stack. See CLAUDE.md for the design principles.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# wgpu 29 sets the floor; verified in CI.
+rust-version = "1.87"
+keywords = ["graphics", "gpu", "wgpu", "2d", "renderer"]
+categories = ["graphics", "rendering::engine"]
+publish = false
+
+[workspace.dependencies]
+# internal
+valo-geometry = { path = "crates/valo-geometry" }
+valo-dl = { path = "crates/valo-dl" }
+valo-text = { path = "crates/valo-text" }
+valo-renderer = { path = "crates/valo-renderer" }
+valo-harness = { path = "crates/valo-harness" }
+valo = { path = "crates/valo" }
+valo-svg = { path = "crates/valo-svg" }
+valo-system-fonts = { path = "crates/valo-system-fonts" }
+# gpu — wgpu IS the HAL (no layer over it)
+wgpu = "29"
+# text — one crate per role in Skia's stack, each an intended swap seam:
+# shaping (HarfBuzz's role -> harfrust), font parsing (skrifa), glyph raster
+# (swash), ICU's line breaks + bidi (unicode-*), atlas packing (etagere)
+harfrust = "0.4"
+skrifa = "0.35"
+swash = "0.2"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1"
+# system-font discovery: platform directories, .ttc face indices,
+# memory-mapped bytes — native hosts only, never a wasm dependency
+fontdb = "0.23"
+rustc-hash = "2"
+etagere = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+# 4x4 matrices: column-major f32, Flutter/Impeller-identical layout,
+# SIMD native + wasm-clean (SIMD128 opt-in)
+glam = "0.30"
+# opt-in observability: serde dump + tracing spans, both feature-gated
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+tracing = "0.1"
+# dev: native bring-up + goldens + examples (no browser anywhere)
+pollster = "0.4"
+png = "0.17"
+winit = "0.30"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

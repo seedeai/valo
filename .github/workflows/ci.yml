@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: tests (no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: Swatinem/rust-cache@v2
+      # The GPU-free half of the workspace. Golden pixel tests need an adapter
+      # and run in the `goldens` job instead. The system-font tests skip
+      # themselves when the host lacks the faces they ask for.
+      - run: |
+          cargo test -p valo-geometry -p valo-dl -p valo-text \
+                     -p valo-svg -p valo-system-fonts
+
+  wasm:
+    name: wasm32 check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # valo-system-fonts, valo-capi and the dev harness are native-only by
+      # design; these are the crates that must stay wasm-clean.
+      - run: cargo check --target wasm32-unknown-unknown -p valo -p valo-svg
+
+  msrv:
+    name: msrv (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
+      - run: rustup toolchain install 1.87.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      # An explicit +toolchain overrides rust-toolchain.toml.
+      - run: cargo +1.87.0 check --workspace --all-targets
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+
+  goldens:
+    name: golden pixels (GPU)
+    runs-on: macos-15
+    # The goldens were blessed on a developer Mac. A hosted runner's driver may
+    # differ by more than the ±3-per-channel tolerance allows, so this job
+    # reports rather than blocks until one real run proves it stable. Promote it
+    # to required once it has passed a few times; if it turns out to differ
+    # systematically, keep pixel goldens local and drop this job.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Golden pixel tests + C ABI parity
+        run: cargo test -p valo -p valo-capi -p valo-harness
+      - name: Upload rendered mismatches
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-mismatches
+          path: crates/valo/tests/goldens/*.actual.png
+          if-no-files-found: ignore

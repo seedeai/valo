@@ -1,0 +1,5 @@
+# Pin the toolchain so every dev + CI builds identically.
+[toolchain]
+channel = "stable"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]

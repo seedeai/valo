@@ -1,0 +1,40 @@
+[package]
+name = "valo-svg"
+description = "SVG to display-list translation for valo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+valo-geometry = { workspace = true }
+valo-dl = { workspace = true }
+# The normalization layer (Skia modules/svg's DOM+parser role): XML, CSS
+# cascade, defs/use/markers, units — its output tree is groups+paths with
+# resolved paints. `text` stays OFF pending a user call: probed 2026-07-13
+# at +631,110 raw / +249,541 gzip wasm (fontdb+rustybuzz+ttf-parser
+# duplicate the shaping stack harfrust already ships). <text> elements are
+# reported via `Svg::missing` and render as absent.
+usvg = { version = "0.45", default-features = false }
+# svgz: the <text> pre-scan needs plaintext, so decompression happens here
+# (same flate2 usvg already pulls — no new tree weight).
+flate2 = "1"
+# Software raster decode for embedded <image> — hosts WITHOUT a hardware
+# decoder (server export) opt in; browsers use createImageBitmap instead.
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+] }
+
+[features]
+decode = ["dep:image"]
+
+[dev-dependencies]
+# Tests inspect recorded ops and paints directly.
+valo-dl = { workspace = true }
+valo-geometry = { workspace = true }

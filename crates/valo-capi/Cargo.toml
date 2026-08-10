@@ -1,0 +1,23 @@
+[package]
+name = "valo-capi"
+description = "C ABI over valo — embed the renderer from any language that speaks C (the committed header is include/valo.h)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[lib]
+# staticlib/cdylib for C embedders; rlib so Rust tests exercise the same fns.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+valo = { path = "../valo", features = ["woff2"] }
+valo-system-fonts = { workspace = true }
+wgpu = { workspace = true }
+pollster = "0.4"
+
+[dev-dependencies]
+valo-harness = { workspace = true }

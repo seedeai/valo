@@ -1,0 +1,23 @@
+[package]
+name = "valo-dl"
+description = "Display-list recording for valo, with the record-time oracle the renderer replays"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[features]
+# Serde dump of DisplayLists for readable golden diffs + bug reports.
+serde = ["dep:serde", "valo-geometry/serde"]
+
+[dependencies]
+valo-geometry = { workspace = true }
+# Resource HANDLES only (Image wraps a texture) — recording never needs a device.
+wgpu = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

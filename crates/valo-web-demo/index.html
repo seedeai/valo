@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>valo — board (WebGPU)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #141416; overflow: hidden; }
+    canvas { width: 100vw; height: 100vh; display: block; touch-action: none; }
+    #err { color: #f88; font: 14px monospace; padding: 16px; position: absolute; }
+  </style>
+</head>
+<body>
+  <div id="err"></div>
+  <canvas id="board"></canvas>
+  <script type="module">
+    // Cache-bust both files: this is a dev page and heuristic caching
+    // otherwise serves stale wasm after rebuilds.
+    const v = Date.now();
+    const { default: init } = await import(`./pkg/valo_web_demo.js?v=${v}`);
+    init({ module_or_path: `./pkg/valo_web_demo_bg.wasm?v=${v}` })
+      .catch(e => { document.getElementById('err').textContent = String(e); });
+  </script>
+</body>
+</html>

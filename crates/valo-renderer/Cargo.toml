@@ -1,0 +1,34 @@
+[package]
+name = "valo-renderer"
+description = "The wgpu core of valo: frame planner, encoder, pipelines, glyph atlases, caches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[features]
+# Tracing spans around record/prepass/encode/submit, zero cost when off.
+trace = ["dep:tracing"]
+# wgpu's internal live-object counters feed MemoryReport.wgpu (zeros when off).
+counters = ["wgpu/counters"]
+
+[dependencies]
+rustc-hash = { workspace = true }
+# std::time::Instant panics on wasm; web-time re-exports std on native and
+# uses performance.now() on the web (wgpu's own choice).
+web-time = "1"
+
+valo-geometry = { workspace = true }
+glam = { workspace = true }
+valo-dl = { workspace = true }
+valo-text = { workspace = true }
+etagere = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+pollster = { workspace = true }

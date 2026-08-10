@@ -1,0 +1,17 @@
+[package]
+name = "valo-geometry"
+description = "Pure 2D math for valo: points, rects, paths, 4x4 matrices, strokes, color"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[features]
+serde = ["dep:serde", "glam/serde"]
+
+[dependencies]
+glam = { workspace = true }
+serde = { workspace = true, optional = true }

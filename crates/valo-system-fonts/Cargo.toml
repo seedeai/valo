@@ -1,0 +1,18 @@
+[package]
+name = "valo-system-fonts"
+description = "Native OS font discovery for valo, behind its FontSource trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+valo-text = { workspace = true }
+skrifa = { workspace = true }
+fontdb = { workspace = true }
+
+[dev-dependencies]
+valo-geometry = { workspace = true }

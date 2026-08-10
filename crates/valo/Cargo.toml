@@ -1,0 +1,62 @@
+[package]
+name = "valo"
+description = "A 2D render engine on wgpu: display lists, planned GPU passes, and a Skia-shaped text stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[features]
+# Accept WOFF2 bytes at font registration (native embedders; wasm hosts
+# leave it off — the browser or the pipeline decompresses).
+woff2 = ["valo-text/woff2"]
+serde = ["valo-dl/serde"]
+trace = ["valo-renderer/trace"]
+counters = ["valo-renderer/counters"]
+
+[[bench]]
+name = "record"
+harness = false
+
+[[bench]]
+name = "frame"
+harness = false
+
+[[bench]]
+name = "text"
+harness = false
+
+[[bench]]
+name = "geometry"
+harness = false
+
+[dependencies]
+valo-geometry = { workspace = true }
+valo-dl = { workspace = true }
+valo-renderer = { workspace = true }
+valo-text = { workspace = true }
+wgpu = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["ImageBitmap"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# External-MTLTexture render targets: versions must match wgpu-hal's own.
+objc2 = "0.6"
+objc2-metal = { version = "0.3.2", features = ["MTLTexture", "MTLDevice"] }
+
+[dev-dependencies]
+# Golden-tests the svg translator end to end (Skia's modules/svg shape).
+valo-svg = { workspace = true }
+valo-harness = { workspace = true }
+pollster = { workspace = true }
+png = { workspace = true }
+winit = { workspace = true }
+
+[dev-dependencies.criterion]
+version = "0.7"
+default-features = false
+features = ["cargo_bench_support"]

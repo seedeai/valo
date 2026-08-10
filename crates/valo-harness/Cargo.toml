@@ -1,0 +1,22 @@
+[package]
+name = "valo-harness"
+description = "Dev harness for valo: headless GPU, golden-image compare, example runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+# Dev-only crate: headless GPU bring-up, texture readback, golden-image compare.
+# Never a dependency of shipping crates — tests and examples only.
+
+[dependencies]
+# valo itself: fine because valo only DEV-depends on the harness (no cycle in
+# the lib graph) — lets examples be one scene-fn + one helper call.
+valo = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+winit = { workspace = true }
+png = { workspace = true }
