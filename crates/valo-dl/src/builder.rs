@@ -207,7 +207,12 @@ impl DisplayListBuilder {
     }
 
     /// [`Self::clip_rrect_radii`] with per-corner elliptical radii.
-    pub fn clip_rrect_radii_elliptical(&mut self, rect: impl Into<Rect>, radii: [[f32; 2]; 4], op: ClipOp) {
+    pub fn clip_rrect_radii_elliptical(
+        &mut self,
+        rect: impl Into<Rect>,
+        radii: [[f32; 2]; 4],
+        op: ClipOp,
+    ) {
         let rect = rect.into();
         if let Some(circular) = circular_radii(radii) {
             return self.clip_rrect_radii(rect, circular, op);
@@ -325,7 +330,12 @@ impl DisplayListBuilder {
     /// top-left) — the full CSS/Flutter rounded-rect. Circular corners
     /// (every `rx == ry`) keep the analytic fast paths; genuinely
     /// elliptical corners draw through the path pipeline.
-    pub fn draw_rrect_radii_elliptical(&mut self, rect: impl Into<Rect>, radii: [[f32; 2]; 4], paint: &Paint) {
+    pub fn draw_rrect_radii_elliptical(
+        &mut self,
+        rect: impl Into<Rect>,
+        radii: [[f32; 2]; 4],
+        paint: &Paint,
+    ) {
         let rect = rect.into();
         if let Some(circular) = circular_radii(radii) {
             return self.draw_rrect_radii(rect, circular, paint);
