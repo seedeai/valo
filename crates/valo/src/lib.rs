@@ -40,8 +40,8 @@ pub use valo_dl::{
     Shader, SpreadMode, TileMode,
 };
 pub use valo_geometry::{
-    constrain_radii, constrain_radii_elliptical, Cap, Color, Dash, FillRule, Join, Matrix, Path,
-    PathBuilder, Point, Rect, Size, Stroke,
+    constrain_radii, constrain_radii_elliptical, Cap, Color, ContourMeasure, Dash, FillRule, Join,
+    Matrix, Path, PathBuilder, PathSample, Point, Rect, Size, Stroke,
 };
 pub use valo_renderer::{
     AtlasReport, ImageDesc, MemoryReport, PoolReport, RenderStats, RenderTarget, TextTiers,

@@ -40,6 +40,9 @@ pub enum Frag {
     /// matrix, or a constant colour blended as the source.
     ColorMatrix,
     ColorBlend,
+    /// An image tiled across the shape, sampled through the paint's own
+    /// local matrix — Canvas2D's pattern, Skia's SkImageShader.
+    Pattern,
 }
 
 impl Frag {
@@ -61,6 +64,7 @@ impl Frag {
             Frag::SweepRamp => "fs_sweep_ramp",
             Frag::ColorMatrix => "fs_color_matrix",
             Frag::ColorBlend => "fs_color_blend",
+            Frag::Pattern => "fs_pattern",
         }
     }
 }
@@ -277,7 +281,8 @@ impl PipelineCache {
             | Some(Frag::RadialRamp)
             | Some(Frag::SweepRamp)
             | Some(Frag::ColorMatrix)
-            | Some(Frag::ColorBlend) => &self.textured_layout,
+            | Some(Frag::ColorBlend)
+            | Some(Frag::Pattern) => &self.textured_layout,
             _ => &self.plain_layout,
         };
         let depth_stencil = match key.kind {

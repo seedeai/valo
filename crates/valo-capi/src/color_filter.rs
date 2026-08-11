@@ -24,6 +24,13 @@ pub unsafe extern "C" fn valo_color_filter_matrix(matrix: *const f32) -> *mut Va
     }
     let mut rows = [0.0f32; 20];
     rows.copy_from_slice(unsafe { std::slice::from_raw_parts(matrix, 20) });
+    // NaN survives the shader's clamp and poisons every pixel of the layer.
+    // The header promises garbage in, deterministic frame out.
+    for entry in &mut rows {
+        if !entry.is_finite() {
+            *entry = 0.0;
+        }
+    }
     into_handle(ValoColorFilter(ColorFilter::Matrix(rows)))
 }
 

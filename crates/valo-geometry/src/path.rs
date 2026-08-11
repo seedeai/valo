@@ -62,13 +62,16 @@ impl Path {
         self.points.len() * std::mem::size_of::<Point>() + self.verbs.len()
     }
 
-    /// Is `point` inside this path under `fill_rule`? Exact: the query runs
-    /// on the curves themselves, not on a flattened approximation, so it
-    /// needs no tolerance and never disagrees with itself between zooms.
-    /// Every contour closes implicitly, matching how fills are drawn, and a
-    /// point exactly on the outline counts as inside.
+    /// Is `point` inside this path under `fill_rule`? The query runs on the
+    /// curves themselves rather than a flattened approximation, so the answer
+    /// does not drift with zoom. Every contour closes implicitly, matching how
+    /// fills are drawn, and a point exactly on the outline counts as inside.
+    ///
+    /// "On the outline" is decided with the same ABSOLUTE tolerance Skia uses
+    /// (1/4096 of a unit), so on a path whose coordinates are tiny or enormous
+    /// that band is proportionally wider or narrower than it looks.
     pub fn contains(&self, point: Point, fill_rule: FillRule) -> bool {
-        if !self.bounds.contains(point) {
+        if !self.bounds.contains_inclusive(point) {
             return false;
         }
         let crossings = self.walk_crossings(point);
@@ -130,6 +133,17 @@ impl Path {
             crossings.line(cursor, contour_start, point);
         }
         crossings
+    }
+
+    /// Measure each contour for arc length — Skia's `SkContourMeasure`.
+    /// Contours with no length (a lone point) are dropped, so every returned
+    /// measure can be sampled. `tolerance` is the flattening tolerance, and
+    /// bounds the measurement's accuracy with it.
+    pub fn measure(&self, tolerance: f32) -> Vec<crate::ContourMeasure> {
+        self.flatten(tolerance)
+            .iter()
+            .filter_map(crate::ContourMeasure::of)
+            .collect()
     }
 
     /// Flatten to polygonal contours at `tolerance` (max deviation, in the
@@ -291,7 +305,11 @@ impl PathBuilder {
         self.ellipse(center, [radius; 2], 0.0, start_angle, sweep_angle)
     }
 
-    /// Elliptical arc — Canvas2D's `ellipse`. The ellipse has half-extents
+    /// Elliptical arc — Canvas2D's `ellipse`. A negative radius draws
+    /// NOTHING (Canvas2D throws instead, and Skia takes the absolute value);
+    /// non-finite input is dropped the same way.
+    ///
+    /// The ellipse has half-extents
     /// `radii`, is turned by `x_axis_rotation`, and is swept from
     /// `start_angle` for `sweep_angle` radians. Canvas2D semantics: an open
     /// contour is joined to the arc's first point by a straight line, and a
@@ -312,13 +330,31 @@ impl PathBuilder {
     ) -> &mut Self {
         let center = center.into();
         let [radius_x, radius_y] = radii;
-        let finite = radius_x.is_finite()
+        // Every input, not just the radii: a NaN centre flows into NaN points,
+        // and `f32::min`/`max` drop those from the bounds accumulator without
+        // complaint — an under-reported box silently breaks culling and
+        // hit-testing later.
+        let finite = center.x.is_finite()
+            && center.y.is_finite()
+            && radius_x.is_finite()
             && radius_y.is_finite()
+            && x_axis_rotation.is_finite()
             && start_angle.is_finite()
             && sweep_angle.is_finite();
+        debug_assert!(
+            radius_x >= 0.0 && radius_y >= 0.0,
+            "negative radii draw nothing; Canvas2D throws here"
+        );
         if !finite || radius_x < 0.0 || radius_y < 0.0 {
             return self;
         }
+
+        // Canvas2D stops at one full turn, and Skia routes full sweeps to an
+        // oval. Without this, `sweep = 1e20` passes the finite check above and
+        // asks for ~1e19 cubic pieces — an allocation the process does not
+        // survive, reachable by any embedder forwarding user input.
+        let full_turn = std::f32::consts::TAU;
+        let sweep_angle = sweep_angle.clamp(-full_turn, full_turn);
 
         let unit_circle_to_ellipse = unit_circle_map(center, radii, x_axis_rotation);
         let first = unit_circle_to_ellipse.map_point(unit_circle_point(start_angle));
@@ -330,14 +366,20 @@ impl PathBuilder {
         if sweep_angle != 0.0 {
             self.push_arc_cubics(&unit_circle_to_ellipse, start_angle, sweep_angle);
         }
+        // A whole turn ends where it began: close it, so the stroker joins the
+        // seam instead of capping it (Skia's full sweeps produce a closed oval).
+        if sweep_angle.abs() >= full_turn {
+            self.close();
+        }
         self
     }
 
     /// Canvas2D's `arcTo`: the circle of `radius` tangent to both the segment
     /// running from the current point to `corner` and the one running from
     /// `corner` to `next`, reached by a straight line. Degenerate input —
-    /// zero radius, coincident points, a straight-through corner — falls back
-    /// to a line to `corner`, as the spec requires.
+    /// zero OR NEGATIVE radius, coincident points, a straight-through corner —
+    /// falls back to a line to `corner`, as the spec requires. (Canvas2D
+    /// throws on a negative radius; valo never throws from a path builder.)
     pub fn arc_to(
         &mut self,
         corner: impl Into<Point>,
@@ -919,8 +961,55 @@ mod tests {
         assert!(path.contains(Point::new(50.0, 40.0), FillRule::NonZero));
         assert!(!path.contains(Point::new(5.0, 40.0), FillRule::NonZero));
         assert!(!path.contains(Point::new(50.0, 80.0), FillRule::NonZero));
-        // Exactly on the outline counts as inside.
-        assert!(path.contains(Point::new(10.0, 40.0), FillRule::NonZero));
+        // Exactly on the outline counts as inside — on EVERY edge. The far
+        // two are the ones a half-open bounds check silently loses.
+        for on_outline in [
+            Point::new(10.0, 40.0), // left
+            Point::new(50.0, 10.0), // top
+            Point::new(90.0, 40.0), // right
+            Point::new(50.0, 70.0), // bottom
+            Point::new(90.0, 70.0), // the far corner
+        ] {
+            assert!(
+                path.contains(on_outline, FillRule::NonZero),
+                "{on_outline:?} is on the outline and must count as inside"
+            );
+        }
+    }
+
+    /// Canvas2D caps an arc at one turn. Without the clamp a huge sweep asks
+    /// for billions of cubic pieces, which is an allocation the process does
+    /// not survive — so this test is a crash guard, not a geometry check.
+    #[test]
+    fn an_enormous_sweep_stays_one_turn() {
+        let mut b = PathBuilder::new();
+        b.arc((0.0, 0.0), 50.0, 0.0, 1e20);
+        let path = b.build();
+        let contours = path.flatten(0.1);
+        assert_eq!(contours.len(), 1);
+        // One turn at this tolerance is a few hundred points, never millions.
+        assert!(
+            contours[0].points.len() < 1_000,
+            "a clamped turn should stay small, got {}",
+            contours[0].points.len()
+        );
+        assert!(contours[0].closed, "a full turn closes its contour");
+    }
+
+    #[test]
+    fn a_negative_sweep_turns_the_other_way() {
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let mut clockwise = PathBuilder::new();
+        clockwise.arc((0.0, 0.0), 50.0, 0.0, quarter);
+        let mut anticlockwise = PathBuilder::new();
+        anticlockwise.arc((0.0, 0.0), 50.0, 0.0, -quarter);
+
+        // y-down: a positive sweep from +x heads towards +y, a negative one
+        // towards -y. Both start at the same point.
+        let forward = clockwise.build().bounds();
+        let backward = anticlockwise.build().bounds();
+        assert!(forward.bottom() > 40.0, "positive sweep reaches +y");
+        assert!(backward.y < -40.0, "negative sweep reaches -y");
     }
 
     /// Containment runs on the CURVE, so it agrees with the true circle at

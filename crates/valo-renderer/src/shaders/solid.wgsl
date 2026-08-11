@@ -7,8 +7,12 @@
 //   payload[2] = (stop_count, angle, spread_mode, radial fy)
 //   payload[3..5) = 8 gradient stop offsets
 //   payload[5..13) = 8 gradient stop colors (PREMULTIPLIED)
-//   payload[13..15) = inverse gradient local matrix (a,b,c,d | tx,ty,_,_)
+//   payload[13..15) = inverse gradient/pattern local matrix (a,b,c,d | tx,ty,_,_)
+//   payload[15..17) = two-point conical setup + its flags
+//   payload[17..22) = colour matrix rows + translation column; slot 17 alone
+//                     carries the blend filter's premultiplied source colour
 // Colors are premultiplied everywhere; depth (the draw's slot) rides in mvp.
+// plan.rs's `PAYLOAD_*` constants are the authority for all of this.
 
 struct DrawUniforms {
     mvp: mat4x4<f32>,
@@ -390,6 +394,18 @@ fn fs_blend_texture(in: VsOut) -> @location(0) vec4<f32> {
     let src = textureSample(t_src, t_samp, src_uv) * u.color;
     let mode = u32(u.payload[2].x);
     return composite_advanced(mode, src, dst_sample(in.pos));
+}
+
+// ── patterns ────────────────────────────────────────────────────────────────
+// An image tiled across the shape. `gradient_point` already carries the local
+// position through the paint's inverse local matrix, so all that remains is
+// pattern pixels → uv. Tiling and filtering ride the sampler's address modes,
+// exactly as an image DRAW's do, so a repeat costs nothing in the shader.
+
+@fragment
+fn fs_pattern(in: VsOut) -> @location(0) vec4<f32> {
+    let uv = gradient_point(in.local) * u.payload[1].xy;
+    return textureSample(t_tex, t_samp, uv) * u.color;
 }
 
 // ── colour filters (filter passes only) ─────────────────────────────────────

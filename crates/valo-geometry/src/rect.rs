@@ -98,6 +98,13 @@ impl Rect {
         p.x >= self.x && p.x < self.right() && p.y >= self.y && p.y < self.bottom()
     }
 
+    /// Like [`Self::contains`] but with the far edges included — Skia's
+    /// `contains_inclusive`. Hit-testing wants this: a rect path's bounds ARE
+    /// its outline, and a point on the outline counts as inside.
+    pub fn contains_inclusive(&self, p: Point) -> bool {
+        p.x >= self.x && p.x <= self.right() && p.y >= self.y && p.y <= self.bottom()
+    }
+
     pub fn expand(&self, d: f32) -> Rect {
         Rect::new(
             self.x - d,

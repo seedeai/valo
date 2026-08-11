@@ -697,6 +697,10 @@ fn circular_radii(radii: [[f32; 2]; 4]) -> Option<[f32; 4]> {
 fn is_analytic_blur(paint: &Paint) -> bool {
     paint.mask_blur.is_some()
         && paint.shader.is_none()
+        // The closed-form quad has nowhere to run a colour filter, so a
+        // filtered shape takes the general layer path instead of silently
+        // rendering its unfiltered colour.
+        && paint.color_filter.is_none()
         && matches!(paint.style, crate::PaintStyle::Fill)
 }
 

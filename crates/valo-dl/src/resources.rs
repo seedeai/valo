@@ -21,6 +21,14 @@ pub struct ImageInner {
     pub mip_levels: u32,
 }
 
+/// Two handles are the same image when they name the same upload — the id is
+/// process-unique, so this never compares texture contents.
+impl PartialEq for Image {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.id == other.inner.id
+    }
+}
+
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Image {
@@ -83,8 +91,8 @@ impl std::fmt::Debug for Image {
 
 #[cfg(feature = "serde")]
 impl serde::Serialize for Image {
-    /// Dumps identity, not pixels — the debug story (plan: serde dump is for
-    /// diffs and bug reports, never persistence of GPU state).
+    /// Dumps identity, not pixels: the serde dump exists for diffs and bug
+    /// reports, never for persisting GPU state.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut st = s.serialize_struct("Image", 2)?;

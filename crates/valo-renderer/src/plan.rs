@@ -182,27 +182,38 @@ struct LayerInfo {
     effects: LayerEffects,
 }
 
-/// A layer's post-effects, applied in Impeller's order (`Paint::WithFilters`):
-/// the colour filter recolours the layer's own pixels, then the blur spreads
-/// the filtered result.
+/// A layer's post-effects. Impeller applies the two in OPPOSITE orders
+/// depending on what the layer is, and so does valo:
+///
+/// - a draw's own effect layer follows `Paint::WithFilters` — colour filter
+///   first, then the blur spreads the filtered pixels;
+/// - a `save_layer` subpass follows `Paint::WithFiltersForSubpassTarget` —
+///   image filter first, colour filter over the blurred result.
+///
+/// The difference shows wherever the blur produces fractional alpha, since a
+/// matrix that translates or clamps is not commutative with it.
 #[derive(Clone, Copy, Default)]
 struct LayerEffects {
     color_filter: Option<ColorFilter>,
     /// σ is in DEVICE px by the time it lands here. Non-Normal styles add a
     /// combine pass merging the blur with the sharp layer.
     blur: Option<MaskBlur>,
+    /// Set for a recorded `save_layer`; clear for the implicit layers a draw
+    /// opens for its own effects.
+    subpass: bool,
 }
 
 impl LayerEffects {
     /// The effects a paint asks of its layer. `scale` converts the blur's
     /// local σ into device px.
-    fn of(paint: &Paint, scale: f32) -> Self {
+    fn of(paint: &Paint, scale: f32, subpass: bool) -> Self {
         Self {
             color_filter: paint.color_filter,
             blur: paint.mask_blur.map(|mask| MaskBlur {
                 sigma: (mask.sigma * scale).max(0.05),
                 style: mask.style,
             }),
+            subpass,
         }
     }
 
@@ -685,7 +696,7 @@ impl<'a> Planner<'a> {
         self.stats.layers_rendered += 1;
         // The layer paint's σ is local, scaled to device here — same
         // convention as plan_via_effect_layer.
-        let effects = LayerEffects::of(&composite.paint, base.max_scale());
+        let effects = LayerEffects::of(&composite.paint, base.max_scale(), true);
         // span + 1 = the composite's distance from the scope's base.
         self.push_layer_frame_rebased(
             rect,
@@ -835,27 +846,78 @@ impl<'a> Planner<'a> {
             return (info.resolve.clone(), full_rect_uv(&sample));
         }
         let whole = Rect::new(0.0, 0.0, size[0] as f32, size[1] as f32);
+        let filtered = if info.effects.subpass {
+            self.blur_then_recolour(info, size, &whole)
+        } else {
+            self.recolour_then_blur(info, size, &whole)
+        };
+        (filtered.view, region_uv(&sample, filtered.uv_max))
+    }
 
-        // Colour first, blur second: the blur spreads filtered pixels, and a
-        // styled blur combines against the filtered layer, not the raw one.
+    /// A draw's own effect layer: the colour filter runs on the shape's
+    /// pixels and the blur spreads the filtered result. A styled blur
+    /// combines against the filtered layer, not the raw one.
+    fn recolour_then_blur(
+        &mut self,
+        info: &LayerInfo,
+        size: [u32; 2],
+        whole: &Rect,
+    ) -> FilteredTexture {
         let recoloured = info
             .effects
             .color_filter
-            .map(|filter| self.push_color_filter(&info.resolve, size, &whole, filter));
+            .map(|filter| self.push_color_filter(&info.resolve, size, whole, filter));
         let sharp = recoloured
             .as_ref()
             .map_or_else(|| info.resolve.clone(), |out| out.view.clone());
+        match info.effects.blur {
+            None => recoloured.expect("empty effects returned early"),
+            Some(mask) => self.blur_layer(&sharp, size, whole, mask),
+        }
+    }
 
-        let Some(mask) = info.effects.blur else {
-            let filtered = recoloured.expect("empty effects returned early");
-            return (filtered.view, region_uv(&sample, filtered.uv_max));
+    /// A `save_layer` subpass: the blur runs first and the colour filter
+    /// recolours the blurred result, so a translating or clamping matrix acts
+    /// on the halo's fractional alpha the way Flutter's does.
+    fn blur_then_recolour(
+        &mut self,
+        info: &LayerInfo,
+        size: [u32; 2],
+        whole: &Rect,
+    ) -> FilteredTexture {
+        let blurred = info
+            .effects
+            .blur
+            .map(|mask| self.blur_layer(&info.resolve, size, whole, mask));
+        let Some(filter) = info.effects.color_filter else {
+            return blurred.expect("empty effects returned early");
         };
-        let blurred = self.plan_blur(&sharp, size, &whole, mask.sigma, Vec::new());
-        let styled = match mask.style {
+        match blurred {
+            None => self.push_color_filter(&info.resolve, size, whole, filter),
+            Some(blurred) => {
+                // The blur landed in a bucketed target, so the colour pass
+                // reads it at its own size rather than the layer's.
+                let bucket = [
+                    (whole.width / blurred.uv_max[0]).round() as u32,
+                    (whole.height / blurred.uv_max[1]).round() as u32,
+                ];
+                self.push_color_filter(&blurred.view, bucket, whole, filter)
+            }
+        }
+    }
+
+    fn blur_layer(
+        &mut self,
+        source: &wgpu::TextureView,
+        size: [u32; 2],
+        whole: &Rect,
+        mask: MaskBlur,
+    ) -> FilteredTexture {
+        let blurred = self.plan_blur(source, size, whole, mask.sigma, Vec::new());
+        match mask.style {
             BlurStyle::Normal => blurred,
-            style => self.push_mask_combine(&blurred, &sharp, &whole, style),
-        };
-        (styled.view, region_uv(&sample, styled.uv_max))
+            style => self.push_mask_combine(&blurred, source, whole, style),
+        }
     }
 
     /// Composite a MASK layer: its texture becomes coverage
@@ -1160,7 +1222,7 @@ impl<'a> Planner<'a> {
         let mesh = (slot, (vertices.len() / 2) as u32);
         let tint = tinted(paint, self.elision_alpha());
         let mut record = UniformRecord::new(self.ortho(current, z), tint);
-        let bind = self.gradient_payload(&mut record, paint);
+        let bind = self.shader_payload(&mut record, paint);
         self.push_step(
             PipelineKind::Strip(paint_frag(paint)),
             paint.blend_mode,
@@ -1367,7 +1429,7 @@ impl<'a> Planner<'a> {
             blend_mode: paint.blend_mode,
             ..Default::default()
         };
-        let effects = LayerEffects::of(paint, current.max_scale());
+        let effects = LayerEffects::of(paint, current.max_scale(), false);
         self.push_layer_frame(rect, 2.0, composite, z, effects);
         inner(self);
         self.close_layer();
@@ -1505,8 +1567,14 @@ impl<'a> Planner<'a> {
             ..Default::default()
         };
         let (glyphs2, current2) = (glyphs.clone(), *current);
+        let style = paint.style.clone();
         self.plan_via_implicit_layer(device_bounds, z, paint.blend_mode, move |p| {
-            let mask = Paint::from_color(Color::WHITE);
+            // The mask must be drawn the way the paint asks — a stroked
+            // gradient headline is stroked coverage, not a filled one.
+            let mask = Paint {
+                style: style.clone(),
+                ..Paint::from_color(Color::WHITE)
+            };
             p.plan_glyph_tiers(font, size, &mask, &glyphs2, &current2, 0.5);
             p.plan_paint_quad(
                 PipelineKind::Draw(paint_frag(&fill)),
@@ -2149,24 +2217,39 @@ impl<'a> Planner<'a> {
         let tint = tinted(paint, self.elision_alpha());
         let mut record = UniformRecord::new(self.ortho(&model, z), tint);
         record.set_local_rect(quad);
-        let bind = self.gradient_payload(&mut record, paint);
+        let bind = self.shader_payload(&mut record, paint);
         (record, bind)
     }
 
-    /// Fill the gradient payload; stop lists past the uniform budget bake
-    /// into a ramp texture whose bind the draw must carry.
-    fn gradient_payload(
+    /// Fill the paint's shader payload, returning the texture bind the draw
+    /// must carry: a baked ramp for stop lists past the uniform budget, the
+    /// image itself for a pattern, nothing for the rest.
+    fn shader_payload(
         &mut self,
         record: &mut UniformRecord,
         paint: &Paint,
     ) -> Option<wgpu::BindGroup> {
-        let shader = paint.shader.as_ref()?;
-        let ramp = (shader.stops().len() > MAX_GRADIENT_STOPS).then(|| {
-            let (view, texels) = self.ramps.ensure(self.device, self.queue, shader.stops());
-            (self.texture_bind(&view), texels)
-        });
-        fill_gradient_payload(record, shader, ramp.as_ref().map(|(_, n)| *n));
-        ramp.map(|(bind, _)| bind)
+        match paint.shader.as_ref()? {
+            Shader::Image {
+                image,
+                sampling,
+                local,
+            } => {
+                fill_pattern_payload(record, image, local);
+                Some(
+                    self.images
+                        .bind_group(self.pipelines.texture_bind_layout(), image, *sampling),
+                )
+            }
+            shader => {
+                let ramp = (shader.stops().len() > MAX_GRADIENT_STOPS).then(|| {
+                    let (view, texels) = self.ramps.ensure(self.device, self.queue, shader.stops());
+                    (self.texture_bind(&view), texels)
+                });
+                fill_gradient_payload(record, shader, ramp.as_ref().map(|(_, n)| *n));
+                ramp.map(|(bind, _)| bind)
+            }
+        }
     }
 
     /// A quad at an ABSOLUTE rect (composites) — origin-shifted like any
@@ -2360,6 +2443,7 @@ fn paint_frag(paint: &Paint) -> Frag {
         Some(Shader::Linear { .. }) => Frag::Linear,
         Some(Shader::Radial { .. }) => Frag::Radial,
         Some(Shader::Sweep { .. }) => Frag::Sweep,
+        Some(Shader::Image { .. }) => Frag::Pattern,
     }
 }
 
@@ -2412,14 +2496,20 @@ impl ConicalSetup {
 
     /// Skia's `SkConicalGradient` decomposition, run once per draw.
     fn solve(center: Point, radius: f32, focus: Option<FocalCircle>) -> Self {
+        // Two different epsilons on purpose, following Impeller: case
+        // SELECTION uses the looser `kEhCloseEnough` (conical_gradient_contents
+        // .cc), because a separation just above the tight one produces a
+        // near-singular 1/length map and fp32 noise with it. The tight
+        // 1/4096 stays for the in-shader constants (gradient.glsl).
+        const CASE_EPSILON: f32 = 1.0e-3;
         const NEARLY_ZERO: f32 = 1.0 / (1 << 12) as f32;
         let start = focus.unwrap_or(FocalCircle::point(center));
         let separation = (center.x - start.center.x).hypot(center.y - start.center.y);
 
         // Concentric circles need no focal machinery: t is just how far the
         // point sits between the two radii.
-        if separation < NEARLY_ZERO {
-            if (radius - start.radius).abs() < NEARLY_ZERO {
+        if separation < CASE_EPSILON {
+            if (radius - start.radius).abs() < CASE_EPSILON {
                 return Self {
                     constants: [CONICAL_EMPTY, 0.0, 0.0, 0.0],
                     ..Self::UNUSED
@@ -2435,7 +2525,7 @@ impl ConicalSetup {
         // Equal radii have no focal point at all — the circles sweep a strip
         // between their common tangents, and `focal` below would divide by
         // zero. Skia and Impeller both carve this out as its own case.
-        if (radius - start.radius).abs() < NEARLY_ZERO {
+        if (radius - start.radius).abs() < CASE_EPSILON {
             let radius_in_unit_space = start.radius / separation;
             return Self {
                 constants: [
@@ -2531,6 +2621,23 @@ fn scale_after(matrix: Matrix, x: f32, y: f32) -> Matrix {
 /// `ramp_texels` = Some(N) when the stops ride a baked texture: the count
 /// lane carries N for the fragment's half-texel mapping, and the uniform
 /// stop arrays stay untouched (the texture IS the ramp).
+/// A pattern evaluates in its own space like a gradient does, but its
+/// payload is only that mapping: `local⁻¹` into pattern pixels, then the
+/// reciprocal image size to reach uv. Tiling and filtering ride the sampler.
+fn fill_pattern_payload(record: &mut UniformRecord, image: &Image, local: &Matrix) {
+    let size = image.size();
+    record.set_payload(
+        PAYLOAD_GEOM,
+        [1.0 / size[0] as f32, 1.0 / size[1] as f32, 0.0, 0.0],
+    );
+    let inverse = local
+        .invert()
+        .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    let [a, b, c, d, tx, ty] = inverse.to_affine();
+    record.set_payload(PAYLOAD_LOCAL, [a, b, c, d]);
+    record.set_payload(PAYLOAD_LOCAL + 1, [tx, ty, 0.0, 0.0]);
+}
+
 fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texels: Option<u32>) {
     let (geom, angle, misc_w) = match shader {
         Shader::Linear { start, end, .. } => ([start.x, start.y, end.x, end.y], 0.0, 0.0),
@@ -2548,11 +2655,14 @@ fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texel
             start_angle,
             ..
         } => ([center.x, center.y, 0.0, 0.0], *start_angle, 0.0),
+        Shader::Image { .. } => unreachable!("patterns fill their own payload"),
     };
     record.set_payload(PAYLOAD_GEOM, geom);
 
-    let (Shader::Linear { local, .. } | Shader::Radial { local, .. } | Shader::Sweep { local, .. }) =
-        shader;
+    let (Shader::Linear { local, .. }
+    | Shader::Radial { local, .. }
+    | Shader::Sweep { local, .. }
+    | Shader::Image { local, .. }) = shader;
     let mut inverse = local
         .invert()
         .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
@@ -2583,7 +2693,8 @@ fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texel
 
     let spread = match shader {
         Shader::Linear { spread, .. } | Shader::Radial { spread, .. } => *spread,
-        Shader::Sweep { .. } => SpreadMode::Pad, // periodic by nature
+        // Sweep is periodic by nature; patterns tile through the sampler.
+        Shader::Sweep { .. } | Shader::Image { .. } => SpreadMode::Pad,
     };
     let stops = shader.stops();
     let count = stops.len().min(MAX_GRADIENT_STOPS);
@@ -2793,11 +2904,15 @@ fn shader_opaque(shader: &Shader) -> bool {
     // cover everything, but proving that per draw buys back only a depth
     // optimisation, so this stays conservative.
     if let Shader::Radial {
+        center,
         focus: Some(circle),
         ..
     } = shader
     {
-        if circle.radius > 0.0 {
+        // A start RADIUS, or a focal point away from the centre, can leave
+        // pixels behind the focal cone uncovered — the shader returns
+        // transparent there, so the draw cannot claim to fill its geometry.
+        if circle.radius > 0.0 || circle.center != *center {
             return false;
         }
     }
@@ -2805,6 +2920,8 @@ fn shader_opaque(shader: &Shader) -> bool {
         Shader::Linear { stops, .. }
         | Shader::Radial { stops, .. }
         | Shader::Sweep { stops, .. } => stops,
+        // A pattern's alpha lives in texels nobody has read at plan time.
+        Shader::Image { .. } => return false,
     };
     stops.iter().all(|stop| stop.color.a >= 1.0)
 }

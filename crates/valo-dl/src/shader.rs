@@ -3,8 +3,11 @@ use valo_geometry::{Color, Matrix, Point};
 /// Paint's color source beyond a solid color — the per-PIXEL families.
 /// Geometry is in the DRAW's local space (the same space its
 /// rect/path lives in), so gradients rotate/scale with their shape.
+// Serialize ONLY, now that a pattern can hold an `Image`: the dump records a
+// texture's identity, and no deserializer can turn that back into a live GPU
+// handle. Same call `Path` already makes.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Shader {
     Linear {
         start: Point,
@@ -36,6 +39,17 @@ pub enum Shader {
         start_angle: f32,
         stops: Vec<GradientStop>,
         /// See `Linear::local`.
+        local: Matrix,
+    },
+    /// An image tiled across the shape — Canvas2D's `createPattern`, Skia's
+    /// `SkImageShader`. `sampling` carries the per-axis tile modes and the
+    /// filter, so tiling costs nothing extra: it rides the sampler's address
+    /// modes exactly as an image draw's does.
+    Image {
+        image: crate::Image,
+        sampling: crate::Sampling,
+        /// See `Linear::local` — the pattern evaluates in its own space, so a
+        /// rotated or scaled tiling stays exact.
         local: Matrix,
     },
 }
@@ -87,11 +101,13 @@ impl FocalCircle {
 pub const MAX_GRADIENT_STOPS: usize = 8;
 
 impl Shader {
+    /// A gradient's stops; empty for families that have none.
     pub fn stops(&self) -> &[GradientStop] {
         match self {
             Shader::Linear { stops, .. }
             | Shader::Radial { stops, .. }
             | Shader::Sweep { stops, .. } => stops,
+            Shader::Image { .. } => &[],
         }
     }
 

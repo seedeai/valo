@@ -834,7 +834,7 @@ fn color_filters_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let size = [660u32, 200u32];
+    let size = [980u32, 200u32];
     let offscreen = Offscreen::new(&device, size);
     let background = Color::rgb(0.07, 0.07, 0.09);
 
@@ -917,9 +917,44 @@ fn color_filters_golden() {
         },
     );
 
+    // 5. TRANSLUCENT, with a matrix that shifts one channel. At alpha 1 a
+    //    missing unpremultiply is invisible, because premultiplied and
+    //    straight colour are the same thing there; at alpha 0.5 it moves every
+    //    channel by ~50 levels. This is the card that makes the conversion
+    //    testable at all.
+    #[rustfmt::skip]
+    let lift_blue = [
+        1.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0, 0.5,
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    b.draw_rect(
+        card(4),
+        &Paint {
+            color: Color::rgba(0.8, 0.2, 0.2, 0.5),
+            color_filter: Some(valo::ColorFilter::Matrix(lift_blue)),
+            ..Default::default()
+        },
+    );
+
+    // 6. Filtered AND blurred. The closed-form blur path has nowhere to run a
+    //    colour filter, so this shape must fall through to the general layer
+    //    route — otherwise the shadow keeps its original colour.
+    b.draw_rrect_radii(
+        card(5),
+        [20.0; 4],
+        &Paint {
+            color: Color::rgb(0.95, 0.25, 0.15),
+            mask_blur: Some(valo::MaskBlur::new(6.0)),
+            color_filter: Some(valo::ColorFilter::Matrix(grayscale)),
+            ..Default::default()
+        },
+    );
+
     let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
     assert_eq!(
-        stats.layers_rendered, 4,
+        stats.layers_rendered, 6,
         "each filtered draw takes exactly one layer"
     );
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
@@ -956,7 +991,122 @@ fn color_filters_golden() {
         "multiply should be the product of the two colours, got {multiplied:?}"
     );
 
+    // Straight colour (0.8, 0.2, 0.2) with blue lifted to 0.7, premultiplied
+    // by 0.5 and composited over the background. Skipping the unpremultiply
+    // would land near (60, 22, 88) instead — far outside any tolerance.
+    let translucent = centre(4);
+    assert!(
+        close(translucent[0], 0.435) && close(translucent[2], 0.395),
+        "a translucent filtered fill must unpremultiply first, got {translucent:?}"
+    );
+
+    // The blurred card's core is fully covered, so its colour is the filter's
+    // answer: grey, not the red it was painted.
+    let blurred = centre(5);
+    assert!(
+        blurred[0].abs_diff(blurred[1]) <= 2 && blurred[1].abs_diff(blurred[2]) <= 2,
+        "a filtered blur must be grey, not its original colour, got {blurred:?}"
+    );
+
     valo_harness::assert_golden(goldens_dir(), "color_filters", size, &rgba);
+}
+
+/// Patterns — Canvas2D's `createPattern`, as a paint rather than a tiling of
+/// separate image draws. The three cards prove the parts that could silently
+/// be wrong: that the tile repeats at all, that the paint's local matrix moves
+/// the pattern rather than the shape, and that a pattern fills a PATH (not
+/// just a rect) the way a gradient does.
+#[test]
+fn patterns_golden() {
+    use valo::{Filter, ImageDesc, PathBuilder, Sampling, Shader, TileMode};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP patterns_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let size = [500u32, 200u32];
+    let offscreen = Offscreen::new(&device, size);
+    let background = Color::rgb(0.07, 0.07, 0.09);
+
+    // A 32px tile: one light quadrant so rotation and offset are legible.
+    let tile = ctx.upload_image(
+        ImageDesc {
+            size: [32, 32],
+            premultiplied: true,
+            mips: false,
+        },
+        &checker_pixels(32, 16),
+    );
+    let repeat = Sampling {
+        filter: Filter::Nearest,
+        tile_x: TileMode::Repeat,
+        tile_y: TileMode::Repeat,
+    };
+    let pattern = |local: valo::Matrix| {
+        Paint::from_shader(Shader::Image {
+            image: tile.clone(),
+            sampling: repeat,
+            local,
+        })
+    };
+
+    let mut b = DisplayListBuilder::new();
+    b.draw_rect(
+        Rect::new(20.0, 20.0, 140.0, 160.0),
+        &pattern(Default::default()),
+    );
+    // The same tile, shifted half a tile and turned — the local matrix acts on
+    // the PATTERN, so the card stays put while its content moves.
+    b.draw_rect(
+        Rect::new(180.0, 20.0, 140.0, 160.0),
+        &pattern(valo::Matrix::translation(16.0, 0.0).then(&valo::Matrix::rotation(0.4))),
+    );
+    // Patterns fill paths, which is the whole point of being a paint.
+    let mut circle = PathBuilder::new();
+    circle.circle((410.0, 100.0), 75.0);
+    b.draw_path(
+        &circle.build(),
+        valo::FillRule::NonZero,
+        &pattern(Default::default()),
+    );
+
+    let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
+    assert_eq!(stats.draws, 3);
+    assert_eq!(
+        stats.layers_rendered, 0,
+        "a pattern is a paint, so it needs no layer"
+    );
+    let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+
+    let at = |x: u32, y: u32| {
+        let i = ((y * size[0] + x) * 4) as usize;
+        [rgba[i], rgba[i + 1], rgba[i + 2]]
+    };
+    // The tile is 32px with 16px quadrants, so two points 32px apart inside
+    // the first card must land on the same texel — that IS the repeat.
+    assert_eq!(
+        at(30, 30),
+        at(62, 62),
+        "one tile apart should be the same texel"
+    );
+    assert_ne!(at(30, 30), at(46, 30), "half a tile apart should differ");
+    // The circle's centre is inside the path, its corner outside: a pattern
+    // must respect coverage rather than filling the bounding box.
+    let corner = at(410 - 70, 100 - 70);
+    assert!(
+        corner
+            .iter()
+            .zip([
+                (background.r * 255.0).round() as u8,
+                (background.g * 255.0).round() as u8,
+                (background.b * 255.0).round() as u8,
+            ])
+            .all(|(got, want)| got.abs_diff(want) <= 2),
+        "outside the circle must stay background, got {corner:?}"
+    );
+
+    valo_harness::assert_golden(goldens_dir(), "patterns", size, &rgba);
 }
 
 /// F3: mask layers. Content = an opaque two-tone card; masks =
