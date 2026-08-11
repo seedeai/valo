@@ -20,7 +20,7 @@ use valo::{
     TextAlign, TextStyle,
 };
 
-fn fonts() -> Arc<FontCollection> {
+fn fonts() -> FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut c = FontCollection::new();
     let latin = c
@@ -51,10 +51,10 @@ fn fonts() -> Arc<FontCollection> {
     c.add_fallback(arabic);
     c.add_fallback(hebrew);
     c.add_fallback(emoji);
-    Arc::new(c)
+    c
 }
 
-fn scene(fonts: &Arc<FontCollection>) -> valo::DisplayList {
+fn scene(fonts: &mut FontCollection) -> valo::DisplayList {
     let ink = Color::rgb(0.92, 0.93, 0.96);
     let accent = Color::rgb(0.95, 0.75, 0.3);
     let body = TextStyle::new("Fira Sans", 22.0, ink);
@@ -163,15 +163,11 @@ fn scene(fonts: &Arc<FontCollection>) -> valo::DisplayList {
 }
 
 fn main() {
-    let fonts = fonts();
-    let scene_fonts = fonts.clone();
+    let mut fonts = fonts();
     valo_harness::run_example(
         "text",
         [660, 700],
         Color::rgb(0.09, 0.1, 0.13),
-        move |ctx| {
-            ctx.set_fonts(fonts.clone());
-            scene(&scene_fonts)
-        },
+        move |ctx| scene(&mut fonts),
     );
 }

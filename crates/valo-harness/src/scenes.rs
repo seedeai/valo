@@ -1,8 +1,6 @@
 //! Stress scenes shared by benches and the perf probe — one source of truth
 //! so "the Figma board" means the same content everywhere.
 
-use std::sync::Arc;
-
 use valo::{
     Color, DisplayList, DisplayListBuilder, DrawParagraphExt, FontCollection, MaskBlur, Paint,
     ParagraphBuilder, Rect, TextStyle,
@@ -13,7 +11,7 @@ use valo::{
 /// real drop shadow), color-swatch tables, frosted headers. Roughly 3k
 /// shapes, 700 text runs, 100 analytic shadows, 16 backdrop strips: the
 /// design editor's worst realistic day.
-pub fn figma_board(fonts: &Arc<FontCollection>) -> DisplayList {
+pub fn figma_board(fonts: &mut FontCollection) -> DisplayList {
     let mut b = DisplayListBuilder::new();
     let mut rng = Lcg(0x5eed);
     for cluster in 0..8 {
@@ -30,7 +28,7 @@ pub fn figma_board(fonts: &Arc<FontCollection>) -> DisplayList {
 
 fn frame(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     rng: &mut Lcg,
     x: f32,
     y: f32,
@@ -65,7 +63,7 @@ fn frame(
 /// 3×4 thumbnail grid + captions (the asset-library frame).
 fn thumbs(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     rng: &mut Lcg,
     x: f32,
     y: f32,
@@ -106,7 +104,7 @@ fn thumbs(
 /// Settings-list frame: rows of label + value + divider.
 fn list(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     rng: &mut Lcg,
     x: f32,
     y: f32,
@@ -143,7 +141,7 @@ fn list(
 /// Dialog-stack frame: cards with REAL drop shadows (analytic rrect blur).
 fn dialogs(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     rng: &mut Lcg,
     x: f32,
     y: f32,
@@ -207,7 +205,7 @@ fn dialogs(
 /// Color-system frame: a table of swatches (Figma's palette pages).
 fn swatches(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     rng: &mut Lcg,
     x: f32,
     y: f32,
@@ -236,7 +234,7 @@ fn swatches(
 
 fn text(
     b: &mut DisplayListBuilder,
-    fonts: &Arc<FontCollection>,
+    fonts: &mut FontCollection,
     s: String,
     px: f32,
     color: Color,

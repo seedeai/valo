@@ -15,7 +15,7 @@ fn fira_sans() -> Vec<u8> {
     std::fs::read(path).expect("fira_sans.ttf")
 }
 
-fn paragraph(text: &str, fonts: &Arc<FontCollection>) -> Paragraph {
+fn paragraph(text: &str, fonts: &mut FontCollection) -> Paragraph {
     let mut builder = ParagraphBuilder::new(fonts);
     builder.add_text(
         text,
@@ -71,28 +71,35 @@ fn demand_loop_reaches_empty() {
 
     let mut collection = FontCollection::new();
     collection.register("Fira Sans", fira_sans()).unwrap();
-    let collection = Arc::new(collection);
 
-    // Fira covers the latin; "Helvetica" and the CJK are demands.
-    let first = paragraph("Hello 中文", &collection);
-    let demand = first.demand();
+    // Fira covers the latin; "Helvetica" and the CJK are demands — the
+    // OUT-OF-BAND loop (no source installed on the collection).
+    let first = paragraph("Hello 中文", &mut collection);
+    let demand = first.demand().clone();
     assert!(demand.families.contains(&"helvetica".to_owned()));
     assert!(demand
         .codepoints
         .iter()
         .any(|&(codepoint, _)| codepoint == '中'));
 
-    let grown = Arc::new(
-        system
-            .satisfy(&collection, demand)
-            .expect("the system answers"),
-    );
+    let grown = system
+        .satisfy(collection.faces(), &demand)
+        .expect("the system answers");
+    assert!(system.satisfy(&grown, &Default::default()).is_none());
+    collection.adopt_faces(grown);
     assert!(
-        paragraph("Hello 中文", &grown).demand().is_empty(),
+        paragraph("Hello 中文", &mut collection).demand().is_empty(),
         "one round of satisfaction resolves everything"
     );
-    // Idempotent: an empty demand grows nothing.
-    assert!(system.satisfy(&grown, &Default::default()).is_none());
+
+    // The LIVE path needs no loop at all: install the source and the
+    // collection answers its own misses mid-shape.
+    let mut live = FontCollection::new();
+    live.add_source(SystemFonts::load());
+    assert!(
+        paragraph("Hello 中文", &mut live).demand().is_empty(),
+        "an installed source resolves during the build itself"
+    );
 }
 
 #[test]

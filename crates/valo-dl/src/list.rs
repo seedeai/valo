@@ -123,7 +123,11 @@ pub enum Op {
     /// the text stack). One op per placed run; `y` sits on the
     /// baseline; the renderer picks bitmap/SDF/path per transform.
     GlyphRun {
-        font: u32,
+        /// The font INSTANCE, carried by value to raster (Skia: text
+        /// blobs hold `sk_sp<SkTypeface>` — nothing is registered
+        /// renderer-side). Serialization keeps only the raster identity.
+        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_font_uid"))]
+        font: std::sync::Arc<valo_text::Font>,
         size: f32,
         /// Blend/alpha/mask-blur apply like any draw; `paint.color` tints
         /// mask glyphs (color glyphs keep their palette, alpha only).
@@ -254,4 +258,12 @@ impl DisplayList {
     pub fn backdrop_group(&self, key: u64) -> Option<&BackdropGroup> {
         self.backdrop_groups.iter().find(|g| g.key == key)
     }
+}
+
+#[cfg(feature = "serde")]
+fn serialize_font_uid<S: serde::Serializer>(
+    font: &std::sync::Arc<valo_text::Font>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u64(font.uid().0)
 }

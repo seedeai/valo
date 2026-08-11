@@ -27,12 +27,11 @@ fn main() {
     .expect("fira_sans.ttf");
     let face = collection.register("Fira Sans", fira).expect("fira parses");
     collection.add_fallback(face);
-    let fonts = Arc::new(collection);
-    context.set_fonts(fonts.clone());
+    let mut fonts = collection;
 
     let labels: Vec<valo::Paragraph> = (0..30)
         .map(|index| {
-            let mut builder = valo::ParagraphBuilder::new(&fonts);
+            let mut builder = valo::ParagraphBuilder::new(&mut fonts);
             let style = valo::TextStyle::new("Fira Sans", 13.0, valo::Color::rgb(0.91, 0.91, 0.94));
             builder.add_text(&format!("icon-label-{index}"), &style);
             let mut paragraph = builder.build();

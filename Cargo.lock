@@ -2555,6 +2555,7 @@ dependencies = [
  "serde",
  "serde_json",
  "valo-geometry",
+ "valo-text",
  "wgpu",
 ]
 

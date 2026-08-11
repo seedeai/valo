@@ -50,7 +50,7 @@ impl Camera {
 }
 
 /// Open a window and run `scene` under a pan/zoom camera until closed.
-pub fn run_pan_zoom(title: &str, fonts: Arc<FontCollection>, scene: Arc<DisplayList>) {
+pub fn run_pan_zoom(title: &str, fonts: FontCollection, scene: Arc<DisplayList>) {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = App {
         title: title.to_owned(),
@@ -63,7 +63,7 @@ pub fn run_pan_zoom(title: &str, fonts: Arc<FontCollection>, scene: Arc<DisplayL
 
 struct App {
     title: String,
-    fonts: Arc<FontCollection>,
+    fonts: FontCollection,
     scene: Arc<DisplayList>,
     state: Option<State>,
 }
@@ -126,8 +126,7 @@ impl ApplicationHandler for App {
         )
         .expect("valo surface");
 
-        let mut ctx = Context::new(device, queue);
-        ctx.set_fonts(self.fonts.clone());
+        let ctx = Context::new(device, queue);
         let mut camera = Camera {
             offset: Point::ZERO,
             zoom: 1.0,
@@ -195,7 +194,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                state.redraw(&self.fonts, &self.scene);
+                state.redraw(&mut self.fonts, &self.scene);
                 state.window.request_redraw(); // free-run: fps stays honest
             }
             _ => {}
@@ -204,7 +203,7 @@ impl ApplicationHandler for App {
 }
 
 impl State {
-    fn redraw(&mut self, fonts: &Arc<FontCollection>, scene: &Arc<DisplayList>) {
+    fn redraw(&mut self, fonts: &mut FontCollection, scene: &Arc<DisplayList>) {
         let [w, _h] = self.surface.size();
         let mut b = DisplayListBuilder::new();
         b.save();

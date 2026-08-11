@@ -35,11 +35,6 @@ impl Context {
     }
 
     /// Register the fonts glyph runs rasterize through (once, after the
-    /// collection is built — it's immutable from then on).
-    pub fn set_fonts(&mut self, fonts: std::sync::Arc<valo_text::FontCollection>) {
-        self.renderer.set_fonts(fonts);
-    }
-
     /// Skip `.notdef` in every text tier so unresolved chars render blank
     /// instead of tofu boxes — OPT-IN; the default draws the box, like
     /// Skia. Pair with [`valo_text::FontDemand`] reporting so hidden
@@ -49,11 +44,6 @@ impl Context {
     }
 
     /// The registered collection (`None` before `set_fonts`) — overlays
-    /// like [`crate::Hud`] lay text out against the frame's own fonts.
-    pub fn fonts(&self) -> Option<&std::sync::Arc<valo_text::FontCollection>> {
-        self.renderer.fonts()
-    }
-
     /// Text tier thresholds (device px): masks < `sdf_min` ≤ SDF <
     /// `path_min` ≤ outlines. Defaults are Skia's; lower `sdf_min` toward
     /// ~18–64 for Skia's zoom-heavy trade (fewer rasters, softer small text).

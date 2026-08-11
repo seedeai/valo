@@ -13,11 +13,15 @@ use valo::{
 use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoRect};
 
 pub struct ValoFontCollection {
-    pub(crate) collection: Arc<FontCollection>,
+    pub(crate) collection: FontCollection,
 }
 
+/// The builder's INPUTS, accumulated across C calls. The real
+/// `ParagraphBuilder` borrows a collection, which a C handle cannot hold,
+/// so the borrow is taken for the duration of `build` instead.
 pub struct ValoParagraphBuilder {
-    builder: ParagraphBuilder,
+    style: valo::ParagraphStyle,
+    spans: Vec<(String, valo::TextStyle)>,
 }
 
 pub struct ValoParagraph {
@@ -82,7 +86,7 @@ pub struct ValoLineMetrics {
 #[no_mangle]
 pub extern "C" fn valo_fonts_new() -> *mut ValoFontCollection {
     into_handle(ValoFontCollection {
-        collection: Arc::new(FontCollection::default()),
+        collection: FontCollection::default(),
     })
 }
 
@@ -116,8 +120,7 @@ pub unsafe extern "C" fn valo_fonts_add(
     let Some(font) = valo::Font::from_bytes(data) else {
         return -1;
     };
-    let (next, id) = handle.collection.with_font(font);
-    handle.collection = Arc::new(next);
+    let id = handle.collection.add(font);
     id.0 as i64
 }
 
@@ -134,9 +137,8 @@ pub unsafe extern "C" fn valo_fonts_add_fallback(fonts: *mut ValoFontCollection,
     if face_id < 0 {
         return;
     }
-    let mut next = (*handle.collection).clone();
-    next.add_fallback(FontId(face_id as u32));
-    handle.collection = Arc::new(next);
+
+    handle.collection.add_fallback(FontId(face_id as u32));
 }
 
 /// Register every face a font file offers: a static font is one face; a
@@ -167,14 +169,14 @@ pub unsafe extern "C" fn valo_fonts_add_instances(
         return 0;
     }
     let count = instances.len() as i32;
-    let mut next = (*handle.collection).clone();
+
     for font in instances {
-        let id = next.add(font);
+        let id = handle.collection.add(font);
         if add_as_fallbacks {
-            next.add_fallback(id);
+            handle.collection.add_fallback(id);
         }
     }
-    handle.collection = Arc::new(next);
+
     count
 }
 
@@ -219,9 +221,11 @@ pub unsafe extern "C" fn valo_paragraph_builder_new(
     let Some(fonts) = (unsafe { borrow(fonts) }) else {
         return std::ptr::null_mut();
     };
-    let mut builder = ParagraphBuilder::new(&fonts.collection);
-    builder.style(paragraph_style(&style));
-    into_handle(ValoParagraphBuilder { builder })
+    let _ = fonts;
+    into_handle(ValoParagraphBuilder {
+        style: paragraph_style(&style),
+        spans: Vec::new(),
+    })
 }
 
 /// # Safety
@@ -249,7 +253,7 @@ pub unsafe extern "C" fn valo_paragraph_builder_add_text(
     let Some(text) = (unsafe { utf8(text_utf8, text_length) }) else {
         return;
     };
-    handle.builder.add_text(text, &text_style(&style));
+    handle.spans.push((text.to_owned(), text_style(&style)));
 }
 
 /// Finish building: consumes the builder handle; the paragraph needs
@@ -260,13 +264,24 @@ pub unsafe extern "C" fn valo_paragraph_builder_add_text(
 #[no_mangle]
 pub unsafe extern "C" fn valo_paragraph_builder_build(
     builder: *mut ValoParagraphBuilder,
+    fonts: *mut ValoFontCollection,
 ) -> *mut ValoParagraph {
     if builder.is_null() {
         return std::ptr::null_mut();
     }
-    let mut boxed = unsafe { Box::from_raw(builder) };
+    let Some(fonts) = (unsafe { borrow_mut(fonts) }) else {
+        return std::ptr::null_mut();
+    };
+    let boxed = unsafe { Box::from_raw(builder) };
+    // The collection answers misses itself during this build (its own
+    // sources); what nothing answered waits in `take_unanswered`.
+    let mut real = ParagraphBuilder::new(&mut fonts.collection);
+    real.style(boxed.style);
+    for (text, style) in &boxed.spans {
+        real.add_text(text, style);
+    }
     into_handle(ValoParagraph {
-        paragraph: boxed.builder.build(),
+        paragraph: real.build(),
     })
 }
 

@@ -684,8 +684,7 @@ fn arcs_and_stroked_text_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [660u32, 340u32];
     let offscreen = Offscreen::new(&device, size);
     let background = Color::rgb(0.07, 0.07, 0.09);
@@ -755,8 +754,8 @@ fn arcs_and_stroked_text_golden() {
     );
 
     // The same word filled and stroked, so the two can be compared.
-    let word = |text: &str| {
-        let mut builder = ParagraphBuilder::new(&fonts);
+    let mut word = |text: &str| {
+        let mut builder = ParagraphBuilder::new(&mut fonts);
         builder.add_text(text, &TextStyle::new("Fira Sans", 72.0, Color::WHITE));
         let mut paragraph = builder.build();
         paragraph.layout(600.0);
@@ -938,24 +937,34 @@ fn color_filters_golden() {
         },
     );
 
-    // 6. Filtered AND blurred. The closed-form blur path has nowhere to run a
-    //    colour filter, so this shape must fall through to the general layer
-    //    route — otherwise the shadow keeps its original colour.
+    // 6. Filtered AND blurred, with a filter that CANNOT fold — so this card
+    //    exercises the two-stage chain: a filter pass whose bucketed output the
+    //    blur then reads. (It also pins the record-time gate: the closed-form
+    //    blur has nowhere to run a filter, so a filtered shape must not take
+    //    it, or the shadow keeps its original colour.)
     b.draw_rrect_radii(
         card(5),
         [20.0; 4],
         &Paint {
             color: Color::rgb(0.95, 0.25, 0.15),
             mask_blur: Some(valo::MaskBlur::new(6.0)),
-            color_filter: Some(valo::ColorFilter::Matrix(grayscale)),
+            color_filter: Some(valo::ColorFilter::Blend(
+                Color::rgb(0.55, 0.55, 0.55),
+                BlendMode::SrcIn,
+            )),
             ..Default::default()
         },
     );
 
     let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
+    // Four, not six: cards 1 and 5 are solid fills with a colour MATRIX, so
+    // the filter folds into the paint colour on the CPU and they never open a
+    // layer. The other four need per-pixel work — a gradient source, two
+    // blends, and a blur. That the golden below is unchanged by this is the
+    // proof the fold is exact rather than merely close.
     assert_eq!(
-        stats.layers_rendered, 6,
-        "each filtered draw takes exactly one layer"
+        stats.layers_rendered, 4,
+        "only the filters that need per-pixel work take a layer"
     );
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
 
@@ -1004,8 +1013,8 @@ fn color_filters_golden() {
     // answer: grey, not the red it was painted.
     let blurred = centre(5);
     assert!(
-        blurred[0].abs_diff(blurred[1]) <= 2 && blurred[1].abs_diff(blurred[2]) <= 2,
-        "a filtered blur must be grey, not its original colour, got {blurred:?}"
+        close(blurred[0], 0.55) && close(blurred[1], 0.55) && close(blurred[2], 0.55),
+        "a filtered blur must be the filter's grey, not its painted red, got {blurred:?}"
     );
 
     valo_harness::assert_golden(goldens_dir(), "color_filters", size, &rgba);
@@ -1863,7 +1872,7 @@ fn m5_styles_golden() {
 
 // ── M6: text end-to-end ─────────────────────────────────────────────────────
 
-fn text_fonts() -> std::sync::Arc<valo::FontCollection> {
+fn text_fonts() -> valo::FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut c = valo::FontCollection::new();
     let latin = c
@@ -1894,10 +1903,10 @@ fn text_fonts() -> std::sync::Arc<valo::FontCollection> {
     c.add_fallback(arabic);
     c.add_fallback(hebrew);
     c.add_fallback(emoji);
-    std::sync::Arc::new(c)
+    c
 }
 
-fn m6_text_scene(fonts: &std::sync::Arc<valo::FontCollection>) -> valo::DisplayList {
+fn m6_text_scene(fonts: &mut valo::FontCollection) -> valo::DisplayList {
     use valo::{DrawParagraphExt, ParagraphBuilder, TextAlign, TextStyle};
     let ink = Color::rgb(0.92, 0.93, 0.96);
     let accent = Color::rgb(0.95, 0.75, 0.3);
@@ -1963,11 +1972,10 @@ fn m6_text_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [660u32, 580u32];
     let offscreen = Offscreen::new(&device, size);
-    let dl = m6_text_scene(&fonts);
+    let dl = m6_text_scene(&mut fonts);
     let stats = ctx.render(&dl, &offscreen.target(Some(Color::rgb(0.09, 0.1, 0.13))));
 
     assert_eq!(stats.draws, dl.draw_count(), "no text culled");
@@ -1983,7 +1991,7 @@ fn m6_text_golden() {
     assert_eq!(again.draws, stats.draws);
 }
 
-fn m6_features_scene(fonts: &std::sync::Arc<valo::FontCollection>) -> valo::DisplayList {
+fn m6_features_scene(fonts: &mut valo::FontCollection) -> valo::DisplayList {
     use valo::{DrawParagraphExt, ParagraphBuilder, ParagraphStyle, TextAlign, TextStyle};
     let body = TextStyle::new("Fira Sans", 16.0, Color::rgb(0.92, 0.93, 0.96));
     let mut b = DisplayListBuilder::new();
@@ -2037,11 +2045,10 @@ fn m6_features_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [660u32, 260u32];
     let offscreen = Offscreen::new(&device, size);
-    let dl = m6_features_scene(&fonts);
+    let dl = m6_features_scene(&mut fonts);
     let stats = ctx.render(&dl, &offscreen.target(Some(Color::rgb(0.09, 0.1, 0.13))));
     assert_eq!(stats.draws, dl.draw_count());
 
@@ -2199,7 +2206,7 @@ fn m7_export_unpremultiplies() {
 
 /// One scene, three runs sized to cross tiers as zoom changes: 16px body,
 /// 80px title, 60px emoji.
-fn m8_tier_scene(fonts: &std::sync::Arc<valo::FontCollection>, zoom: f32) -> valo::DisplayList {
+fn m8_tier_scene(fonts: &mut valo::FontCollection, zoom: f32) -> valo::DisplayList {
     use valo::{DrawParagraphExt, ParagraphBuilder, TextStyle};
     // Origins divide by zoom so DEVICE placement stays fixed — every run
     // stays on the canvas at every zoom, only glyph size changes.
@@ -2241,8 +2248,7 @@ fn m8_text_tiers_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
 
     // Per zoom: expected [mask, sdf, path] run counts. 16px stays mask
     // through 6× (96 dev px); 80px crosses into SDF at 2.5× (200) and
@@ -2258,7 +2264,7 @@ fn m8_text_tiers_golden() {
     for (zoom, expected) in cases {
         let size = [660u32, 520u32];
         let offscreen = Offscreen::new(&device, size);
-        let dl = m8_tier_scene(&fonts, zoom);
+        let dl = m8_tier_scene(&mut fonts, zoom);
         let stats = ctx.render(&dl, &offscreen.target(Some(Color::rgb(0.09, 0.1, 0.13))));
         assert_eq!(stats.text_tiers, expected, "tiers at zoom {zoom}");
 
@@ -2283,14 +2289,13 @@ fn m8_subpixel_golden() {
     };
     use valo::{DrawParagraphExt, ParagraphBuilder, TextStyle};
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [320u32, 120u32];
     let offscreen = Offscreen::new(&device, size);
 
     let mut b = DisplayListBuilder::new();
     for (i, dx) in [0.0f32, 0.25, 0.5, 0.75].into_iter().enumerate() {
-        let mut p = ParagraphBuilder::new(&fonts);
+        let mut p = ParagraphBuilder::new(&mut fonts);
         p.add_text(
             "Illinois 1111",
             &TextStyle::new("Fira Sans", 15.0, Color::rgb(0.92, 0.93, 0.96)),
@@ -2309,7 +2314,7 @@ fn m8_subpixel_golden() {
 
 // ── M9: editor text — shadows, decorations, spacing, height ────────────────
 
-fn m9_scene(fonts: &std::sync::Arc<valo::FontCollection>) -> valo::DisplayList {
+fn m9_scene(fonts: &mut valo::FontCollection) -> valo::DisplayList {
     use valo::{
         Decoration, DecorationKind, DrawParagraphExt, ParagraphBuilder, Point, Shadow, TextStyle,
     };
@@ -2409,11 +2414,10 @@ fn m9_editor_text_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [660u32, 260u32];
     let offscreen = Offscreen::new(&device, size);
-    let dl = m9_scene(&fonts);
+    let dl = m9_scene(&mut fonts);
     let stats = ctx.render(&dl, &offscreen.target(Some(Color::rgb(0.09, 0.1, 0.13))));
 
     // The soft shadow runs the blur-layer route once; the hard shadow and
@@ -2550,8 +2554,7 @@ fn m11_gradient_text_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = text_fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = text_fonts();
     let size = [660u32, 380u32];
     let offscreen = Offscreen::new(&device, size);
 
@@ -2566,8 +2569,8 @@ fn m11_gradient_text_golden() {
         color: Color::WHITE,
         ..Default::default()
     };
-    let paragraph = |text: &str, px: f32| {
-        let mut b = ParagraphBuilder::new(&fonts);
+    let mut paragraph = |text: &str, px: f32| {
+        let mut b = ParagraphBuilder::new(&mut fonts);
         b.add_text(text, &TextStyle::new("Fira Sans", px, Color::WHITE));
         let mut p = b.build();
         p.layout(f32::INFINITY);
@@ -2794,7 +2797,6 @@ fn stats_and_memory_report_observe_the_frame() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(text_fonts());
     let size = [300u32, 200u32];
     let offscreen = Offscreen::new(&device, size);
 
@@ -2924,7 +2926,6 @@ fn m12_perspective_golden() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(text_fonts());
     let size = [360u32, 280u32];
 
     // rotateX(0.6) with perspective entry(3,2) = 0.004, column-major —
@@ -2955,7 +2956,8 @@ fn m12_perspective_golden() {
         Rect::new(-100.0, 10.0, 200.0, 4.0),
         &Paint::from_color(Color::rgb(0.95, 0.6, 0.25)),
     );
-    let mut text = valo::ParagraphBuilder::new(&text_fonts());
+    let mut scene_fonts = text_fonts();
+    let mut text = valo::ParagraphBuilder::new(&mut scene_fonts);
     text.add_text(
         "TILTED",
         &valo::TextStyle::new("Fira Sans", 30.0, Color::rgb(0.95, 0.95, 1.0)),

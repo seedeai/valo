@@ -6,12 +6,11 @@ pub mod interactive;
 pub mod scenes;
 
 use std::path::Path;
-use std::sync::Arc;
 
 /// The fonts every bench/example scene shares (Fira Sans from assets/).
 /// Fira Sans for content, JetBrains Mono (OFL; see
 /// assets/fonts/OFL.txt) for HUDs.
-pub fn example_fonts() -> Arc<valo::FontCollection> {
+pub fn example_fonts() -> valo::FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut fonts = valo::FontCollection::new();
     fonts
@@ -26,7 +25,7 @@ pub fn example_fonts() -> Arc<valo::FontCollection> {
             std::fs::read(format!("{dir}/jetbrains_mono.ttf")).expect("jetbrains_mono.ttf"),
         )
         .expect("register JetBrains Mono");
-    Arc::new(fonts)
+    fonts
 }
 
 /// Bring up a headless native device. `None` when the machine has no adapter

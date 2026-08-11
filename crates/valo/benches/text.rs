@@ -11,12 +11,12 @@ const BODY: &str = "Grumpy wizards make toxic brew for the evil queen and jack; 
     boxing wizards jump quickly over the lazy dog while vexed daft zebras run.";
 
 fn text_benches(c: &mut Criterion) {
-    let fonts = bench_fonts::fonts();
+    let mut fonts = bench_fonts::fonts();
     let style = TextStyle::new("Fira Sans", 17.0, Color::WHITE);
 
     c.bench_function("text/build_reshape", |b| {
         b.iter(|| {
-            let mut p = ParagraphBuilder::new(&fonts);
+            let mut p = ParagraphBuilder::new(&mut fonts);
             p.add_text(BODY, &style);
             let mut p = p.build();
             p.layout(360.0);
@@ -24,7 +24,7 @@ fn text_benches(c: &mut Criterion) {
         })
     });
 
-    let mut para = ParagraphBuilder::new(&fonts);
+    let mut para = ParagraphBuilder::new(&mut fonts);
     para.add_text(BODY, &style);
     let mut para = para.build();
     para.layout(360.0);

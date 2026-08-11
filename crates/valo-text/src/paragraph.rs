@@ -1,11 +1,9 @@
 use std::ops::Range;
-use std::sync::Arc;
 
 use unicode_bidi::BidiInfo;
 use valo_geometry::{Color, Rect};
 
-use crate::font::FontDemand;
-use crate::font::{FontCollection, FontId};
+use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::shape::{shape_runs, ShapedRun};
 use crate::style::{ParagraphStyle, TextStyle};
 use crate::wrap::{place_lines, wrap_lines, Wrapped};
@@ -89,23 +87,21 @@ pub(crate) struct Layout {
 /// way for hosts to snapshot a layout before re-wrapping in place.
 #[derive(Clone)]
 pub struct Paragraph {
-    fonts: Arc<FontCollection>,
+    faces: FaceSet,
     text: String,
     style: ParagraphStyle,
     spans: Vec<(Range<usize>, TextStyle)>,
     shaped: Vec<ShapedRun>,
     layout: Option<Layout>,
+    /// Precomputed at build (glyphless lines measure by the first span's
+    /// style) — the paragraph needs no collection afterwards.
+    empty_metrics: Option<(f32, f32, f32)>,
+    /// What THIS text could not resolve, even after the collection asked
+    /// its sources — the per-paragraph half of the async loop.
     demand: FontDemand,
 }
 
 impl Paragraph {
-    /// What shaping could not resolve (families with no face, uncovered
-    /// codepoints) — the host's font-loading demand signal.
-    /// Fixed at `build`; a rebuilt paragraph re-detects.
-    pub fn demand(&self) -> &FontDemand {
-        &self.demand
-    }
-
     /// Wrap and place against `max_width` (`f32::INFINITY` = never wrap).
     /// Same width twice = cache hit; shaping is NEVER redone here.
     pub fn layout(&mut self, max_width: f32) {
@@ -142,7 +138,7 @@ impl Paragraph {
 
     fn place(&self, bidi: &BidiInfo, wrapped: Wrapped, max_width: f32) -> Layout {
         place_lines(
-            &self.fonts,
+            &self.faces,
             &self.text,
             &self.shaped,
             bidi,
@@ -156,17 +152,7 @@ impl Paragraph {
     /// skparagraph's computeEmptyMetrics: glyphless lines (blank first line,
     /// trailing newline, empty paragraph) measure as the FIRST span's style.
     fn empty_line_metrics(&self) -> Option<(f32, f32, f32)> {
-        let (_, style) = self.spans.first()?;
-        let attrs = crate::font::FontAttrs {
-            weight: style.weight,
-            italic: style.italic,
-        };
-        let id = self.fonts.resolve(&style.families, attrs, ' ');
-        Some(crate::wrap::style_heights(
-            self.fonts.get(id),
-            style.size,
-            style.height,
-        ))
+        self.empty_metrics
     }
 
     /// Placed lines of the most recent `layout` (empty before one).
@@ -214,17 +200,19 @@ impl Paragraph {
 
 /// Collects styled spans; `build()` runs fallback segmentation + shaping
 /// once and hands back the retained [`Paragraph`].
-pub struct ParagraphBuilder {
-    fonts: Arc<FontCollection>,
+pub struct ParagraphBuilder<'a> {
+    fonts: &'a mut FontCollection,
     style: ParagraphStyle,
     text: String,
     spans: Vec<(Range<usize>, TextStyle)>,
 }
 
-impl ParagraphBuilder {
-    pub fn new(fonts: &Arc<FontCollection>) -> Self {
+impl<'a> ParagraphBuilder<'a> {
+    /// Skia's `ParagraphBuilder::make(style, fontCollection, unicode)`:
+    /// the collection comes in at construction and answers misses itself.
+    pub fn new(fonts: &'a mut FontCollection) -> Self {
         Self {
-            fonts: fonts.clone(),
+            fonts,
             style: ParagraphStyle::default(),
             text: String::new(),
             spans: Vec::new(),
@@ -243,18 +231,24 @@ impl ParagraphBuilder {
         self
     }
 
-    /// The expensive tier: segment + shape. Wrapping waits for `layout`.
+    /// The expensive tier: segment + shape, consulting the collection's
+    /// sources at every miss (Skia's one `build()`; what no source could
+    /// answer waits on the collection as `take_unanswered`). The paragraph
+    /// keeps the faces it resolved, so it is self-contained afterwards.
     pub fn build(&mut self) -> Paragraph {
         let bidi = BidiInfo::new(&self.text, None);
         let mut demand = FontDemand::default();
-        let shaped = shape_runs(&self.fonts, &self.text, &self.spans, &bidi, &mut demand);
+        let shaped = shape_runs(self.fonts, &self.text, &self.spans, &bidi, &mut demand);
+        let faces = self.fonts.faces().clone();
+        let empty_metrics = empty_line_metrics(&faces, self.spans.first());
         Paragraph {
-            fonts: self.fonts.clone(),
+            faces,
             text: std::mem::take(&mut self.text),
             style: std::mem::take(&mut self.style),
             spans: std::mem::take(&mut self.spans),
             shaped,
             layout: None,
+            empty_metrics,
             demand,
         }
     }
@@ -287,8 +281,16 @@ impl Paragraph {
         &self.text
     }
 
-    pub fn fonts(&self) -> &Arc<FontCollection> {
-        &self.fonts
+    /// What this paragraph could not resolve (families and codepoints no
+    /// source answered) — a host fetches them and re-registers.
+    pub fn demand(&self) -> &FontDemand {
+        &self.demand
+    }
+
+    /// The faces this paragraph resolved (decoration metrics, glyph
+    /// lookup at record time).
+    pub fn faces(&self) -> &FaceSet {
+        &self.faces
     }
 
     pub fn line_metrics(&self) -> Vec<LineMetrics> {
@@ -470,4 +472,27 @@ fn caret_x(line: &Line, offset: usize) -> f32 {
         }
     }
     before.map_or(line.left, |(_, x)| x)
+}
+
+/// skparagraph's computeEmptyMetrics, resolved once at build: glyphless
+/// lines (blank first line, trailing newline, empty paragraph) measure as
+/// the FIRST span's style.
+fn empty_line_metrics(
+    faces: &FaceSet,
+    first_span: Option<&(std::ops::Range<usize>, TextStyle)>,
+) -> Option<(f32, f32, f32)> {
+    let (_, style) = first_span?;
+    if faces.is_empty() {
+        return None;
+    }
+    let attrs = crate::font::FontAttrs {
+        weight: style.weight,
+        italic: style.italic,
+    };
+    let id = faces.resolve(&style.families, attrs, ' ');
+    Some(crate::wrap::style_heights(
+        faces.get(id),
+        style.size,
+        style.height,
+    ))
 }

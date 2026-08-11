@@ -146,16 +146,6 @@ impl RendererCore {
         &self.device
     }
 
-    /// Register the text stack's fonts — glyph runs rasterize through them.
-    pub fn set_fonts(&mut self, fonts: std::sync::Arc<valo_text::FontCollection>) {
-        self.glyphs.set_fonts(fonts);
-    }
-
-    /// The registered collection (`None` before `set_fonts`).
-    pub fn fonts(&self) -> Option<&std::sync::Arc<valo_text::FontCollection>> {
-        self.glyphs.fonts()
-    }
-
     /// Override the text tier thresholds (see [`crate::TextTiers`]).
     pub fn set_text_tiers(&mut self, tiers: crate::TextTiers) {
         self.glyphs.tiers = tiers;

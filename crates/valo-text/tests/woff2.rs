@@ -2,7 +2,7 @@
 //! WOFF2 registration: icon and web fonts ship brotli-wrapped; the `woff2`
 //! feature unwraps them at the registration boundary.
 
-use valo_text::{Font, FontAttrs, FontCollection};
+use valo_text::{FaceSet, Font, FontAttrs, FontCollection};
 
 fn font_awesome_woff2() -> Vec<u8> {
     let path = concat!(
@@ -26,7 +26,7 @@ fn woff2_bytes_register_and_cover_their_icons() {
     );
 
     // The registered-alias route works on compressed bytes too.
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     let id = collection
         .register("icons", font_awesome_woff2())
         .expect("register unwraps");

@@ -52,8 +52,8 @@ fn stroked_paths(c: &mut Criterion) {
 }
 
 fn paragraph_stamps(c: &mut Criterion) {
-    let fonts = bench_fonts::fonts();
-    let mut para = valo::ParagraphBuilder::new(&fonts);
+    let mut fonts = bench_fonts::fonts();
+    let mut para = valo::ParagraphBuilder::new(&mut fonts);
     para.add_text(
         "The quick brown fox jumps over the lazy dog",
         &valo::TextStyle::new("Fira Sans", 18.0, Color::WHITE),

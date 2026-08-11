@@ -3,8 +3,6 @@
 //! timings, workload, and memory live (the debug HUD every renderer grows;
 //! this one ships in the box so hosts don't reinvent it).
 
-use std::sync::Arc;
-
 use valo_dl::{DisplayListBuilder, Paint};
 use valo_geometry::{Color, Rect};
 use valo_renderer::{MemoryReport, RenderStats};
@@ -43,7 +41,7 @@ impl Hud {
     pub fn draw(
         &self,
         b: &mut DisplayListBuilder,
-        fonts: &Arc<FontCollection>,
+        fonts: &mut FontCollection,
         stats: &RenderStats,
         memory: Option<&MemoryReport>,
         note: &str,

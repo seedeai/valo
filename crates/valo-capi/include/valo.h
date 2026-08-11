@@ -169,12 +169,6 @@ ValoImage *valo_context_import_metal_texture(ValoContext *context,
                                              void *texture, uint32_t width,
                                              uint32_t height, int32_t format);
 
-/* Register the font collection glyph runs rasterize through — without it
- * paragraphs lay out but draw nothing. Call again after adding faces;
- * rendering uses the collection registered at render time. */
-void valo_context_set_fonts(ValoContext *context,
-                            const ValoFontCollection *fonts);
-
 /* Render one frame onto the attached surface and present. False without a
  * surface or when the swapchain skipped the frame (both recoverable). */
 bool valo_context_render(ValoContext *context, const ValoDisplayList *list,
@@ -321,8 +315,11 @@ void valo_paragraph_builder_dispose(ValoParagraphBuilder *builder);
 void valo_paragraph_builder_add_text(ValoParagraphBuilder *builder,
                                      const uint8_t *text_utf8,
                                      size_t text_length, ValoTextStyle style);
-/* Consumes the builder handle; layout before drawing or querying. */
-ValoParagraph *valo_paragraph_builder_build(ValoParagraphBuilder *builder);
+/* Consumes the builder handle; layout before drawing or querying. The
+ * collection resolves any missing families/codepoints from its own
+ * sources during this call, and may grow. */
+ValoParagraph *valo_paragraph_builder_build(ValoParagraphBuilder *builder,
+                                            ValoFontCollection *fonts);
 void valo_paragraph_dispose(ValoParagraph *paragraph);
 
 /* Pass INFINITY for unconstrained width. */
@@ -380,12 +377,11 @@ int32_t valo_fonts_add_system_family(ValoFontCollection *fonts,
 
 /* Answer a paragraph's font demand from the installed fonts: missing
  * families register under their own names, still-uncovered codepoints
- * extend the fallback chain. True when the collection grew — then
- * re-register it with the context, rebuild the paragraph, and lay out
- * again (the demand loop). */
+ * extend the fallback chain. True when the collection grew — rebuild the
+ * affected paragraphs to pick it up. Hosts that install a source on the
+ * collection need none of this: resolution happens during the build. */
 bool valo_fonts_satisfy_demand(ValoFontCollection *fonts,
-                               ValoSystemFonts *system_fonts,
-                               const ValoParagraph *paragraph);
+                               ValoSystemFonts *system_fonts);
 
 #ifdef __cplusplus
 }

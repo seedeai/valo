@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
 
-use crate::font::FontCollection;
+use crate::font::FaceSet;
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
 use crate::shape::{shape_isolated, ShapedRun};
 use crate::style::{ParagraphStyle, TextAlign};
@@ -169,7 +169,7 @@ fn trimmed_end(text: &str, range: &Range<usize>) -> usize {
 /// gaps; a truncated last line gets the style's ellipsis spliced in.
 #[allow(clippy::too_many_arguments)] // the paragraph → layout seam, one call site
 pub fn place_lines(
-    collection: &FontCollection,
+    collection: &FaceSet,
     text: &str,
     runs: &[ShapedRun],
     bidi: &BidiInfo,
@@ -251,7 +251,7 @@ struct PlacedLine {
 /// The ellipsis run for a truncated final line, shaped in the line's
 /// trailing style (font/size/color of its last shaped run).
 fn ellipsis_for(
-    collection: &FontCollection,
+    collection: &FaceSet,
     style: &ParagraphStyle,
     overlapping: &[&ShapedRun],
     truncated: bool,
@@ -269,7 +269,7 @@ fn ellipsis_for(
 }
 
 fn place_line(
-    collection: &FontCollection,
+    collection: &FaceSet,
     text: &str,
     bidi: &BidiInfo,
     runs: &[&ShapedRun],
@@ -409,7 +409,7 @@ fn align_shift(line: &LineSpec, width: f32) -> f32 {
 
 #[allow(clippy::too_many_arguments)] // the line-placement kernel, called once
 fn place_visual_runs(
-    collection: &FontCollection,
+    collection: &FaceSet,
     text: &str,
     bidi: &BidiInfo,
     runs: &[&ShapedRun],
@@ -458,7 +458,7 @@ struct Slice {
 /// cursor. Glyph order within the run is already visual (RTL shaped
 /// backwards) — slicing preserves it.
 fn place_slice(
-    collection: &FontCollection,
+    collection: &FaceSet,
     text: &str,
     run: &ShapedRun,
     slice: &Slice,
@@ -538,7 +538,7 @@ fn ink_bounds(
 /// `cluster` stamps every glyph with the TRUNCATION offset — hit-testing
 /// the "…" then resolves where the cut happened, not paragraph start.
 fn place_isolated(
-    collection: &FontCollection,
+    collection: &FaceSet,
     run: &ShapedRun,
     baseline: f32,
     cluster: usize,
@@ -582,7 +582,7 @@ fn place_isolated(
 }
 
 /// Max-over-runs line metrics (the strut-free rule).
-fn line_heights(collection: &FontCollection, runs: &[&ShapedRun]) -> Option<(f32, f32, f32)> {
+fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<(f32, f32, f32)> {
     let mut out: Option<(f32, f32, f32)> = None;
     for run in runs {
         let font = collection.get(run.font);

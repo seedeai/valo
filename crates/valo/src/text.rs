@@ -1,5 +1,5 @@
 //! The paragraph → display-list seam: valo-text lays out, valo-dl records
-//! plain `GlyphRun` ops (font id + positions — dl never sees the text stack).
+//! plain `GlyphRun` ops (the font instance + positions — Skia's blob shape).
 //! Shadows lower to blurred offset copies UNDER the run (Flutter's
 //! TextStyle.shadows), decorations to rects from the font's own metrics
 //! (skparagraph's Decorations.cpp).
@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use valo_dl::{DisplayListBuilder, GlyphPos, Paint};
 use valo_geometry::{Point, Rect};
-use valo_text::{DecorationKind, Line, Paragraph, PlacedRun};
+use valo_text::{DecorationKind, FaceSet, Line, Paragraph, PlacedRun};
 
 /// Record a laid-out paragraph at `origin` (its top-left corner).
 pub trait DrawParagraphExt {
@@ -41,7 +41,7 @@ impl DrawGlyphRunExt for DisplayListBuilder {
         for line in paragraph.lines() {
             for run in &line.runs {
                 draw_shadows(self, paragraph, run, origin);
-                draw_run(self, run, origin, paint);
+                draw_run(self, paragraph.faces(), run, origin, paint);
                 draw_decoration(self, paragraph, line, run, origin);
             }
         }
@@ -54,7 +54,13 @@ impl DrawParagraphExt for DisplayListBuilder {
         for line in paragraph.lines() {
             for run in &line.runs {
                 draw_shadows(self, paragraph, run, origin);
-                draw_run(self, run, origin, &Paint::from_color(run.color));
+                draw_run(
+                    self,
+                    paragraph.faces(),
+                    run,
+                    origin,
+                    &Paint::from_color(run.color),
+                );
                 draw_decoration(self, paragraph, line, run, origin);
             }
         }
@@ -71,13 +77,18 @@ fn draw_shadows(b: &mut DisplayListBuilder, paragraph: &Paragraph, run: &PlacedR
         };
         b.save();
         b.translate(shadow.offset.x, shadow.offset.y);
-        draw_run(b, run, origin, &paint);
+        draw_run(b, paragraph.faces(), run, origin, &paint);
         b.restore();
     }
-    let _ = paragraph;
 }
 
-fn draw_run(b: &mut DisplayListBuilder, run: &PlacedRun, origin: Point, paint: &Paint) {
+fn draw_run(
+    b: &mut DisplayListBuilder,
+    fonts: &FaceSet,
+    run: &PlacedRun,
+    origin: Point,
+    paint: &Paint,
+) {
     let glyphs: Vec<GlyphPos> = run
         .glyphs
         .iter()
@@ -95,7 +106,13 @@ fn draw_run(b: &mut DisplayListBuilder, run: &PlacedRun, origin: Point, paint: &
         run.ink.width,
         run.ink.height,
     );
-    b.draw_glyph_run(run.font.0, run.size, paint, Arc::new(glyphs), bounds);
+    b.draw_glyph_run(
+        fonts.get_arc(run.font),
+        run.size,
+        paint,
+        Arc::new(glyphs),
+        bounds,
+    );
 }
 
 /// Underline / strike / overline as a rect over the run's x extent, placed
@@ -110,7 +127,7 @@ fn draw_decoration(
     let Some(decoration) = run.decoration else {
         return;
     };
-    let font = paragraph.fonts().get(run.font);
+    let font = paragraph.faces().get(run.font);
     let (offset, thickness) = match decoration.kind {
         DecorationKind::Underline => font.underline_px(run.size),
         DecorationKind::LineThrough => font.strikeout_px(run.size),

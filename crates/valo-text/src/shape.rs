@@ -3,7 +3,7 @@ use std::ops::Range;
 use unicode_bidi::BidiInfo;
 use valo_geometry::Color;
 
-use crate::font::{FontAttrs, FontCollection, FontDemand, FontId};
+use crate::font::{FaceSet, FontAttrs, FontCollection, FontDemand, FontId};
 use crate::style::{Decoration, Shadow, TextStyle};
 
 /// One shaped glyph, unpositioned: advances/offsets in px, `cluster` a byte
@@ -36,7 +36,7 @@ pub struct ShapedRun {
 /// Split the paragraph into uniform runs and shape each. `spans` cover the
 /// text exactly, in order.
 pub fn shape_runs(
-    collection: &FontCollection,
+    collection: &mut FontCollection,
     text: &str,
     spans: &[(Range<usize>, TextStyle)],
     bidi: &BidiInfo,
@@ -44,15 +44,21 @@ pub fn shape_runs(
 ) -> Vec<ShapedRun> {
     let mut runs = Vec::new();
     for (span, style) in spans {
-        // Families the collection has no face for at all — the by-name half
-        // of the demand signal.
+        // The by-name miss point: the collection consults its own sources
+        // (Skia `findTypefaces` walking its managers).
         for name in &style.families {
-            if collection.family(name).is_none() {
+            if !collection.require_family(name) {
                 demand.add_family(name);
             }
         }
         for segment in segment_span(collection, text, span.clone(), style, bidi, demand) {
-            runs.push(shape_segment(collection, text, segment, style, bidi));
+            runs.push(shape_segment(
+                collection.faces(),
+                text,
+                segment,
+                style,
+                bidi,
+            ));
         }
     }
     runs
@@ -68,7 +74,7 @@ struct Segment {
 /// Whitespace sticks to the run it's in when covered (spaces
 /// shouldn't split otherwise-uniform runs). Newlines separate silently.
 fn segment_span(
-    collection: &FontCollection,
+    collection: &mut FontCollection,
     text: &str,
     span: Range<usize>,
     style: &TextStyle,
@@ -87,7 +93,7 @@ fn segment_span(
             (Some(last), true)
                 if last.range.end == at
                     && last.level == level
-                    && collection.get(last.font).covers(ch) =>
+                    && collection.faces().get(last.font).covers(ch) =>
             {
                 last.font
             }
@@ -96,12 +102,19 @@ fn segment_span(
                     weight: style.weight,
                     italic: style.italic,
                 };
-                let (font, covered) = collection.resolve_covered(&style.families, attrs, ch);
-                // Uncovered ink is the by-codepoint half of the demand
-                // signal; whitespace shapes fine in any face.
-                if !covered && !ch.is_whitespace() {
+                // Uncovered ink pulls a face from the sources; a char no
+                // source can render is skipped (its miss is recorded on
+                // the collection for the host's async loader).
+                if !ch.is_whitespace() && !collection.require_codepoint(ch, attrs) {
                     demand.add_codepoint(ch, attrs);
                 }
+                let Some((font, _covered)) =
+                    collection
+                        .faces()
+                        .resolve_covered_opt(&style.families, attrs, ch)
+                else {
+                    continue;
+                };
                 font
             }
         };
@@ -120,7 +133,7 @@ fn segment_span(
 }
 
 fn shape_segment(
-    collection: &FontCollection,
+    collection: &FaceSet,
     text: &str,
     segment: Segment,
     style: &TextStyle,
@@ -177,7 +190,7 @@ fn apply_spacing(glyphs: &mut [ShapedGlyph], text: &str, style: &TextStyle) {
 /// Shape a short standalone string (the ellipsis) in one font/size — no
 /// segmentation, LTR, clusters zeroed (it's placed as an opaque unit).
 pub(crate) fn shape_isolated(
-    collection: &FontCollection,
+    collection: &FaceSet,
     font_id: FontId,
     size: f32,
     color: Color,

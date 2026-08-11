@@ -403,7 +403,7 @@ impl DisplayListBuilder {
     /// paint's mask-blur padding (text shadows spread like any blurred draw).
     pub fn draw_glyph_run(
         &mut self,
-        font: u32,
+        font: std::sync::Arc<valo_text::Font>,
         size: f32,
         paint: &Paint,
         glyphs: Arc<Vec<crate::GlyphPos>>,

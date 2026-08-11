@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use valo_system_fonts::SystemFonts;
-use valo_text::{Font, FontAttrs, FontCollection, FontId, FontSource, ParagraphBuilder, TextStyle};
+use valo_text::{
+    FaceSet, Font, FontAttrs, FontCollection, FontId, FontSource, ParagraphBuilder, TextStyle,
+};
 
 fn attrs(weight: u16) -> FontAttrs {
     FontAttrs {
@@ -14,7 +16,7 @@ fn attrs(weight: u16) -> FontAttrs {
     }
 }
 
-fn describe(collection: &FontCollection, id: FontId) -> String {
+fn describe(collection: &FaceSet, id: FontId) -> String {
     let font = collection.get(id);
     format!(
         "{} — weight {}, italic {}, face_index {}",
@@ -47,7 +49,7 @@ fn main() {
 /// One family, many requests: nearest variant by (style, weight distance).
 fn weight_and_style_matching(system: &mut SystemFonts) {
     println!("── weight/style matching inside one family ──");
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     for font in system.family("Helvetica") {
         collection.add(font);
     }
@@ -72,7 +74,7 @@ fn weight_and_style_matching(system: &mut SystemFonts) {
         .unwrap();
     println!("  request italic     → {}", describe(&collection, italic));
 
-    let mut pingfang = FontCollection::new();
+    let mut pingfang = FaceSet::default();
     for font in system.family("PingFang SC") {
         pingfang.add(font);
     }
@@ -94,7 +96,7 @@ fn weight_and_style_matching(system: &mut SystemFonts) {
 /// The CSS family list: first name that covers the character wins.
 fn family_list_order(system: &mut SystemFonts) {
     println!("── family list order ──");
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     collection.register("Fira Sans", fira_sans()).unwrap();
     for font in system.family("Helvetica") {
         collection.add(font);
@@ -115,7 +117,7 @@ fn family_list_order(system: &mut SystemFonts) {
 /// Localized name-table entries all register as aliases.
 fn localized_aliases(system: &mut SystemFonts) {
     println!("── localized aliases ──");
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     for font in system.family("PingFang SC") {
         collection.add(font);
     }
@@ -141,41 +143,46 @@ fn localized_aliases(system: &mut SystemFonts) {
 /// The real flow: shaping reports, the source answers, relayout is clean.
 fn the_demand_loop(system: &mut SystemFonts) {
     println!("── the demand loop (paragraph: bold \"Hello 中文\" in \"helvetica\") ──");
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     collection.register("Fira Sans", fira_sans()).unwrap();
-    let fonts = Arc::new(collection);
+    let mut fonts = FontCollection::new();
+    fonts.adopt_faces(collection);
 
     let style = |family: &str| {
         let mut style = TextStyle::new(family, 16.0, valo_geometry::Color::BLACK);
         style.weight = 700;
         style
     };
-    let mut builder = ParagraphBuilder::new(&fonts);
+    let mut builder = ParagraphBuilder::new(&mut fonts);
     builder.add_text("Hello 中文", &style("helvetica"));
     let paragraph = builder.build();
     println!("  demand after first layout: {:?}", paragraph.demand());
 
-    let grown = Arc::new(fonts.grown_by(system, paragraph.demand()).unwrap());
+    let grown = fonts.faces().grown_by(system, paragraph.demand()).unwrap();
     println!("  grown collection now holds:");
     for at in fonts.len()..grown.len() {
         println!("    + {}", describe(&grown, FontId(at as u32)));
     }
+    let (resolved, _) = grown.resolve_covered(&["helvetica".to_owned()], attrs(700), 'H');
+    let resolved_name = describe(&grown, resolved);
+    let (cjk, _) = grown.resolve_covered(&["helvetica".to_owned()], attrs(700), '中');
+    let cjk_name = describe(&grown, cjk);
+    let mut grown_collection = FontCollection::new();
+    grown_collection.adopt_faces(grown);
 
-    let mut builder = ParagraphBuilder::new(&grown);
+    let mut builder = ParagraphBuilder::new(&mut grown_collection);
     builder.add_text("Hello 中文", &style("helvetica"));
     let rebuilt = builder.build();
     println!("  demand after relayout: {:?}", rebuilt.demand());
-    let (id, _) = grown.resolve_covered(&["helvetica".to_owned()], attrs(700), 'H');
-    println!("  'H' now renders in: {}", describe(&grown, id));
-    let (id, _) = grown.resolve_covered(&["helvetica".to_owned()], attrs(700), '中');
-    println!("  '中' now renders in: {}", describe(&grown, id));
+    println!("  'H' now renders in: {resolved_name}");
+    println!("  '中' now renders in: {cjk_name}");
     println!();
 }
 
 /// Nothing installed covers it: tofu face + the demand records it.
 fn true_tofu(system: &mut SystemFonts) {
     println!("── true tofu (U+13000 EGYPTIAN HIEROGLYPH A001) ──");
-    let mut collection = FontCollection::new();
+    let mut collection = FaceSet::default();
     collection.register("Fira Sans", fira_sans()).unwrap();
     let answer = system.face_for_codepoint('\u{13000}', attrs(400));
     println!("  system answer: {:?}", answer.as_ref().map(Font::family));

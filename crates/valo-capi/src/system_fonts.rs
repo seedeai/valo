@@ -3,13 +3,11 @@
 //! pre-registration. Faces register into a [`ValoFontCollection`] exactly
 //! like embedder-supplied bytes, so nothing downstream can tell them apart.
 
-use std::sync::Arc;
-
 use valo::FontSource;
 use valo_system_fonts::SystemFonts;
 
 use crate::text::utf8;
-use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoFontCollection, ValoParagraph};
+use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoFontCollection};
 
 pub struct ValoSystemFonts {
     fonts: SystemFonts,
@@ -70,39 +68,40 @@ pub unsafe extern "C" fn valo_fonts_add_system_family(
         return 0;
     }
     let count = faces.len() as i32;
-    let mut next = (*fonts.collection).clone();
     for face in faces {
-        next.add(face);
+        fonts.collection.add(face);
     }
-    fonts.collection = Arc::new(next);
     count
 }
 
-/// Answer a paragraph's font demand from the installed fonts: missing
-/// families register under their own names, still-uncovered codepoints
-/// extend the fallback chain. True when the collection grew — then
-/// re-register it with the context, rebuild the paragraph, and lay out
-/// again (the demand loop).
+/// Answer whatever the last builds could NOT resolve from the installed
+/// system fonts: missing families register under their own names,
+/// still-uncovered codepoints extend the fallback chain. True when the
+/// collection grew — rebuild the affected paragraphs to pick it up.
+///
+/// (A host can skip this entirely by installing a source on the
+/// collection: then resolution happens mid-shape and nothing is left
+/// unanswered.)
 ///
 /// # Safety
-/// All three must be live handles (or null → false).
+/// Both must be live handles (or null → false).
 #[no_mangle]
 pub unsafe extern "C" fn valo_fonts_satisfy_demand(
     fonts: *mut ValoFontCollection,
     system_fonts: *mut ValoSystemFonts,
-    paragraph: *const ValoParagraph,
 ) -> bool {
-    let (Some(fonts), Some(system), Some(paragraph)) = (
-        unsafe { borrow_mut(fonts) },
-        unsafe { borrow_mut(system_fonts) },
-        unsafe { borrow(paragraph) },
-    ) else {
+    let (Some(fonts), Some(system)) = (unsafe { borrow_mut(fonts) }, unsafe {
+        borrow_mut(system_fonts)
+    }) else {
         return false;
     };
-    let demand = paragraph.paragraph.demand();
-    let Some(next) = system.fonts.satisfy(&fonts.collection, demand) else {
+    let demand = fonts.collection.take_unanswered();
+    if demand.is_empty() {
+        return false;
+    }
+    let Some(next) = system.fonts.satisfy(fonts.collection.faces(), &demand) else {
         return false;
     };
-    fonts.collection = Arc::new(next);
+    fonts.collection.adopt_faces(next);
     true
 }

@@ -8,6 +8,7 @@ use valo_dl::{
     BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, FocalCircle, GlyphPos, Image, MaskBlur,
     MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
 };
+use valo_text::Font;
 
 use valo_geometry::{
     dash_contours, local_tolerance, stroke_strip, Color, FillRule, Matrix, Path, Point, Rect,
@@ -240,6 +241,10 @@ struct SharedBlur {
 struct FilteredTexture {
     view: wgpu::TextureView,
     uv_max: [f32; 2],
+    /// The target's own dimensions — bucketed, so bigger than the region
+    /// actually used. A pass that reads this texture must scale its uv by
+    /// THESE, not by the layer's size.
+    size: [u32; 2],
 }
 
 /// What kind of scope each recorded Save/SaveLayer opened — replay's Restore
@@ -497,7 +502,7 @@ impl<'a> Planner<'a> {
                         let z = self.slot_z(*slot);
                         let current = *stack.last().unwrap();
                         let device = base.map_rect(bounds);
-                        self.plan_glyph_run(*font, *size, paint, glyphs, device, &current, z);
+                        self.plan_glyph_run(font, *size, paint, glyphs, device, &current, z);
                     }
                 }
                 Op::ClipPath {
@@ -867,12 +872,13 @@ impl<'a> Planner<'a> {
             .effects
             .color_filter
             .map(|filter| self.push_color_filter(&info.resolve, size, whole, filter));
-        let sharp = recoloured
-            .as_ref()
-            .map_or_else(|| info.resolve.clone(), |out| out.view.clone());
+        let (sharp, sharp_size) = recoloured.as_ref().map_or_else(
+            || (info.resolve.clone(), size),
+            |out| (out.view.clone(), out.size),
+        );
         match info.effects.blur {
             None => recoloured.expect("empty effects returned early"),
-            Some(mask) => self.blur_layer(&sharp, size, whole, mask),
+            Some(mask) => self.blur_layer(&sharp, sharp_size, whole, mask),
         }
     }
 
@@ -894,15 +900,9 @@ impl<'a> Planner<'a> {
         };
         match blurred {
             None => self.push_color_filter(&info.resolve, size, whole, filter),
-            Some(blurred) => {
-                // The blur landed in a bucketed target, so the colour pass
-                // reads it at its own size rather than the layer's.
-                let bucket = [
-                    (whole.width / blurred.uv_max[0]).round() as u32,
-                    (whole.height / blurred.uv_max[1]).round() as u32,
-                ];
-                self.push_color_filter(&blurred.view, bucket, whole, filter)
-            }
+            // The blur landed in a bucketed target, so the colour pass reads
+            // it at THAT size, not the layer's.
+            Some(blurred) => self.push_color_filter(&blurred.view, blurred.size, whole, filter),
         }
     }
 
@@ -1060,6 +1060,8 @@ impl<'a> Planner<'a> {
     // ── draw planning (z decided by the caller) ─────────────────────────────
 
     fn plan_rect(&mut self, rect: &Rect, paint: &Paint, current: &Matrix, z: f32) {
+        let folded = folded_paint(paint);
+        let paint = folded.as_ref().unwrap_or(paint);
         self.stats.draws += 1;
         if needs_effect_layer(paint) {
             // Only shader paints land here blurred (solid ones recorded the
@@ -1121,6 +1123,8 @@ impl<'a> Planner<'a> {
         current: &Matrix,
         z: f32,
     ) {
+        let folded = folded_paint(paint);
+        let paint = folded.as_ref().unwrap_or(paint);
         self.stats.draws += 1;
         let bounds = path.bounds();
         if needs_effect_layer(paint) {
@@ -1510,7 +1514,7 @@ impl<'a> Planner<'a> {
     #[allow(clippy::too_many_arguments)] // mirrors the GlyphRun op 1:1
     fn plan_glyph_run(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         size: f32,
         paint: &Paint,
         glyphs: &Arc<Vec<GlyphPos>>,
@@ -1521,15 +1525,17 @@ impl<'a> Planner<'a> {
         self.stats.draws += 1;
         if needs_effect_layer(paint) {
             let (paint2, glyphs2, current2) = (plain(paint), glyphs.clone(), *current);
+            let font = font.clone();
             self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
-                p.plan_glyph_tiers(font, size, &paint2, &glyphs2, &current2, 0.5);
+                p.plan_glyph_tiers(&font, size, &paint2, &glyphs2, &current2, 0.5);
             });
             return;
         }
         if let Some(mode) = advanced_mode(paint) {
             let (paint2, glyphs2, current2) = (plain(paint), glyphs.clone(), *current);
+            let font = font.clone();
             self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
-                p.plan_glyph_tiers(font, size, &paint2, &glyphs2, &current2, 0.5);
+                p.plan_glyph_tiers(&font, size, &paint2, &glyphs2, &current2, 0.5);
             });
             return;
         }
@@ -1547,7 +1553,7 @@ impl<'a> Planner<'a> {
     #[allow(clippy::too_many_arguments)]
     fn plan_gradient_glyphs(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         size: f32,
         paint: &Paint,
         glyphs: &Arc<Vec<GlyphPos>>,
@@ -1591,7 +1597,7 @@ impl<'a> Planner<'a> {
     /// real outlines beyond. Every tier respects the transform.
     fn plan_glyph_tiers(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         size: f32,
         paint: &Paint,
         glyphs: &[GlyphPos],
@@ -1640,7 +1646,7 @@ impl<'a> Planner<'a> {
     #[allow(clippy::too_many_arguments)] // mirrors the GlyphRun op + tier
     fn plan_glyph_quads(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         px: f32,
         sdf: bool,
         size: f32,
@@ -1665,9 +1671,9 @@ impl<'a> Planner<'a> {
             // Under a text-raster hold, a missing size draws through the
             // glyph's nearest resident size, scaled — the
             // per-glyph raster→quad scale makes the mixed-size batch free.
-            let (got_px, page, entry) = match self.glyphs.entry(font, g.id, px, sdf, 0) {
+            let (got_px, page, entry) = match self.glyphs.entry(font.uid().0, g.id, px, sdf, 0) {
                 Some((page, entry)) => (px, page, entry),
-                None => match self.glyphs.resident_stand_in(font, g.id, sdf, px) {
+                None => match self.glyphs.resident_stand_in(font.uid().0, g.id, sdf, px) {
                     Some(hit) => hit,
                     None => continue,
                 },
@@ -1685,7 +1691,7 @@ impl<'a> Planner<'a> {
     #[allow(clippy::too_many_arguments)]
     fn plan_glyph_quads_snapped(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         scale: f32,
         size: f32,
         paint: &Paint,
@@ -1716,9 +1722,9 @@ impl<'a> Planner<'a> {
             // Texels 1:1 when the exact scale is resident; under a hold, a
             // stand-in from another scale stretches (bitmaps
             // re-raster per quantize step, the very churn the hold skips).
-            let (scale, page, entry) = match self.glyphs.entry(font, id, px, false, phase) {
+            let (scale, page, entry) = match self.glyphs.entry(font.uid().0, id, px, false, phase) {
                 Some((page, entry)) => (1.0, page, entry),
-                None => match self.glyphs.resident_stand_in(font, id, false, px) {
+                None => match self.glyphs.resident_stand_in(font.uid().0, id, false, px) {
                     Some((got_px, page, entry)) => (px / got_px, page, entry),
                     None => continue,
                 },
@@ -1764,7 +1770,7 @@ impl<'a> Planner<'a> {
     /// like any shape — no atlas entry could stay sharp this large.
     fn plan_glyph_outlines(
         &mut self,
-        font: u32,
+        font: &Arc<Font>,
         size: f32,
         paint: &Paint,
         glyphs: &[GlyphPos],
@@ -2001,6 +2007,7 @@ impl<'a> Planner<'a> {
         FilteredTexture {
             view: v_view,
             uv_max: [work[0] / v_bucket[0], work[1] / v_bucket[1]],
+            size: [v_bucket[0] as u32, v_bucket[1] as u32],
         }
     }
 
@@ -2082,6 +2089,7 @@ impl<'a> Planner<'a> {
         FilteredTexture {
             view: target.view,
             uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
+            size: bucket,
         }
     }
 
@@ -2123,6 +2131,7 @@ impl<'a> Planner<'a> {
         FilteredTexture {
             view: target.view,
             uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
+            size: bucket,
         }
     }
 
@@ -3001,6 +3010,26 @@ fn plain(paint: &Paint) -> Paint {
         color_filter: None,
         ..paint.clone()
     }
+}
+
+/// A solid paint absorbs a colour MATRIX on the CPU, the way Impeller folds
+/// one before reaching for a filter pass. That skips the layer, the pass and
+/// the composite entirely, and it keeps a matrix that writes alpha from
+/// flooding the layer's padded bounds — the filtered shape stays the shape.
+///
+/// `None` when the filter has to run per pixel: a shader or image source has
+/// no single colour to fold, and a blend needs the drawn pixels as its
+/// destination.
+fn folded_paint(paint: &Paint) -> Option<Paint> {
+    let filter = paint.color_filter?;
+    if paint.shader.is_some() {
+        return None;
+    }
+    Some(Paint {
+        color: filter.folded_into(paint.color)?,
+        color_filter: None,
+        ..paint.clone()
+    })
 }
 
 /// Does this paint need its own layer for the renderer to apply its effects?

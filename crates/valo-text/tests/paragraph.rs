@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use valo_geometry::Color;
 use valo_text::{
-    FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer, TextAlign, TextStyle,
+    FaceSet, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer, TextAlign,
+    TextStyle,
 };
 mod valo {
     pub use valo_geometry::Point;
 }
 
-fn fonts() -> Arc<FontCollection> {
+fn fonts() -> FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut c = FontCollection::new();
     let latin = c
@@ -35,14 +36,14 @@ fn fonts() -> Arc<FontCollection> {
     c.add_fallback(latin);
     c.add_fallback(arabic);
     c.add_fallback(hebrew);
-    Arc::new(c)
+    c
 }
 
 fn style(size: f32) -> TextStyle {
     TextStyle::new("Fira Sans", size, Color::BLACK)
 }
 
-fn laid_out(c: &Arc<FontCollection>, text: &str, width: f32) -> Paragraph {
+fn laid_out(c: &mut FontCollection, text: &str, width: f32) -> Paragraph {
     let mut b = ParagraphBuilder::new(c);
     b.add_text(text, &style(20.0));
     let mut p = b.build();
@@ -52,8 +53,8 @@ fn laid_out(c: &Arc<FontCollection>, text: &str, width: f32) -> Paragraph {
 
 #[test]
 fn shapes_and_places_latin() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text("Hello valo", &style(24.0));
     let mut p = b.build();
     p.layout(f32::INFINITY);
@@ -67,20 +68,20 @@ fn shapes_and_places_latin() {
 
 #[test]
 fn wraps_greedily_and_respects_width() {
-    let c = fonts();
-    let p = laid_out(&c, "the quick brown fox jumps over the lazy dog", 180.0);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "the quick brown fox jumps over the lazy dog", 180.0);
     assert!(p.lines().len() >= 3);
     for line in p.lines() {
         assert!(line.width <= 180.5, "line overflows: {}", line.width);
     }
-    let p2 = laid_out(&c, "one\ntwo", f32::INFINITY);
+    let p2 = laid_out(&mut c, "one\ntwo", f32::INFINITY);
     assert_eq!(p2.lines().len(), 2);
 }
 
 #[test]
 fn relayout_rewraps_without_reshaping() {
-    let c = fonts();
-    let mut p = laid_out(&c, "the quick brown fox jumps over the lazy dog", 400.0);
+    let mut c = fonts();
+    let mut p = laid_out(&mut c, "the quick brown fox jumps over the lazy dog", 400.0);
     let wide = p.lines().len();
     p.layout(150.0);
     assert!(p.lines().len() > wide, "narrower width wraps more");
@@ -90,8 +91,8 @@ fn relayout_rewraps_without_reshaping() {
 
 #[test]
 fn update_color_is_a_repaint() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text("red ", &style(20.0));
     b.add_text(
         "blue",
@@ -118,8 +119,8 @@ fn update_color_is_a_repaint() {
 
 #[test]
 fn max_lines_truncates_and_ellipsis_fits() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.style(ParagraphStyle {
         max_lines: Some(2),
         ellipsis: Some("…".to_owned()),
@@ -147,8 +148,8 @@ fn max_lines_truncates_and_ellipsis_fits() {
 
 #[test]
 fn justify_stretches_word_gaps() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.style(ParagraphStyle {
         align: TextAlign::Justify,
         ..Default::default()
@@ -180,8 +181,8 @@ fn justify_stretches_word_gaps() {
 
 #[test]
 fn fallback_splits_runs_per_script() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text("AB سلام CD", &style(20.0));
     let mut p = b.build();
     p.layout(f32::INFINITY);
@@ -193,8 +194,8 @@ fn fallback_splits_runs_per_script() {
 
 #[test]
 fn rtl_paragraph_reorders_visually() {
-    let c = fonts();
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text(
         "שלום ABC עולם",
         &TextStyle::new("Noto Sans Hebrew", 20.0, Color::BLACK),
@@ -214,12 +215,12 @@ fn rtl_paragraph_reorders_visually() {
 
 #[test]
 fn align_shifts_lines() {
-    let c = fonts();
-    let mut left = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let mut left = ParagraphBuilder::new(&mut c);
     left.add_text("hi", &style(20.0));
     let mut l = left.build();
     l.layout(300.0);
-    let mut right = ParagraphBuilder::new(&c);
+    let mut right = ParagraphBuilder::new(&mut c);
     right.style(ParagraphStyle {
         align: TextAlign::Right,
         ..Default::default()
@@ -234,22 +235,22 @@ fn align_shifts_lines() {
 
 #[test]
 fn rasterizes_alpha_sdf_and_path() {
-    let c = fonts();
+    let mut c = fonts();
     let font = c.family("Fira Sans").unwrap();
     let glyph = c.get(font).glyph_for('g').unwrap();
     let mut r = Rasterizer::new();
 
-    let alpha = r.alpha(&c, font, glyph, 32.0, 0.0).unwrap();
+    let alpha = r.alpha(c.get(font), glyph, 32.0, 0.0).unwrap();
     assert!(alpha.width > 5 && alpha.height > 5);
     assert!(alpha.data.iter().any(|&v| v > 200));
 
-    let sdf = r.sdf(&c, font, glyph, 32.0).unwrap();
+    let sdf = r.sdf(c.get(font), glyph, 32.0).unwrap();
     // 2×-supersampled + padded, then halved: within a px of alpha + 2·pad.
     assert!(sdf.width.abs_diff(alpha.width + 2 * valo_text::SDF_PAD) <= 1);
     assert!(sdf.data.iter().any(|&v| v > 140), "inside rises above 0.5");
     assert!(sdf.data.iter().any(|&v| v < 50), "far outside < 0.5");
 
-    let path = valo_text::glyph_path(&c, font, glyph, 64.0).unwrap();
+    let path = valo_text::glyph_path(c.get(font), glyph, 64.0).unwrap();
     let bounds = path.bounds();
     assert!(bounds.width > 20.0 && bounds.height > 20.0);
     assert!(
@@ -261,21 +262,21 @@ fn rasterizes_alpha_sdf_and_path() {
 #[test]
 fn color_emoji_rasterizes_rgba() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let emoji = c
         .register(
             "Noto Color Emoji",
             std::fs::read(format!("{dir}/noto_color_emoji_subset.ttf")).unwrap(),
         )
         .unwrap();
-    let c = Arc::new(c);
+    let c = c;
     let glyph = c
         .get(emoji)
         .glyph_for('🚀')
         .expect("subset covers the rocket");
     let mut r = Rasterizer::new();
     let img = r
-        .color(&c, emoji, glyph, 32.0)
+        .color(c.get(emoji), glyph, 32.0)
         .expect("CBDT strike renders");
     assert!(img.width > 10 && img.height > 10);
     assert_eq!(
@@ -294,9 +295,9 @@ fn color_emoji_rasterizes_rgba() {
 
 #[test]
 fn letter_spacing_widens_and_wraps_earlier() {
-    let c = fonts();
-    let plain = laid_out(&c, "space me out", f32::INFINITY);
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let plain = laid_out(&mut c, "space me out", f32::INFINITY);
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text(
         "space me out",
         &TextStyle {
@@ -312,9 +313,9 @@ fn letter_spacing_widens_and_wraps_earlier() {
 
 #[test]
 fn height_multiplier_scales_lines() {
-    let c = fonts();
-    let plain = laid_out(&c, "one\ntwo", f32::INFINITY);
-    let mut b = ParagraphBuilder::new(&c);
+    let mut c = fonts();
+    let plain = laid_out(&mut c, "one\ntwo", f32::INFINITY);
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text(
         "one\ntwo",
         &TextStyle {
@@ -336,7 +337,7 @@ fn height_multiplier_scales_lines() {
 fn weight_matching_picks_nearest_variant() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let bytes = std::fs::read(format!("{dir}/fira_sans.ttf")).unwrap();
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let regular = c
         .register_with(
             "Fira",
@@ -391,12 +392,12 @@ fn weight_matching_picks_nearest_variant() {
 
 #[test]
 fn intrinsic_widths_bound_the_layout() {
-    let c = fonts();
-    let p = laid_out(&c, "the quick brown fox jumps", 120.0);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "the quick brown fox jumps", 120.0);
     assert!(p.min_intrinsic_width() > 0.0);
     assert!(p.max_intrinsic_width() > p.min_intrinsic_width());
     // min = widest word; every line must fit at min width when laid out there.
-    let mut b = ParagraphBuilder::new(&c);
+    let mut b = ParagraphBuilder::new(&mut c);
     b.add_text("the quick brown fox jumps", &style(20.0));
     let mut narrow = b.build();
     narrow.layout(p.min_intrinsic_width() + 0.5);
@@ -407,8 +408,8 @@ fn intrinsic_widths_bound_the_layout() {
 
 #[test]
 fn caret_and_position_round_trip() {
-    let c = fonts();
-    let p = laid_out(&c, "hello world", f32::INFINITY);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "hello world", f32::INFINITY);
     // Caret advances monotonically through the text.
     let xs: Vec<f32> = (0..=5).map(|i| p.caret_for_offset(i).x).collect();
     assert!(xs.windows(2).all(|w| w[1] > w[0]), "{xs:?}");
@@ -424,8 +425,8 @@ fn caret_and_position_round_trip() {
 
 #[test]
 fn rects_for_range_cover_selection() {
-    let c = fonts();
-    let p = laid_out(&c, "the quick brown fox", 90.0);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "the quick brown fox", 90.0);
     assert!(p.lines().len() >= 2);
     let rects = p.rects_for_range(4..15); // "quick brown" across lines
     assert!(rects.len() >= 2, "one box per line: {rects:?}");
@@ -435,8 +436,8 @@ fn rects_for_range_cover_selection() {
 
 #[test]
 fn word_boundary_finds_words() {
-    let c = fonts();
-    let p = laid_out(&c, "hello brave world", f32::INFINITY);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "hello brave world", f32::INFINITY);
     assert_eq!(p.word_boundary(7), 6..11); // inside "brave"
     assert_eq!(p.word_boundary(0), 0..5);
 }
@@ -444,8 +445,8 @@ fn word_boundary_finds_words() {
 // ── editor-correctness regressions ──────────────────────────────────────────
 
 fn simple(text: &str, size: f32, max_width: f32) -> Paragraph {
-    let fonts = fonts();
-    let mut b = ParagraphBuilder::new(&fonts);
+    let mut fonts = fonts();
+    let mut b = ParagraphBuilder::new(&mut fonts);
     b.add_text(text, &TextStyle::new("Fira Sans", size, Color::WHITE));
     let mut p = b.build();
     p.layout(max_width);
@@ -456,8 +457,8 @@ fn simple(text: &str, size: f32, max_width: f32) -> Paragraph {
 /// overshooting max_lines and losing the ellipsis.
 #[test]
 fn max_lines_never_overshoots() {
-    let fonts = fonts();
-    let mut b = ParagraphBuilder::new(&fonts);
+    let mut fonts = fonts();
+    let mut b = ParagraphBuilder::new(&mut fonts);
     b.style(ParagraphStyle {
         max_lines: Some(1),
         ellipsis: Some("…".into()),
@@ -538,8 +539,8 @@ fn caret_never_splits_a_grapheme() {
 /// logical progress moves the caret left.
 #[test]
 fn rtl_caret_leads_on_the_right() {
-    let fonts = fonts();
-    let mut b = ParagraphBuilder::new(&fonts);
+    let mut fonts = fonts();
+    let mut b = ParagraphBuilder::new(&mut fonts);
     let text = "سلام";
     b.add_text(
         text,

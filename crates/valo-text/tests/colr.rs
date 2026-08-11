@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
-use valo_text::{Font, FontCollection, Rasterizer};
+use valo_text::{FaceSet, Font, Rasterizer};
 
-fn emoji_collection() -> (FontCollection, valo_text::FontId, u32) {
+fn emoji_collection() -> (FaceSet, valo_text::FontId, u32) {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../assets/fonts/noto_color_emoji_colrv1_subset.ttf"
@@ -15,7 +15,7 @@ fn emoji_collection() -> (FontCollection, valo_text::FontId, u32) {
     let font = Font::from_bytes(std::fs::read(path).unwrap()).unwrap();
     assert_eq!(font.family(), "Noto Color Emoji");
     let glyph = font.glyph_for('🍶').expect("subset covers the bottle");
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let id = c.add(font);
     (c, id, glyph)
 }
@@ -25,7 +25,7 @@ fn colrv1_glyph_rasters_in_color() {
     let (fonts, id, glyph) = emoji_collection();
     let mut raster = Rasterizer::new();
     let image = raster
-        .color(&fonts, id, glyph, 64.0)
+        .color(fonts.get(id), glyph, 64.0)
         .expect("COLRv1 paints via the skrifa painter");
 
     assert!(image.width > 16 && image.height > 16, "plausible box");
@@ -61,8 +61,8 @@ fn colrv1_glyph_rasters_in_color() {
 fn colrv1_scales_with_px() {
     let (fonts, id, glyph) = emoji_collection();
     let mut raster = Rasterizer::new();
-    let small = raster.color(&fonts, id, glyph, 32.0).unwrap();
-    let large = raster.color(&fonts, id, glyph, 128.0).unwrap();
+    let small = raster.color(fonts.get(id), glyph, 32.0).unwrap();
+    let large = raster.color(fonts.get(id), glyph, 128.0).unwrap();
     assert!(large.width >= small.width * 3, "vector: box scales with px");
     assert!(large.height >= small.height * 3);
 }
@@ -74,7 +74,7 @@ fn colrv1_scales_with_px() {
 fn colr_glyphs_report_no_outline() {
     let (fonts, id, glyph) = emoji_collection();
     assert!(
-        valo_text::glyph_path(&fonts, id, glyph, 200.0).is_none(),
+        valo_text::glyph_path(fonts.get(id), glyph, 200.0).is_none(),
         "empty COLR outline must be None, not Some(empty)"
     );
 }

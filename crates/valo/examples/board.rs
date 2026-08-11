@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 fn main() {
-    let fonts = valo_harness::example_fonts();
-    let board = Arc::new(valo_harness::scenes::figma_board(&fonts));
+    let mut fonts = valo_harness::example_fonts();
+    let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     valo_harness::interactive::run_pan_zoom("valo — board", fonts, board);
 }

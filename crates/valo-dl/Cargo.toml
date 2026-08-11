@@ -15,6 +15,7 @@ serde = ["dep:serde", "valo-geometry/serde"]
 
 [dependencies]
 valo-geometry = { workspace = true }
+valo-text = { workspace = true }
 # Resource HANDLES only (Image wraps a texture) — recording never needs a device.
 wgpu = { workspace = true }
 serde = { workspace = true, optional = true }

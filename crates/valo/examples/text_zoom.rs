@@ -16,7 +16,7 @@ use valo::{
     Color, DisplayListBuilder, DrawParagraphExt, FontCollection, ParagraphBuilder, TextStyle,
 };
 
-fn fonts() -> Arc<FontCollection> {
+fn fonts() -> FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut c = FontCollection::new();
     let latin = c
@@ -33,10 +33,10 @@ fn fonts() -> Arc<FontCollection> {
         .unwrap();
     c.add_fallback(latin);
     c.add_fallback(emoji);
-    Arc::new(c)
+    c
 }
 
-fn card(b: &mut DisplayListBuilder, fonts: &Arc<FontCollection>, zoom: f32, at: (f32, f32)) {
+fn card(b: &mut DisplayListBuilder, fonts: &mut FontCollection, zoom: f32, at: (f32, f32)) {
     b.save();
     b.translate(at.0, at.1);
     b.scale(zoom, zoom);
@@ -60,7 +60,7 @@ fn card(b: &mut DisplayListBuilder, fonts: &Arc<FontCollection>, zoom: f32, at: 
     b.restore();
 }
 
-fn scene(fonts: &Arc<FontCollection>) -> valo::DisplayList {
+fn scene(fonts: &mut FontCollection) -> valo::DisplayList {
     let mut b = DisplayListBuilder::new();
     card(&mut b, fonts, 0.75, (24.0, 24.0));
     card(&mut b, fonts, 1.0, (24.0, 120.0));
@@ -70,14 +70,11 @@ fn scene(fonts: &Arc<FontCollection>) -> valo::DisplayList {
 }
 
 fn main() {
-    let fonts = fonts();
+    let mut fonts = fonts();
     valo_harness::run_example(
         "text_zoom",
         [660, 800],
         Color::rgb(0.09, 0.1, 0.13),
-        |ctx| {
-            ctx.set_fonts(fonts.clone());
-            scene(&fonts)
-        },
+        |ctx| scene(&mut fonts),
     );
 }

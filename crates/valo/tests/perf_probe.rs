@@ -9,11 +9,11 @@ use valo::{
     Stroke, TextStyle,
 };
 
-fn fonts() -> Arc<FontCollection> {
+fn fonts() -> FontCollection {
     valo_harness::example_fonts()
 }
 
-fn design_canvas(fonts: &Arc<FontCollection>) -> DisplayList {
+fn design_canvas(fonts: &mut FontCollection) -> DisplayList {
     let mut b = DisplayListBuilder::new();
     b.draw_rect(
         Rect::new(0.0, 0.0, 800.0, 600.0),
@@ -167,11 +167,10 @@ fn pan_zoom_breakdown() {
         eprintln!("SKIP: no GPU adapter");
         return;
     };
-    let fonts = fonts();
+    let mut fonts = fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [800, 600]);
-    let retained = Arc::new(design_canvas(&fonts));
+    let retained = Arc::new(design_canvas(&mut fonts));
 
     // Warm everything.
     for i in 0..30 {
@@ -251,11 +250,10 @@ fn figma_board_breakdown() {
         eprintln!("SKIP: no GPU adapter");
         return;
     };
-    let fonts = fonts();
+    let mut fonts = fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [1600, 1000]);
-    let board = Arc::new(valo_harness::scenes::figma_board(&fonts));
+    let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     println!(
         "board: {} draws recorded, {} depth slots",
         board.draw_count(),

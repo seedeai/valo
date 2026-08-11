@@ -89,12 +89,12 @@ fn frame_benches(c: &mut Criterion) {
         eprintln!("SKIP frame benches: no GPU adapter");
         return;
     };
-    let fonts = bench_fonts::fonts();
+    let mut fonts = bench_fonts::fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
     ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [800, 600]);
-    let dl = design_canvas(&fonts);
-    let retained = Arc::new(design_canvas(&fonts));
+    let dl = design_canvas(&mut fonts);
+    let retained = Arc::new(design_canvas(&mut fonts));
 
     c.bench_function("frame/throughput_unsynced", |b| {
         b.iter(|| ctx.render(&dl, &offscreen.target(Some(Color::BLACK))))
@@ -135,11 +135,11 @@ fn board_benches(c: &mut Criterion) {
         eprintln!("SKIP board benches: no GPU adapter");
         return;
     };
-    let fonts = bench_fonts::fonts();
+    let mut fonts = bench_fonts::fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
     ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [1600, 1000]);
-    let board = Arc::new(valo_harness::scenes::figma_board(&fonts));
+    let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     let view = |zoom: f32, cx: f32, cy: f32| {
         let mut b = DisplayListBuilder::new();
         b.save();

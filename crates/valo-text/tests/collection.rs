@@ -1,8 +1,8 @@
-//! FontCollection registration semantics: parse-once fonts, alias names
+//! FaceSet registration semantics: parse-once fonts, alias names
 //! (Skia's `registerTypeface(typeface, familyName)`), and per-glyph
 //! coverage across same-family faces (cn-font-split subset chunks).
 
-use valo_text::{Font, FontAttrs, FontCollection};
+use valo_text::{FaceSet, Font, FontAttrs};
 
 fn asset(name: &str) -> Vec<u8> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
@@ -21,7 +21,7 @@ fn alias_matches_alongside_embedded_name() {
     let mut font = Font::from_bytes(asset("fira_sans.ttf")).unwrap();
     font.add_alias("Picker Family Name");
     font.add_alias("Fira Sans"); // duplicate of the embedded name — dropped
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let id = c.add(font);
 
     assert_eq!(c.family("Fira Sans"), Some(id));
@@ -38,7 +38,7 @@ fn resolve_searches_every_face_of_a_family() {
     // Two faces, ONE family, disjoint coverage — the subset-chunk shape.
     // The first-registered face wins ties on attrs but lacks Arabic; the
     // coverage search must look past it instead of returning tofu.
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let latin = c.register("Chunked", asset("fira_sans.ttf")).unwrap();
     let arabic = c
         .register("Chunked", asset("noto_sans_arabic.ttf"))
@@ -56,7 +56,7 @@ fn fallback_chain_expands_to_every_face_of_a_family() {
     // reaches chunk 1 (🍶 renders) but never chunk 2 (🐟 stays missing
     // forever, though its face is registered). `faces` is the expansion
     // hosts build chains with.
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let latin = c.register("Chunked", asset("fira_sans.ttf")).unwrap();
     let arabic = c
         .register("Chunked", asset("noto_sans_arabic.ttf"))
@@ -79,7 +79,7 @@ fn fallback_chain_expands_to_every_face_of_a_family() {
 
 #[test]
 fn resolve_prefers_families_over_fallbacks_and_tofus_in_the_first() {
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let latin = c.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
     let hebrew = c
         .register("Noto Sans Hebrew", asset("noto_sans_hebrew.ttf"))
@@ -98,7 +98,7 @@ fn resolve_prefers_families_over_fallbacks_and_tofus_in_the_first() {
 #[test]
 fn appended_faces_are_visible_by_length() {
     let font = Font::from_bytes(asset("fira_sans.ttf")).unwrap();
-    let a = FontCollection::new();
+    let a = FaceSet::default();
     let (b, id) = a.with_font(font);
     assert_eq!((a.len(), b.len()), (0, 1));
     assert_eq!(b.get(id).family(), "Fira Sans");
@@ -110,13 +110,12 @@ fn appended_faces_are_visible_by_length() {
 #[test]
 fn paragraphs_report_font_demand() {
     use valo_text::{ParagraphBuilder, TextStyle};
-    let mut c = FontCollection::new();
-    let latin = c.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
-    c.add_fallback(latin);
-    let fonts = std::sync::Arc::new(c);
+    let mut fonts = valo_text::FontCollection::new();
+    let latin = fonts.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
+    fonts.add_fallback(latin);
 
     // Latin under a present family: nothing demanded.
-    let mut b = ParagraphBuilder::new(&fonts);
+    let mut b = ParagraphBuilder::new(&mut fonts);
     b.add_text(
         "hello",
         &TextStyle::new("Fira Sans", 16.0, valo_geometry::Color::BLACK),
@@ -124,7 +123,7 @@ fn paragraphs_report_font_demand() {
     assert!(b.build().demand().is_empty());
 
     // Missing family + emoji and CJK nothing covers: both halves report.
-    let mut b = ParagraphBuilder::new(&fonts);
+    let mut b = ParagraphBuilder::new(&mut fonts);
     b.add_text(
         "hi 🍶 你好",
         &TextStyle::new("Noto Sans", 16.0, valo_geometry::Color::BLACK),
@@ -168,7 +167,7 @@ fn family_names_match_case_insensitively() {
     // CSS and the platform managers both match ASCII-case-insensitively;
     // exact-case matching once made a demand loop non-terminating (the
     // answer never satisfied the differently-cased request).
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let id = c.add(Font::from_bytes(asset("fira_sans.ttf")).unwrap());
     assert_eq!(c.family("fira sans"), Some(id));
     assert_eq!(c.family("FIRA SANS"), Some(id));
@@ -183,7 +182,7 @@ fn fallback_chain_picks_nearest_attrs_among_covering() {
         weight: 700,
         italic: false,
     };
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let regular = c
         .register_with("Chain", FontAttrs::default(), asset("fira_sans.ttf"))
         .unwrap();
@@ -228,7 +227,7 @@ fn grown_by_teaches_the_requested_name_and_answers_once() {
         fallback_bytes: None,
         asked_codepoints: Vec::new(),
     };
-    let base = FontCollection::new();
+    let base = FaceSet::default();
     let demand = valo_text::FontDemand {
         families: vec!["my display font".to_owned()],
         codepoints: Vec::new(),
@@ -255,7 +254,7 @@ fn grown_by_answers_codepoints_with_the_demanding_attrs() {
         fallback_bytes: Some(asset("noto_sans_arabic.ttf")),
         asked_codepoints: Vec::new(),
     };
-    let mut base = FontCollection::new();
+    let mut base = FaceSet::default();
     base.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
     let demand = valo_text::FontDemand {
         families: Vec::new(),
@@ -279,7 +278,7 @@ fn grown_by_reports_nothing_when_the_source_cannot_answer() {
         fallback_bytes: None,
         asked_codepoints: Vec::new(),
     };
-    let mut base = FontCollection::new();
+    let mut base = FaceSet::default();
     base.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
     let demand = valo_text::FontDemand {
         families: vec!["Ghost".to_owned()],
@@ -297,7 +296,7 @@ fn grown_by_never_answers_private_use_codepoints() {
         fallback_bytes: Some(asset("fira_sans.ttf")),
         asked_codepoints: Vec::new(),
     };
-    let mut base = FontCollection::new();
+    let mut base = FaceSet::default();
     base.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
     let demand = valo_text::FontDemand {
         families: Vec::new(),

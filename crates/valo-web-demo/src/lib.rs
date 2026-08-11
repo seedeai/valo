@@ -40,10 +40,9 @@ pub async fn start() -> Result<(), JsValue> {
     let surface = Surface::new(&instance, &adapter, &device, target, size)
         .map_err(|e| JsValue::from_str(&format!("no surface: {e:?}")))?;
 
-    let fonts = embedded_fonts();
+    let mut fonts = embedded_fonts();
     let mut ctx = Context::new(device, queue);
-    ctx.set_fonts(fonts.clone());
-    let board = Arc::new(valo_harness::scenes::figma_board(&fonts));
+    let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     let mut camera = Camera {
         offset: Point::ZERO,
         zoom: 1.0,
@@ -75,7 +74,7 @@ struct App {
     ctx: Context,
     surface: Surface,
     canvas: web_sys::HtmlCanvasElement,
-    fonts: Arc<FontCollection>,
+    fonts: FontCollection,
     board: Arc<DisplayList>,
     camera: Camera,
     cursor: Point,
@@ -145,7 +144,7 @@ fn fit_canvas_to_window(canvas: &web_sys::HtmlCanvasElement) -> [u32; 2] {
     [w, h]
 }
 
-fn embedded_fonts() -> Arc<FontCollection> {
+fn embedded_fonts() -> FontCollection {
     let mut fonts = FontCollection::new();
     fonts
         .register(

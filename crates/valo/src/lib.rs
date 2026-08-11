@@ -48,8 +48,8 @@ pub use valo_renderer::{
     WgpuCounters,
 };
 pub use valo_text::{
-    Decoration, DecorationKind, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId,
-    FontSource, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
+    Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
+    FontId, FontSource, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
     PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextStyle,
 };
 

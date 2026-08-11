@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use valo_text::{FontCollection, FontId, Rasterizer};
+use valo_text::{FaceSet, FontId, Rasterizer};
 
 const SIZES: [f32; 6] = [16.0, 32.0, 72.0, 162.0, 256.0, 324.0];
 const LATIN: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn";
@@ -18,7 +18,7 @@ fn main() {
     // A CJK face is 20k+ glyphs and too big to vendor: point VALO_CJK_FONT
     // at one to get the CJK column, otherwise the bench runs latin only.
     let cjk_file = std::env::var("VALO_CJK_FONT").unwrap_or_default();
-    let mut fonts = FontCollection::new();
+    let mut fonts = FaceSet::default();
     let latin = fonts
         .register(
             "Latin",
@@ -46,18 +46,18 @@ fn main() {
     for (label, font, ids) in &sets {
         for px in SIZES {
             let alpha = time_per_glyph(ids, |g| {
-                raster.alpha(&fonts, *font, g, px, 0.0);
+                raster.alpha(fonts.get(*font), g, px, 0.0);
             });
             let mut raster2 = Rasterizer::new();
             let sdf = time_per_glyph(ids, |g| {
-                raster2.sdf(&fonts, *font, g, px);
+                raster2.sdf(fonts.get(*font), g, px);
             });
             println!("{label:>6} {px:>6.0}  {alpha:>10.1}µs {sdf:>10.1}µs");
         }
     }
 }
 
-fn glyphs(fonts: &FontCollection, id: FontId, text: &str) -> Vec<u32> {
+fn glyphs(fonts: &FaceSet, id: FontId, text: &str) -> Vec<u32> {
     let font = fonts.get(id);
     text.chars().filter_map(|ch| font.glyph_for(ch)).collect()
 }

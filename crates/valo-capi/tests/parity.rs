@@ -326,7 +326,7 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
 
 #[test]
 fn text_queries_answer_over_the_ffi() {
-    let fonts = valo_fonts_new();
+    let mut fonts = valo_fonts_new();
     let bytes = fira_sans_bytes();
     let face = unsafe { valo_fonts_add(fonts, bytes.as_ptr(), bytes.len()) };
     assert!(face >= 0, "fira sans registers");
@@ -344,7 +344,7 @@ fn text_queries_answer_over_the_ffi() {
     let builder = unsafe { valo_paragraph_builder_new(fonts, plain_paragraph_style()) };
     let text = "hello wide world";
     unsafe { valo_paragraph_builder_add_text(builder, text.as_ptr(), text.len(), style) };
-    let paragraph = unsafe { valo_paragraph_builder_build(builder) };
+    let paragraph = unsafe { valo_paragraph_builder_build(builder, fonts as *mut _) };
     unsafe { valo_paragraph_layout(paragraph, 120.0) };
 
     unsafe {
@@ -413,7 +413,6 @@ fn render_matches_the_rust_route(
     }
     let mut c_pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
     unsafe {
-        valo_context_set_fonts(context, fonts);
         let builder = valo_builder_new();
         valo_builder_draw_paragraph(builder, paragraph, 4.0, 4.0);
         let list = valo_builder_build(builder);
@@ -447,11 +446,10 @@ fn render_matches_the_rust_route(
         return;
     };
     let font = valo::Font::from_bytes(font_bytes.to_vec()).expect("fira sans parses");
-    let (mut collection, id) = valo::FontCollection::default().with_font(font);
+    let mut collection = valo::FontCollection::default();
+    let id = collection.add(font);
     collection.add_fallback(id);
-    let collection = std::sync::Arc::new(collection);
-
-    let mut builder = valo::ParagraphBuilder::new(&collection);
+    let mut builder = valo::ParagraphBuilder::new(&mut collection);
     builder.style(valo::ParagraphStyle {
         align: valo::TextAlign::Left,
         max_lines: None,
@@ -465,7 +463,6 @@ fn render_matches_the_rust_route(
     rust_paragraph.layout(120.0);
 
     let mut context = valo::Context::new(device, queue);
-    context.set_fonts(collection);
     let mut b = valo::DisplayListBuilder::new();
     use valo::DrawParagraphExt;
     b.draw_paragraph(&rust_paragraph, (4.0, 4.0));
@@ -485,7 +482,7 @@ fn render_matches_the_rust_route(
 /// cannot answer.
 #[test]
 fn system_fonts_answer_demands_over_the_ffi() {
-    let fonts = valo_fonts_new();
+    let mut fonts = valo_fonts_new();
     let bytes = fira_sans_bytes();
     let face = unsafe { valo_fonts_add(fonts, bytes.as_ptr(), bytes.len()) };
     assert!(face >= 0);
@@ -500,7 +497,7 @@ fn system_fonts_answer_demands_over_the_ffi() {
         let builder = unsafe { valo_paragraph_builder_new(fonts, plain_paragraph_style()) };
         let text = "Hello 中文";
         unsafe { valo_paragraph_builder_add_text(builder, text.as_ptr(), text.len(), style) };
-        let paragraph = unsafe { valo_paragraph_builder_build(builder) };
+        let paragraph = unsafe { valo_paragraph_builder_build(builder, fonts as *mut _) };
         unsafe { valo_paragraph_layout(paragraph, 300.0) };
         paragraph
     };
@@ -517,7 +514,7 @@ fn system_fonts_answer_demands_over_the_ffi() {
         valo_paragraph_demand_codepoints(first, codepoints.as_mut_ptr(), codepoints.len());
         assert!(codepoints.contains(&('中' as u32)));
 
-        let satisfied = valo_fonts_satisfy_demand(fonts, system_fonts, first);
+        let satisfied = valo_fonts_satisfy_demand(fonts, system_fonts);
         valo_paragraph_dispose(first);
         if !satisfied {
             eprintln!("SKIP: this machine's installed fonts cannot answer");
@@ -537,7 +534,7 @@ fn system_fonts_answer_demands_over_the_ffi() {
             0
         );
         assert!(
-            !valo_fonts_satisfy_demand(fonts, system_fonts, second),
+            !valo_fonts_satisfy_demand(fonts, system_fonts),
             "an empty demand grows nothing"
         );
         valo_paragraph_dispose(second);
@@ -552,7 +549,6 @@ fn null_handles_never_crash() {
     unsafe {
         valo_context_dispose(std::ptr::null_mut());
         valo_context_resize(std::ptr::null_mut(), 10, 10);
-        valo_context_set_fonts(std::ptr::null_mut(), std::ptr::null());
         assert!(valo_context_metal_device(std::ptr::null_mut()).is_null());
         valo_context_wait_for_gpu(std::ptr::null_mut());
         assert!(valo_context_import_metal_texture(
@@ -659,8 +655,7 @@ fn null_handles_never_crash() {
         );
         assert!(!valo_fonts_satisfy_demand(
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null()
+            std::ptr::null_mut()
         ));
         assert_eq!(
             valo_paragraph_demand_families(std::ptr::null(), std::ptr::null_mut(), 0),
@@ -680,7 +675,7 @@ fn null_handles_never_crash() {
             }
         )
         .is_null());
-        assert!(valo_paragraph_builder_build(std::ptr::null_mut()).is_null());
+        assert!(valo_paragraph_builder_build(std::ptr::null_mut(), std::ptr::null_mut()).is_null());
         valo_paragraph_dispose(std::ptr::null_mut());
         valo_paragraph_layout(std::ptr::null_mut(), 100.0);
         assert_eq!(valo_paragraph_width(std::ptr::null()), 0.0);

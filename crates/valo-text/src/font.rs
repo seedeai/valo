@@ -51,7 +51,22 @@ struct SharedFace {
     shaper_data: harfrust::ShaperData,
 }
 
+/// Stable raster identity of one font INSTANCE (glyph caches key on it:
+/// same uid = same outlines). Assigned at instance construction from a
+/// process counter — Skia's typeface uniqueID role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FontUid(pub u64);
+
+impl FontUid {
+    fn next() -> FontUid {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        FontUid(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub struct Font {
+    uid: FontUid,
     shared: Arc<SharedFace>,
     /// User-space variation coordinates when this font is a named instance
     /// of a variable font ((axis tag, value) per axis); empty = the
@@ -78,6 +93,16 @@ pub struct Font {
     /// (offset from baseline, thickness) in font units, when the font says.
     underline: Option<(f32, f32)>,
     strikeout: Option<(f32, f32)>,
+}
+
+impl std::fmt::Debug for Font {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Font")
+            .field("uid", &self.uid)
+            .field("family", &self.family)
+            .field("attrs", &self.attrs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Font {
@@ -123,6 +148,7 @@ impl Font {
             })
         });
         Some(Self {
+            uid: FontUid::next(),
             family: family.to_owned(),
             aliases: Vec::new(),
             attrs,
@@ -163,6 +189,11 @@ impl Font {
 
     pub(crate) fn shaper_instance(&self) -> Option<&harfrust::ShaperInstance> {
         self.shaper_instance.as_ref()
+    }
+
+    /// The instance's stable raster identity.
+    pub fn uid(&self) -> FontUid {
+        self.uid
     }
 
     pub fn family(&self) -> &str {
@@ -310,15 +341,14 @@ pub trait FontSource {
 /// fallback chain consulted per character. Immutable once built —
 /// register everything, then `Arc` it for builders and the renderer.
 #[derive(Default, Clone)]
-pub struct FontCollection {
-    /// `Arc` per face: adding a font to a shared collection clones N
-    /// pointers, never re-parses (Skia registers typefaces incrementally;
-    /// this is the immutable-share equivalent).
+pub struct FaceSet {
+    /// `Arc` per face: adding a font clones N pointers, never re-parses
+    /// (Skia registers typefaces incrementally).
     fonts: Vec<Arc<Font>>,
     fallbacks: Vec<FontId>,
 }
 
-impl FontCollection {
+impl FaceSet {
     pub fn new() -> Self {
         Self::default()
     }
@@ -353,14 +383,14 @@ impl FontCollection {
     /// A new collection = this one + `font`. Faces are shared by `Arc`, so
     /// this is O(faces) pointer clones — no re-parsing, and every existing
     /// holder of the old collection is untouched.
-    pub fn with_font(&self, font: Font) -> (FontCollection, FontId) {
+    pub fn with_font(&self, font: Font) -> (FaceSet, FontId) {
         let mut next = self.clone();
         let id = next.add(font);
         (next, id)
     }
 
     /// A new collection with the fallback chain REPLACED (order matters).
-    pub fn with_fallbacks(&self, fallbacks: Vec<FontId>) -> FontCollection {
+    pub fn with_fallbacks(&self, fallbacks: Vec<FontId>) -> FaceSet {
         let mut next = self.clone();
         next.fallbacks = fallbacks;
         next
@@ -381,11 +411,10 @@ impl FontCollection {
     /// with a face matching the demanding span's attrs. `Some(grown)`
     /// only when something new was found — the caller's signal to
     /// re-register the collection and lay out again.
-    pub fn grown_by(
-        &self,
-        source: &mut dyn FontSource,
-        demand: &FontDemand,
-    ) -> Option<FontCollection> {
+    /// Grow a COPY of this face set to answer `demand` from `source` — the
+    /// out-of-band path (a host that already knows what it wants). Live
+    /// resolution goes through [`FontCollection`], which owns its sources.
+    pub fn grown_by(&self, source: &mut dyn FontSource, demand: &FontDemand) -> Option<FaceSet> {
         let mut next = self.clone();
         let mut grew = false;
         for name in &demand.families {
@@ -451,6 +480,12 @@ impl FontCollection {
     /// collection can name the faces added since: `old.len()..new.len()`.
     pub fn len(&self) -> usize {
         self.fonts.len()
+    }
+
+    /// The shared instance behind `id` — what glyph runs carry to the
+    /// renderer (Skia: blobs hold `sk_sp<SkTypeface>`).
+    pub fn get_arc(&self, id: FontId) -> Arc<Font> {
+        self.fonts[id.0 as usize].clone()
     }
 
     pub fn get(&self, id: FontId) -> &Font {
@@ -542,17 +577,37 @@ impl FontCollection {
     /// Nothing covers `ch`: the style's best variant, else the first
     /// fallback, else the first face — the tofu renders in SOMETHING.
     fn tofu_face(&self, families: &[String], attrs: FontAttrs) -> FontId {
+        self.tofu_face_opt(families, attrs).unwrap_or_else(|| {
+            panic!(
+                "FontCollection has no fonts registered — register() one before building paragraphs"
+            );
+        })
+    }
+
+    /// [`Self::tofu_face`] that reports an EMPTY collection instead of
+    /// panicking — the `build_with` path, where an empty start is valid
+    /// (the chain is asked first; a char no source can render is skipped
+    /// and reported through the demand).
+    pub(crate) fn tofu_face_opt(&self, families: &[String], attrs: FontAttrs) -> Option<FontId> {
         families
             .iter()
             .find_map(|name| self.family_variant(name, attrs))
             .or_else(|| self.fallbacks.first().copied())
-            .unwrap_or_else(|| {
-                assert!(
-                    !self.fonts.is_empty(),
-                    "FontCollection has no fonts registered — register() one before building paragraphs"
-                );
-                FontId(0)
-            })
+            .or_else(|| (!self.fonts.is_empty()).then_some(FontId(0)))
+    }
+
+    /// [`Self::resolve_covered`] that can also report "no face exists at
+    /// all" (empty collection on the `build_with` path).
+    pub(crate) fn resolve_covered_opt(
+        &self,
+        families: &[String],
+        attrs: FontAttrs,
+        ch: char,
+    ) -> Option<(FontId, bool)> {
+        if self.fonts.is_empty() {
+            return None;
+        }
+        Some(self.resolve_covered(families, attrs, ch))
     }
 }
 
@@ -735,4 +790,117 @@ fn is_private_use(codepoint: char) -> bool {
         codepoint,
         '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}'
     )
+}
+
+/// Faces plus the sources that can find more — Skia's `FontCollection`
+/// (skparagraph FontCollection.h: the asset/dynamic/default `SkFontMgr`s
+/// live INSIDE the collection, and `findTypefaces`/`defaultFallback` are
+/// its methods). Shaping consults this at every miss; what no source can
+/// answer accumulates as the [`demand`](Self::take_unanswered) a host
+/// fetches asynchronously (Flutter web's `_unprocessedCodePoints`).
+#[derive(Default)]
+pub struct FontCollection {
+    faces: FaceSet,
+    /// Consulted in order, first answer wins (Skia's manager priority:
+    /// registered bytes and downloaders before the platform database).
+    sources: Vec<Box<dyn FontSource>>,
+    /// Misses no source answered, since the last drain.
+    unanswered: FontDemand,
+}
+
+impl FontCollection {
+    pub fn new() -> FontCollection {
+        FontCollection::default()
+    }
+
+    /// The faces resolved so far — what a built paragraph snapshots.
+    pub fn faces(&self) -> &FaceSet {
+        &self.faces
+    }
+
+    /// Registers bytes under a family (Skia `registerTypeface`; Flutter
+    /// `FontLoader.load`). Host-facing: the other half of the async loop.
+    pub fn register(&mut self, family: &str, bytes: Vec<u8>) -> Option<FontId> {
+        self.faces.register(family, bytes)
+    }
+
+    pub fn add(&mut self, font: Font) -> FontId {
+        self.faces.add(font)
+    }
+
+    pub fn add_fallback(&mut self, id: FontId) {
+        self.faces.add_fallback(id);
+    }
+
+    pub fn get(&self, id: FontId) -> &Font {
+        self.faces.get(id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.faces.len()
+    }
+
+    pub fn family(&self, name: &str) -> Option<FontId> {
+        self.faces.family(name)
+    }
+
+    /// Adds a source consulted on a miss: the OS database, a downloader's
+    /// already-fetched cache, anything.
+    pub fn add_source(&mut self, source: impl FontSource + 'static) {
+        self.sources.push(Box::new(source));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.faces.is_empty()
+    }
+
+    /// Replaces the faces with a set grown out of band (a host that
+    /// answered a demand itself — [`FaceSet::grown_by`]).
+    pub fn adopt_faces(&mut self, faces: FaceSet) {
+        self.faces = faces;
+    }
+
+    /// Takes the misses no source could answer — the host's cue to fetch
+    /// (and later [`register`](Self::register), which invalidates the text
+    /// that wanted them). Draining is the caller's; nothing here is async.
+    pub fn take_unanswered(&mut self) -> FontDemand {
+        std::mem::take(&mut self.unanswered)
+    }
+
+    /// Resolution with growth: look up, else ask the sources in order,
+    /// registering what they answer (Skia's `findTypefaces` walking its
+    /// managers). `false` = nobody had it; the miss is recorded.
+    pub(crate) fn require_family(&mut self, name: &str) -> bool {
+        if self.faces.family(name).is_some() {
+            return true;
+        }
+        for source in &mut self.sources {
+            let faces = source.family(name);
+            if self.faces.register_answers(faces, name) {
+                return true;
+            }
+        }
+        self.unanswered.add_family(name);
+        false
+    }
+
+    /// The per-codepoint half (Skia's `defaultFallback(unicode, ..)`).
+    pub(crate) fn require_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> bool {
+        if self.faces.covers_anywhere(codepoint) {
+            return true;
+        }
+        for index in 0..self.sources.len() {
+            let (head, tail) = self.sources.split_at_mut(index);
+            let _ = head;
+            let source = &mut tail[0];
+            if self
+                .faces
+                .register_fallback_answer(source.as_mut(), codepoint, attrs)
+            {
+                return true;
+            }
+        }
+        self.unanswered.add_codepoint(codepoint, attrs);
+        false
+    }
 }

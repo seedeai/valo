@@ -8,7 +8,7 @@
 //! the face tables, so faces found here and faces registered from
 //! host-supplied bytes agree.
 
-use valo_text::{Font, FontAttrs, FontCollection, FontDemand, FontSource};
+use valo_text::{FaceSet, Font, FontAttrs, FontDemand, FontSource};
 
 /// A scan of the platform's installed fonts, held open for answering
 /// demands. Creating one is the expensive step (directory walk + name
@@ -30,14 +30,12 @@ impl SystemFonts {
         self.database.len()
     }
 
-    /// [`FontCollection::grown_by`] with this source — the whole demand
-    /// loop in one call, for hosts without their own policy.
-    pub fn satisfy(
-        &mut self,
-        collection: &FontCollection,
-        demand: &FontDemand,
-    ) -> Option<FontCollection> {
-        collection.grown_by(self, demand)
+    /// [`FaceSet::grown_by`] with this source — the out-of-band helper
+    /// for hosts answering a demand by hand. Live resolution needs none of
+    /// this: add the source to a `FontCollection` and it is consulted
+    /// mid-shape.
+    pub fn satisfy(&mut self, faces: &FaceSet, demand: &FontDemand) -> Option<FaceSet> {
+        faces.grown_by(self, demand)
     }
 
     /// All face identifiers, closest to `attrs` first (valo's CSS-style

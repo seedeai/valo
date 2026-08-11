@@ -10,14 +10,14 @@ use valo::{
     ParagraphBuilder, PathBuilder, Rect, TextStyle,
 };
 
-fn fonts() -> Arc<FontCollection> {
+fn fonts() -> FontCollection {
     valo_harness::example_fonts()
 }
 
 /// One frame of the churn scene. `i` animates everything that stresses a
 /// cache: text size (unique outline-tier rasters per frame), a pan, and a
 /// heavyweight path every 50th frame (a dedicated vertex block).
-fn scene(fonts: &Arc<FontCollection>, i: usize) -> valo::DisplayList {
+fn scene(fonts: &mut FontCollection, i: usize) -> valo::DisplayList {
     let mut b = DisplayListBuilder::new();
     b.draw_rect(
         Rect::new(0.0, 0.0, 400.0, 300.0),
@@ -56,20 +56,19 @@ fn no_resource_growth_over_300_frames() {
         return;
     };
     let mut ctx = Context::new(device.clone(), queue.clone());
-    let fonts = fonts();
-    ctx.set_fonts(fonts.clone());
+    let mut fonts = fonts();
     let offscreen = Offscreen::new(&device, [400, 300]);
 
     // Warm-up covers first-sight allocations AND one vertex spike, so the
     // baseline already contains everything a steady state legitimately holds.
     for i in 0..60 {
-        ctx.render(&scene(&fonts, i), &offscreen.target(Some(Color::BLACK)));
+        ctx.render(&scene(&mut fonts, i), &offscreen.target(Some(Color::BLACK)));
     }
     let base = ctx.memory_report();
 
     let mut blocks_created_warm = 0u32;
     for i in 60..300 {
-        let stats = ctx.render(&scene(&fonts, i), &offscreen.target(Some(Color::BLACK)));
+        let stats = ctx.render(&scene(&mut fonts, i), &offscreen.target(Some(Color::BLACK)));
         // Spike frames legitimately re-create their dedicated block: it
         // DRAINED while idle (that's the point — memory isn't pinned
         // between spikes). Warm frames must never allocate.

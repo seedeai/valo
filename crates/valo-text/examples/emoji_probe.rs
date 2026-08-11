@@ -2,7 +2,7 @@
 //! exact production pipeline — container decode, parse, coverage, raster.
 //! Usage: cargo run -p valo-text --example emoji_probe -- <file> <char>
 
-use valo_text::{Font, FontCollection, Rasterizer};
+use valo_text::{FaceSet, Font, Rasterizer};
 
 fn main() {
     let path = std::env::args().nth(1).expect("font path");
@@ -61,10 +61,10 @@ fn main() {
     };
     println!("glyph id: {glyph}");
 
-    let mut c = FontCollection::new();
+    let mut c = FaceSet::default();
     let id = c.add(font);
     let mut raster = Rasterizer::new();
-    match raster.color(&c, id, glyph, 64.0) {
+    match raster.color(c.get(id), glyph, 64.0) {
         Some(img) => {
             let opaque = img.data.chunks_exact(4).filter(|p| p[3] > 0).count();
             println!(
@@ -74,7 +74,7 @@ fn main() {
         }
         None => {
             println!("color raster: None — falling back to alpha…");
-            match raster.alpha(&c, id, glyph, 64.0, 0.0) {
+            match raster.alpha(c.get(id), glyph, 64.0, 0.0) {
                 Some(img) => {
                     let ink = img.data.iter().filter(|&&a| a > 0).count();
                     println!("alpha raster: {}x{}, {} ink px", img.width, img.height, ink);

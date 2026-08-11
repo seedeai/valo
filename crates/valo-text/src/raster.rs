@@ -5,7 +5,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::MetadataProvider;
 use valo_geometry::{Path, PathBuilder};
 
-use crate::font::{Font, FontCollection, FontId};
+use crate::font::Font;
 
 /// SDF spread in texels: distance saturates ±this many pixels from the edge
 /// (0.5 = on the edge). Also the raster padding so the field has room.
@@ -37,15 +37,8 @@ impl Rasterizer {
     /// Plain alpha coverage at `px` — the mask tier. `dx` is the subpixel
     /// x-phase (0/¼/½/¾ px) baked into the raster, Skia/Impeller's
     /// quarter-pixel positioning.
-    pub fn alpha(
-        &mut self,
-        collection: &FontCollection,
-        font: FontId,
-        glyph: u32,
-        px: f32,
-        dx: f32,
-    ) -> Option<GlyphImage> {
-        let image = self.render(collection.get(font), glyph, px, dx)?;
+    pub fn alpha(&mut self, font: &Font, glyph: u32, px: f32, dx: f32) -> Option<GlyphImage> {
+        let image = self.render(font, glyph, px, dx)?;
         Some(GlyphImage {
             width: image.placement.width,
             height: image.placement.height,
@@ -59,14 +52,8 @@ impl Rasterizer {
     /// EDT directly (mapbox TinySDF's shape — partial alpha carries the
     /// sub-pixel edge, so no supersample; ~7× the old
     /// 2×-8SSEDT pipeline). 128 = edge, ±[`SDF_PAD`] px span the range.
-    pub fn sdf(
-        &mut self,
-        collection: &FontCollection,
-        font: FontId,
-        glyph: u32,
-        px: f32,
-    ) -> Option<GlyphImage> {
-        let alpha = self.render(collection.get(font), glyph, px, 0.0)?;
+    pub fn sdf(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
+        let alpha = self.render(font, glyph, px, 0.0)?;
         let pad = SDF_PAD;
         let w = alpha.placement.width + 2 * pad;
         let h = alpha.placement.height + 2 * pad;
@@ -91,14 +78,7 @@ impl Rasterizer {
     /// RGBA, or `None` when the glyph has no color form — the caller falls
     /// back to the mask tiers. Mini rendered emoji through Canvas2D; swash
     /// is the native replacement.
-    pub fn color(
-        &mut self,
-        collection: &FontCollection,
-        font: FontId,
-        glyph: u32,
-        px: f32,
-    ) -> Option<GlyphImage> {
-        let font = collection.get(font);
+    pub fn color(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
         let font_ref = swash::FontRef::from_index(font.data(), font.face_index() as usize)?;
         let mut scaler = self
             .context
@@ -161,13 +141,7 @@ impl Rasterizer {
 
 /// The glyph as a valo `Path` at `px`, baseline-origin, y-down — the huge-
 /// text tier: stencil-then-cover handles it like any shape.
-pub fn glyph_path(
-    collection: &FontCollection,
-    font: FontId,
-    glyph: u32,
-    px: f32,
-) -> Option<Arc<Path>> {
-    let font = collection.get(font);
+pub fn glyph_path(font: &Font, glyph: u32, px: f32) -> Option<Arc<Path>> {
     let font_ref = skrifa::FontRef::from_index(font.data(), font.face_index()).ok()?;
     let outline = font_ref.outline_glyphs().get(skrifa::GlyphId::new(glyph))?;
     let mut pen = PathPen {
@@ -224,13 +198,14 @@ fn swash_variations(font: &Font) -> impl Iterator<Item = (&str, f32)> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::FaceSet;
 
-    fn fira() -> FontCollection {
+    fn fira() -> FaceSet {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/fonts/fira_sans.ttf"
         );
-        let mut c = FontCollection::new();
+        let mut c = FaceSet::default();
         c.register("Fira Sans", std::fs::read(path).unwrap())
             .unwrap();
         c
@@ -247,8 +222,8 @@ mod tests {
         let mut raster = Rasterizer::new();
         for ch in ['H', 'g', 'x', 'Q'] {
             let glyph = fonts.get(font).glyph_for(ch).unwrap();
-            let alpha = raster.alpha(&fonts, font, glyph, 64.0, 0.0).unwrap();
-            let sdf = raster.sdf(&fonts, font, glyph, 64.0).unwrap();
+            let alpha = raster.alpha(fonts.get(font), glyph, 64.0, 0.0).unwrap();
+            let sdf = raster.sdf(fonts.get(font), glyph, 64.0).unwrap();
             let pad = SDF_PAD as i32;
             for (axis, a, s) in [
                 ("top", alpha.top, sdf.top - pad),

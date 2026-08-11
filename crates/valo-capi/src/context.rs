@@ -4,9 +4,7 @@
 
 use valo::{Color, ImageDesc};
 
-use crate::{
-    borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoDisplayList, ValoFontCollection,
-};
+use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoDisplayList};
 
 pub struct ValoContext {
     instance: wgpu::Instance,
@@ -232,20 +230,6 @@ fn metal_texture_format(format: i32) -> wgpu::TextureFormat {
 /// snapshot, so call again after adding faces; rendering uses the
 /// collection registered at render time.
 ///
-/// # Safety
-/// `context` and `fonts` must be live handles (or null, a no-op).
-#[no_mangle]
-pub unsafe extern "C" fn valo_context_set_fonts(
-    context: *mut ValoContext,
-    fonts: *const ValoFontCollection,
-) {
-    let (Some(ctx), Some(fonts)) = (unsafe { borrow_mut(context) }, unsafe { borrow(fonts) })
-    else {
-        return;
-    };
-    ctx.context.set_fonts(fonts.collection.clone());
-}
-
 /// Render one frame onto the attached surface and present it. Returns
 /// false without a surface or when the swapchain skipped the frame
 /// (occluded window) — both are recoverable, try next frame.
