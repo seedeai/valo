@@ -850,6 +850,12 @@ impl FontCollection {
         self.sources.push(Box::new(source));
     }
 
+    /// [`add_source`](Self::add_source) for an already-boxed source — what
+    /// a platform hands the framework through a trait object.
+    pub fn add_boxed_source(&mut self, source: Box<dyn FontSource>) {
+        self.sources.push(source);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.faces.is_empty()
     }
