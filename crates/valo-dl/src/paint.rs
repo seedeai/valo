@@ -59,6 +59,24 @@ mod tests {
 }
 
 impl BlendMode {
+    /// Transparent source pixels may change destination pixels outside the
+    /// source ink. Impeller uses this to flood save-layer output coverage to
+    /// the active clip.
+    pub fn is_destructive(self) -> bool {
+        matches!(
+            self,
+            BlendMode::Clear
+                | BlendMode::Src
+                | BlendMode::SrcIn
+                | BlendMode::DstIn
+                | BlendMode::SrcOut
+                | BlendMode::DstOut
+                | BlendMode::DstAtop
+                | BlendMode::Xor
+                | BlendMode::Modulate
+        )
+    }
+
     /// Expressible as fixed-function pipeline blending (no dst read).
     pub fn is_pipeline_blendable(self) -> bool {
         !matches!(

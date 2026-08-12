@@ -6,7 +6,7 @@
 //   payload[1] = family geometry: image uv mapping / gradient points
 //   payload[2] = (stop_count, angle, spread_mode, radial fy)
 //   payload[3..5) = 8 gradient stop offsets
-//   payload[5..13) = 8 gradient stop colors (PREMULTIPLIED)
+//   payload[5..13) = 8 gradient stop colors (STRAIGHT)
 //   payload[13..15) = inverse gradient/pattern local matrix (a,b,c,d | tx,ty,_,_)
 //   payload[15..17) = two-point conical setup + its flags
 //   payload[17..22) = colour matrix rows + translation column; slot 17 alone
@@ -80,7 +80,8 @@ fn stop_offset(i: u32) -> f32 {
     return v.w;
 }
 
-/// Piecewise-linear ramp over premultiplied stop colors.
+/// Piecewise-linear ramp over straight stop colors. Skia's default and
+/// Impeller both interpolate first, then premultiply the resulting color.
 fn ramp(t: f32) -> vec4<f32> {
     let count = u32(u.payload[2].x);
     var prev_off = stop_offset(0u);
@@ -99,6 +100,10 @@ fn ramp(t: f32) -> vec4<f32> {
         prev_col = col;
     }
     return prev_col;
+}
+
+fn premultiply(color: vec4<f32>) -> vec4<f32> {
+    return vec4(color.rgb * color.a, color.a);
 }
 
 /// Gradients evaluate in their OWN space (Skia's local matrix):
@@ -134,7 +139,7 @@ fn linear_t(local: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_linear(in: VsOut) -> @location(0) vec4<f32> {
-    return ramp(linear_t(in.local)) * u.color;
+    return premultiply(ramp(linear_t(in.local))) * u.color;
 }
 
 /// Two-point conical `t`, plus a validity flag: some points of a general
@@ -211,7 +216,7 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
 @fragment
 fn fs_radial(in: VsOut) -> @location(0) vec4<f32> {
     let solved = radial_t(in.local);
-    return ramp(solved.x) * u.color * solved.y;
+    return premultiply(ramp(solved.x)) * u.color * solved.y;
 }
 
 const TAU: f32 = 6.28318530718;
@@ -224,11 +229,11 @@ fn sweep_t(local: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
-    return ramp(sweep_t(in.local)) * u.color;
+    return premultiply(ramp(sweep_t(in.local))) * u.color;
 }
 
 // ── ramp gradients (>8 stops): Impeller's texture path ──────────────────────
-// The stop list lives in a baked N×1 premultiplied texture; payload[2].x
+// The stop list lives in a baked N×1 straight-color texture; payload[2].x
 // carries N so t maps to texel CENTERS (linear filtering interpolates
 // between them exactly like the analytic ramp).
 
@@ -240,18 +245,18 @@ fn sample_ramp(t: f32) -> vec4<f32> {
 
 @fragment
 fn fs_linear_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return sample_ramp(linear_t(in.local)) * u.color;
+    return premultiply(sample_ramp(linear_t(in.local))) * u.color;
 }
 
 @fragment
 fn fs_radial_ramp(in: VsOut) -> @location(0) vec4<f32> {
     let solved = radial_t(in.local);
-    return sample_ramp(solved.x) * u.color * solved.y;
+    return premultiply(sample_ramp(solved.x)) * u.color * solved.y;
 }
 
 @fragment
 fn fs_sweep_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return sample_ramp(sweep_t(in.local)) * u.color;
+    return premultiply(sample_ramp(sweep_t(in.local))) * u.color;
 }
 
 // ── mask composite ──────────────────────────────────────────────────────────

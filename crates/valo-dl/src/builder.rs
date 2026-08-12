@@ -135,10 +135,11 @@ impl DisplayListBuilder {
         // A filter that changes transparent black has output outside child
         // ink. Its input coverage is therefore the explicit/active clip, or
         // the renderer's eventual surface limit when no clip is known yet.
-        let flooded_bounds = paint
-            .color_filter
-            .filter(|filter| filter.modifies_transparent_black())
-            .map(|_| scope.clip.unwrap_or(Rect::EVERYTHING));
+        let floods_scope = paint.blend_mode.is_destructive()
+            || paint
+                .color_filter
+                .is_some_and(|filter| filter.modifies_transparent_black());
+        let flooded_bounds = floods_scope.then(|| scope.clip.unwrap_or(Rect::EVERYTHING));
         self.scopes.push(scope);
         self.pending_clips.push(Vec::new());
         self.layers.push(LayerScope {
@@ -928,6 +929,23 @@ mod tests {
         b.restore();
         let (_, _, _, can_elide) = find_layer(&b.build());
         assert!(!can_elide);
+    }
+
+    #[test]
+    fn destructive_layer_composite_floods_the_active_clip() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(4.0, 6.0, 80.0, 60.0), ClipOp::Intersect);
+        b.save_layer(
+            None,
+            &Paint {
+                blend_mode: BlendMode::SrcIn,
+                ..Default::default()
+            },
+        );
+        b.draw_rect(Rect::new(20.0, 20.0, 10.0, 10.0), &red());
+        b.restore();
+        let (bounds, ..) = find_layer(&b.build());
+        assert_eq!(bounds, Rect::new(4.0, 6.0, 80.0, 60.0));
     }
 
     #[test]

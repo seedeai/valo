@@ -40,6 +40,11 @@ impl Color {
         Self { a, ..self }
     }
 
+    /// Straight components in draw order `[r, g, b, a]`.
+    pub fn components(self) -> [f32; 4] {
+        [self.r, self.g, self.b, self.a]
+    }
+
     /// Alpha-premultiplied components in draw order `[r, g, b, a]` — what the
     /// uniform fill hands the blender.
     pub fn premultiplied(self) -> [f32; 4] {

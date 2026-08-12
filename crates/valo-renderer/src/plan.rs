@@ -1702,7 +1702,7 @@ impl<'a> Planner<'a> {
         }
         self.stats.text_tiers[0] += 1;
         let scale = quantize_scale(current.max_scale());
-        if is_axis_aligned(current) {
+        if is_uniform_axis_aligned(current) {
             self.plan_glyph_quads_snapped(font, scale, size, paint, glyphs, current, z);
         } else {
             // Rotated/skewed: raster at device scale, quads carry the
@@ -2851,7 +2851,7 @@ fn fill_gradient_payload(record: &mut UniformRecord, shader: &Shader, ramp_texel
     let mut offsets = [0.0f32; MAX_GRADIENT_STOPS];
     for (i, stop) in stops.iter().take(count).enumerate() {
         offsets[i] = stop.offset;
-        record.set_payload(PAYLOAD_COLORS + i, stop.color.premultiplied());
+        record.set_payload(PAYLOAD_COLORS + i, stop.color.components());
     }
     record.set_payload(
         PAYLOAD_OFFSETS,
@@ -2926,6 +2926,14 @@ fn snap_quarter(x: f32) -> (f32, u8) {
 /// and flips take the transformed-quad route.
 fn is_axis_aligned(t: &Matrix) -> bool {
     t.kind() == valo_geometry::MatrixKind::AxisAligned
+}
+
+fn is_uniform_axis_aligned(transform: &Matrix) -> bool {
+    if !is_axis_aligned(transform) {
+        return false;
+    }
+    let [scale_x, _, _, scale_y, ..] = transform.to_affine();
+    (scale_x - scale_y).abs() <= 1e-6 * scale_x.max(scale_y).max(1.0)
 }
 
 fn text_mode(page: PageRef, sdf: bool) -> TextMode {
@@ -3241,7 +3249,7 @@ pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 
 #[cfg(test)]
 mod tests {
-    use super::stroke_alpha_coverage;
+    use super::{is_uniform_axis_aligned, stroke_alpha_coverage};
     use valo_geometry::Matrix;
 
     #[test]
@@ -3250,5 +3258,12 @@ mod tests {
         assert_eq!(stroke_alpha_coverage(&Matrix::IDENTITY, 0.25), 0.5);
         assert_eq!(stroke_alpha_coverage(&Matrix::IDENTITY, 0.5), 1.0);
         assert_eq!(stroke_alpha_coverage(&Matrix::scale(2.0, 2.0), 0.25), 1.0);
+    }
+
+    #[test]
+    fn snapped_text_requires_uniform_scale() {
+        assert!(is_uniform_axis_aligned(&Matrix::scale(0.5, 0.5)));
+        assert!(!is_uniform_axis_aligned(&Matrix::scale(0.5, 1.0)));
+        assert!(!is_uniform_axis_aligned(&Matrix::rotation(0.1)));
     }
 }

@@ -169,6 +169,30 @@ impl Paragraph {
         self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 
+    /// Tight monochrome outline bounds in paragraph coordinates. This is the
+    /// deliberate, slower query path used by Canvas-style text metrics; frame
+    /// recording continues to use the precomputed conservative run bounds.
+    pub fn outline_bounds(&self) -> Option<Rect> {
+        let mut result: Option<Rect> = None;
+        for run in self.lines().iter().flat_map(|line| &line.runs) {
+            let font = self.faces.get(run.font);
+            for glyph in &run.glyphs {
+                let Some(path) = crate::raster::glyph_path(font, glyph.id, run.size) else {
+                    continue;
+                };
+                let bounds = path.bounds();
+                let placed = Rect::new(
+                    bounds.x + glyph.x,
+                    bounds.y + glyph.y,
+                    bounds.width,
+                    bounds.height,
+                );
+                result = Some(result.map_or(placed, |current| current.union(&placed)));
+            }
+        }
+        result
+    }
+
     pub fn bounds(&self) -> Rect {
         Rect::new(0.0, 0.0, self.width(), self.height())
     }

@@ -43,6 +43,7 @@ impl Default for WebFontCollection {
 #[wasm_bindgen(js_name = Paragraph)]
 pub struct WebParagraph {
     pub(crate) inner: Paragraph,
+    outline_bounds: Option<Option<valo::Rect>>,
 }
 
 #[wasm_bindgen(js_class = Paragraph)]
@@ -97,11 +98,15 @@ impl WebParagraph {
         builder.style(paragraph_style).add_text(text, &style);
         let mut paragraph = builder.build();
         paragraph.layout(max_width);
-        Ok(WebParagraph { inner: paragraph })
+        Ok(WebParagraph {
+            inner: paragraph,
+            outline_bounds: None,
+        })
     }
 
     pub fn layout(&mut self, max_width: f32) {
         self.inner.layout(max_width);
+        self.outline_bounds = None;
     }
 
     #[wasm_bindgen(getter)]
@@ -112,6 +117,109 @@ impl WebParagraph {
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> f32 {
         self.inner.height()
+    }
+
+    #[wasm_bindgen(getter, js_name = alphabeticBaseline)]
+    pub fn alphabetic_baseline(&self) -> f32 {
+        self.inner.lines().first().map_or(0.0, |line| line.baseline)
+    }
+
+    #[wasm_bindgen(getter, js_name = firstLineAscent)]
+    pub fn first_line_ascent(&self) -> f32 {
+        self.inner.lines().first().map_or(0.0, |line| line.ascent)
+    }
+
+    #[wasm_bindgen(getter, js_name = firstLineDescent)]
+    pub fn first_line_descent(&self) -> f32 {
+        self.inner.lines().first().map_or(0.0, |line| line.descent)
+    }
+
+    #[wasm_bindgen(getter, js_name = outlineLeft)]
+    pub fn outline_left(&mut self) -> f32 {
+        self.outline_bounds().map_or(0.0, |bounds| bounds.x)
+    }
+
+    #[wasm_bindgen(getter, js_name = outlineTop)]
+    pub fn outline_top(&mut self) -> f32 {
+        self.outline_bounds().map_or(0.0, |bounds| bounds.y)
+    }
+
+    #[wasm_bindgen(getter, js_name = outlineRight)]
+    pub fn outline_right(&mut self) -> f32 {
+        self.outline_bounds().map_or(0.0, |bounds| bounds.right())
+    }
+
+    #[wasm_bindgen(getter, js_name = outlineBottom)]
+    pub fn outline_bottom(&mut self) -> f32 {
+        self.outline_bounds().map_or(0.0, |bounds| bounds.bottom())
+    }
+
+    #[wasm_bindgen(getter, js_name = hasOutline)]
+    pub fn has_outline(&mut self) -> bool {
+        self.outline_bounds().is_some()
+    }
+
+    #[wasm_bindgen(getter, js_name = primaryFontAscent)]
+    pub fn primary_font_ascent(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| font.ascent_px(size))
+    }
+
+    #[wasm_bindgen(getter, js_name = primaryFontDescent)]
+    pub fn primary_font_descent(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| font.descent_px(size))
+    }
+
+    #[wasm_bindgen(getter, js_name = emAscent)]
+    pub fn em_ascent(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| em_metrics(font, size).0)
+    }
+
+    #[wasm_bindgen(getter, js_name = emDescent)]
+    pub fn em_descent(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| em_metrics(font, size).1)
+    }
+
+    #[wasm_bindgen(getter, js_name = topBaselineOrigin)]
+    pub fn top_baseline_origin(&self) -> f32 {
+        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
+            return 0.0;
+        };
+        let (em_ascent, _) = em_metrics(font, size);
+        -baseline + em_ascent
+    }
+
+    #[wasm_bindgen(getter, js_name = hangingBaselineOrigin)]
+    pub fn hanging_baseline_origin(&self) -> f32 {
+        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
+            return 0.0;
+        };
+        -baseline + font.ascent_px(size) * 0.8
+    }
+
+    #[wasm_bindgen(getter, js_name = middleBaselineOrigin)]
+    pub fn middle_baseline_origin(&self) -> f32 {
+        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
+            return 0.0;
+        };
+        let (em_ascent, em_descent) = em_metrics(font, size);
+        -baseline + (em_ascent - em_descent) * 0.5
+    }
+
+    #[wasm_bindgen(getter, js_name = bottomBaselineOrigin)]
+    pub fn bottom_baseline_origin(&self) -> f32 {
+        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
+            return 0.0;
+        };
+        let (_, em_descent) = em_metrics(font, size);
+        -baseline - em_descent
+    }
+
+    #[wasm_bindgen(getter, js_name = ideographicBaselineOrigin)]
+    pub fn ideographic_baseline_origin(&self) -> f32 {
+        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
+            return 0.0;
+        };
+        -baseline - font.descent_px(size)
     }
 
     #[wasm_bindgen(getter, js_name = minIntrinsicWidth)]
@@ -128,6 +236,30 @@ impl WebParagraph {
     pub fn truncated(&self) -> bool {
         self.inner.truncated()
     }
+}
+
+impl WebParagraph {
+    fn outline_bounds(&mut self) -> Option<valo::Rect> {
+        *self
+            .outline_bounds
+            .get_or_insert_with(|| self.inner.outline_bounds())
+    }
+}
+
+fn primary_metrics(paragraph: &Paragraph) -> Option<(f32, &valo::Font, f32)> {
+    let line = paragraph.lines().first()?;
+    let run = line.runs.first()?;
+    Some((line.baseline, paragraph.faces().get(run.font), run.size))
+}
+
+fn em_metrics(font: &valo::Font, size: f32) -> (f32, f32) {
+    let ascent = font.ascent_px(size);
+    let descent = font.descent_px(size);
+    let line_height = ascent + descent;
+    if line_height <= f32::EPSILON {
+        return (size, 0.0);
+    }
+    (size * ascent / line_height, size * descent / line_height)
 }
 
 fn text_align(value: u32) -> TextAlign {

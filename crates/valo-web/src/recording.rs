@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use valo::{DisplayList, DisplayListBuilder, DrawParagraphExt, Rect};
+use valo::{DisplayList, DisplayListBuilder, DrawGlyphRunExt, DrawParagraphExt, Rect};
 use wasm_bindgen::prelude::*;
 
 use crate::path::{elliptical_radii, WebPath};
@@ -223,6 +223,19 @@ impl WebDisplayListBuilder {
         y: f32,
     ) -> Result<(), JsValue> {
         self.builder()?.draw_paragraph(&paragraph.inner, (x, y));
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = drawParagraphWith)]
+    pub fn draw_paragraph_with(
+        &mut self,
+        paragraph: &WebParagraph,
+        x: f32,
+        y: f32,
+        paint: &WebPaint,
+    ) -> Result<(), JsValue> {
+        self.builder()?
+            .draw_paragraph_with(&paragraph.inner, (x, y), &paint.inner);
         Ok(())
     }
 

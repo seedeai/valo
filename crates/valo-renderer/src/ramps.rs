@@ -1,7 +1,7 @@
 //! Baked 1D gradient ramps — Impeller's texture-gradient path
 //! (`geometry/gradient.cc` `CreateGradientBuffer` + `gradient_generator.cc`
 //! `CreateGradientTexture`): stop lists past the uniform budget become an
-//! RGBA8 N×1 premultiplied texture sampled linearly, with
+//! RGBA8 N×1 straight-color texture sampled linearly, with
 //! `N = min(round(1 / min_adjacent_stop_delta) + 1, 1024)` so tight stop
 //! pairs stay resolvable without absurd textures. Content-keyed; entries
 //! idle out after a few frames like pooled targets.
@@ -88,14 +88,15 @@ fn texel_count(stops: &[GradientStop]) -> u32 {
     ((1.0 / minimum_delta).round() as u32 + 1).clamp(2, MAX_TEXELS)
 }
 
-/// Piecewise-linear evaluation of the stop ramp into premultiplied RGBA8 —
-/// the same math the analytic `ramp()` fragment runs, so both tiers agree.
+/// Piecewise-linear evaluation of the stop ramp into straight RGBA8. The
+/// fragment premultiplies after sampling, matching Impeller and Skia's default
+/// gradient interpolation.
 fn bake(stops: &[GradientStop]) -> (Vec<u8>, u32) {
     let texels = texel_count(stops);
     let mut bytes = Vec::with_capacity(texels as usize * 4);
     for i in 0..texels {
         let t = i as f32 / (texels - 1) as f32;
-        let color = sample(stops, t).premultiplied();
+        let color = sample(stops, t).components();
         for channel in color {
             bytes.push((channel * 255.0 + 0.5) as u8);
         }
@@ -179,4 +180,28 @@ fn stop_key(stops: &[GradientStop]) -> u64 {
         stop.color.a.to_bits().hash(&mut hasher);
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use valo_dl::GradientStop;
+    use valo_geometry::Color;
+
+    use super::sample;
+
+    #[test]
+    fn translucent_stops_interpolate_before_premultiplication() {
+        let stops = [
+            GradientStop {
+                offset: 0.0,
+                color: Color::rgba(1.0, 0.0, 0.0, 1.0),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::rgba(0.0, 0.0, 1.0, 0.5),
+            },
+        ];
+
+        assert_eq!(sample(&stops, 0.5), Color::rgba(0.5, 0.0, 0.5, 0.75));
+    }
 }
