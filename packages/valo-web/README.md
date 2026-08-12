@@ -15,9 +15,12 @@ context.fill();
 Import `@valo/web/raw` for `DisplayListBuilder`, paths, paint, shaders,
 paragraphs, image upload, render statistics, and explicit resource lifetimes.
 
-The adapter intentionally throws `NotSupportedError` for synchronous pixel
-readback/writes, `strokeText`, and `isPointInStroke`. Register web fonts from
-bytes with `context.registerFont`; Valo never silently uses browser fallback.
+The adapter supports fixed-font `fillText`, `strokeText`, and Canvas-shaped
+`measureText` metrics. It intentionally throws `NotSupportedError` for
+synchronous pixel readback/writes, `isPointInStroke`, and non-repeating pattern
+modes. Register web fonts from bytes with `context.registerFont`; Valo never
+silently uses browser fallback. Use `setColorMatrix` instead of the broad CSS
+`filter` string API.
 
 See the [Valo repository](https://github.com/tyxu/valo) for the playground,
 Rust API, examples, and complete documentation.

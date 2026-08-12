@@ -1,0 +1,35 @@
+name: Canvas2D fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  VALO_FUZZ_RUNS: 2000
+  VALO_FUZZ_TIME_LIMIT: 900000
+
+jobs:
+  fuzz:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run build:web
+      - run: npm run fuzz:canvas
+      - name: Upload Canvas2D mismatches
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-fuzz-mismatches
+          path: packages/valo-conformance/artifacts
+          if-no-files-found: ignore

@@ -5,3 +5,4 @@ node_modules
 packages/*/dist
 packages/*/playground/dist
 packages/valo-web/wasm
+packages/valo-conformance/artifacts

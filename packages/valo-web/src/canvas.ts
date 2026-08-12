@@ -52,11 +52,13 @@ interface State {
   shadowOffsetX: number;
   shadowOffsetY: number;
   imageSmoothingEnabled: boolean;
+  imageSmoothingQuality: ImageSmoothingQuality;
   font: string;
   textAlign: CanvasTextAlign;
   textBaseline: CanvasTextBaseline;
   letterSpacing: string;
   wordSpacing: string;
+  textRendering: CanvasTextRendering;
   colorMatrix: number[] | undefined;
 }
 
@@ -78,11 +80,13 @@ const defaultState = (): State => ({
   shadowOffsetX: 0,
   shadowOffsetY: 0,
   imageSmoothingEnabled: true,
+  imageSmoothingQuality: "low",
   font: "10px sans-serif",
   textAlign: "start",
   textBaseline: "alphabetic",
   letterSpacing: "0px",
   wordSpacing: "0px",
+  textRendering: "auto",
   colorMatrix: undefined,
 });
 
@@ -156,7 +160,7 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.lineWidth;
   }
   set lineWidth(value: number) {
-    if (Number.isFinite(value) && value >= 0) this.#state.lineWidth = value;
+    if (Number.isFinite(value) && value > 0) this.#state.lineWidth = value;
   }
 
   get lineCap(): CanvasLineCap {
@@ -223,6 +227,15 @@ export class ValoCanvasRenderingContext2D {
     this.#state.imageSmoothingEnabled = value;
   }
 
+  get imageSmoothingQuality(): ImageSmoothingQuality {
+    return this.#state.imageSmoothingQuality;
+  }
+  set imageSmoothingQuality(value: ImageSmoothingQuality) {
+    if (value === "low" || value === "medium" || value === "high") {
+      this.#state.imageSmoothingQuality = value;
+    }
+  }
+
   get font(): string {
     return this.#state.font;
   }
@@ -259,6 +272,20 @@ export class ValoCanvasRenderingContext2D {
   set wordSpacing(value: string) {
     parsePixels(value);
     this.#state.wordSpacing = value;
+  }
+
+  get textRendering(): CanvasTextRendering {
+    return this.#state.textRendering;
+  }
+  set textRendering(value: CanvasTextRendering) {
+    if (
+      value === "auto" ||
+      value === "optimizeSpeed" ||
+      value === "optimizeLegibility" ||
+      value === "geometricPrecision"
+    ) {
+      this.#state.textRendering = value;
+    }
   }
 
   save(): void {
@@ -408,6 +435,7 @@ export class ValoCanvasRenderingContext2D {
   clearRect(x: number, y: number, width: number, height: number): void {
     if (
       equalMatrix(this.#state.transform, identity) &&
+      this.#state.clips.length === 0 &&
       x <= 0 &&
       y <= 0 &&
       x + width >= this.canvas.width &&
@@ -429,24 +457,25 @@ export class ValoCanvasRenderingContext2D {
   drawImage(image: Image, ...argumentsList: number[]): void {
     const [sourceX, sourceY, sourceWidth, sourceHeight, destinationX, destinationY, destinationWidth, destinationHeight] =
       imageArguments(image, argumentsList);
-    const paint = this.#paint("#ffffff", false);
-    this.#builder.drawImageRect(
-      image,
-      sourceX,
-      sourceY,
-      sourceWidth,
-      sourceHeight,
-      destinationX,
-      destinationY,
-      destinationWidth,
-      destinationHeight,
-      this.#state.imageSmoothingEnabled ? 0 : 1,
-      0,
-      0,
-      paint,
+    this.#drawStyled(
+      (paint) => this.#builder.drawImageRect(
+        image,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        destinationX,
+        destinationY,
+        destinationWidth,
+        destinationHeight,
+        this.#state.imageSmoothingEnabled ? 0 : 1,
+        0,
+        0,
+        paint,
+      ),
+      false,
+      "#ffffff",
     );
-    paint.free();
-    this.#markDirty();
   }
 
   createLinearGradient(x0: number, y0: number, x1: number, y1: number): ValoCanvasGradient {
@@ -568,23 +597,29 @@ export class ValoCanvasRenderingContext2D {
   }
 
   fillText(text: string, x: number, y: number, maxWidth = Number.POSITIVE_INFINITY): void {
-    const paragraph = this.#paragraph(text, maxWidth);
-    const [left, top] = this.#textOrigin(paragraph, x, y);
-    this.#builder.drawParagraph(paragraph, left, top);
-    paragraph.free();
-    this.#markDirty();
+    this.#drawText(text, x, y, maxWidth, false);
   }
 
-  strokeText(): void {
-    throw new DOMException(
-      "strokeText is not implemented; use fillText or Valo's raw paragraph API",
-      "NotSupportedError",
-    );
+  strokeText(text: string, x: number, y: number, maxWidth = Number.POSITIVE_INFINITY): void {
+    this.#drawText(text, x, y, maxWidth, true);
   }
 
   measureText(text: string): ValoTextMetrics {
     const paragraph = this.#paragraph(text, Number.POSITIVE_INFINITY);
-    const metrics = new ValoTextMetrics(paragraph.width, paragraph.height);
+    const [horizontal, vertical] = this.#textOffset(paragraph);
+    const alphabeticDisplacement = vertical + paragraph.alphabeticBaseline;
+    const hasOutline = paragraph.hasOutline;
+    const metrics = new ValoTextMetrics(
+      paragraph.width,
+      hasOutline ? -horizontal - paragraph.outlineLeft : 0,
+      hasOutline ? horizontal + paragraph.outlineRight : 0,
+      hasOutline ? -vertical - paragraph.outlineTop : 0,
+      hasOutline ? vertical + paragraph.outlineBottom : 0,
+      paragraph.primaryFontAscent - alphabeticDisplacement,
+      paragraph.primaryFontDescent + alphabeticDisplacement,
+      paragraph.emAscent - alphabeticDisplacement,
+      paragraph.emDescent + alphabeticDisplacement,
+    );
     paragraph.free();
     return metrics;
   }
@@ -689,17 +724,62 @@ export class ValoCanvasRenderingContext2D {
   }
 
   #drawShape(draw: (paint: Paint) => void, stroke: boolean): void {
-    this.#drawShadow(draw, stroke);
-    const paint = this.#paint(stroke ? this.#state.strokeStyle : this.#state.fillStyle, stroke);
+    this.#drawStyled(
+      draw,
+      stroke,
+      stroke ? this.#state.strokeStyle : this.#state.fillStyle,
+    );
+  }
+
+  #drawStyled(
+    draw: (paint: Paint) => void,
+    stroke: boolean,
+    style: ValoCanvasStyle,
+  ): void {
+    const composite = canvasDestructiveBlendModes.has(this.#state.blendMode);
+    if (composite) {
+      const layerPaint = new Paint(1, 1, 1, 1);
+      layerPaint.setBlendMode(this.#state.blendMode);
+      this.#builder.saveLayer(layerPaint);
+      layerPaint.free();
+    }
+    const sourceBlendMode = composite ? blendModes["source-over"]! : this.#state.blendMode;
+    this.#drawShadow(draw, stroke, style, sourceBlendMode);
+    const paint = this.#paint(style, stroke, true, sourceBlendMode);
     draw(paint);
     paint.free();
+    if (composite) this.#builder.restore();
     this.#markDirty();
   }
 
-  #drawShadow(draw: (paint: Paint) => void, stroke: boolean): void {
+  #drawText(text: string, x: number, y: number, maxWidth: number, stroke: boolean): void {
+    if (maxWidth <= 0 || Number.isNaN(maxWidth)) return;
+    const paragraph = this.#paragraph(text, Number.POSITIVE_INFINITY);
+    const horizontalScale = textHorizontalScale(paragraph.width, maxWidth);
+    const [left, top] = this.#textOffset(paragraph);
+    this.#builder.save();
+    this.#builder.translate(x, y);
+    if (horizontalScale !== 1) this.#builder.scale(horizontalScale, 1);
+    this.#drawShape(
+      (paint) => this.#builder.drawParagraphWith(paragraph, left, top, paint),
+      stroke,
+    );
+    this.#builder.restore();
+    paragraph.free();
+  }
+
+  #drawShadow(
+    draw: (paint: Paint) => void,
+    stroke: boolean,
+    style: ValoCanvasStyle,
+    blendMode: number,
+  ): void {
     const color = parseColor(this.#state.shadowColor);
     if (color[3] === 0) return;
-    const paint = this.#paint(this.#state.shadowColor, stroke, false);
+    const paint = this.#paint(style, stroke, false, blendMode);
+    const filter = ColorFilter.matrix(shadowColorMatrix(color));
+    paint.setColorFilter(filter);
+    filter.free();
     if (this.#state.shadowBlur > 0) paint.setMaskBlur(this.#state.shadowBlur / 2, 0);
     this.#builder.save();
     this.#builder.translate(this.#state.shadowOffsetX, this.#state.shadowOffsetY);
@@ -708,10 +788,15 @@ export class ValoCanvasRenderingContext2D {
     paint.free();
   }
 
-  #paint(style: ValoCanvasStyle, stroke: boolean, includeFilter = true): Paint {
+  #paint(
+    style: ValoCanvasStyle,
+    stroke: boolean,
+    includeFilter = true,
+    blendMode = this.#state.blendMode,
+  ): Paint {
     const color = typeof style === "string" ? parseColor(style) : ([1, 1, 1, 1] as const);
     const paint = new Paint(color[0], color[1], color[2], color[3] * this.#state.globalAlpha);
-    paint.setBlendMode(this.#state.blendMode);
+    paint.setBlendMode(blendMode);
     if (style instanceof ValoCanvasGradient) {
       const shader = style.toRaw();
       paint.setShader(shader);
@@ -765,7 +850,7 @@ export class ValoCanvasRenderingContext2D {
     );
   }
 
-  #textOrigin(paragraph: Paragraph, x: number, y: number): [number, number] {
+  #textOffset(paragraph: Paragraph): [number, number] {
     const horizontal =
       this.#state.textAlign === "center"
         ? -paragraph.width / 2
@@ -773,14 +858,18 @@ export class ValoCanvasRenderingContext2D {
           ? -paragraph.width
           : 0;
     const vertical =
-      this.#state.textBaseline === "top" || this.#state.textBaseline === "hanging"
-        ? 0
+      this.#state.textBaseline === "top"
+        ? paragraph.topBaselineOrigin
+        : this.#state.textBaseline === "hanging"
+          ? paragraph.hangingBaselineOrigin
         : this.#state.textBaseline === "middle"
-          ? -paragraph.height / 2
-          : this.#state.textBaseline === "bottom" || this.#state.textBaseline === "ideographic"
-            ? -paragraph.height
-            : -paragraph.height * 0.8;
-    return [x + horizontal, y + vertical];
+          ? paragraph.middleBaselineOrigin
+        : this.#state.textBaseline === "bottom"
+            ? paragraph.bottomBaselineOrigin
+        : this.#state.textBaseline === "ideographic"
+            ? paragraph.ideographicBaselineOrigin
+            : -paragraph.alphabeticBaseline;
+    return [horizontal, vertical];
   }
 
   #markDirty(): void {
@@ -818,12 +907,20 @@ export class ValoCanvasRenderingContext2D {
 export class ValoTextMetrics {
   constructor(
     readonly width: number,
+    readonly actualBoundingBoxLeft: number,
+    readonly actualBoundingBoxRight: number,
     readonly actualBoundingBoxAscent: number,
+    readonly actualBoundingBoxDescent: number,
+    readonly fontBoundingBoxAscent: number,
+    readonly fontBoundingBoxDescent: number,
+    readonly emHeightAscent: number,
+    readonly emHeightDescent: number,
   ) {}
+}
 
-  get actualBoundingBoxDescent(): number {
-    return 0;
-  }
+function textHorizontalScale(width: number, maxWidth: number): number {
+  if (!Number.isFinite(maxWidth) || maxWidth < 0 || width <= maxWidth || width === 0) return 1;
+  return maxWidth / width;
 }
 
 function replayState(
@@ -920,6 +1017,15 @@ function imageArguments(
   throw new TypeError("drawImage expects 3, 5, or 9 total arguments");
 }
 
+function shadowColorMatrix([red, green, blue, alpha]: Rgba): Float32Array {
+  return new Float32Array([
+    0, 0, 0, 0, red,
+    0, 0, 0, 0, green,
+    0, 0, 0, 0, blue,
+    0, 0, 0, alpha, 0,
+  ]);
+}
+
 interface ParsedFont {
   italic: boolean;
   weight: number;
@@ -982,3 +1088,13 @@ const blendModes: Partial<Record<GlobalCompositeOperation, number>> = {
 const blendModeNames = Object.fromEntries(
   Object.entries(blendModes).map(([name, identifier]) => [identifier, name]),
 ) as Partial<Record<number, GlobalCompositeOperation>>;
+
+// Canvas applies these operators to the transparent source outside a shape,
+// so the operation covers the active clip rather than only the source ink.
+const canvasDestructiveBlendModes = new Set([
+  blendModes.copy!,
+  blendModes["source-in"]!,
+  blendModes["destination-in"]!,
+  blendModes["source-out"]!,
+  blendModes["destination-atop"]!,
+]);

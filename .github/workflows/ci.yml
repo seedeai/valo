@@ -69,7 +69,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run check:web
+      - run: npm run check:conformance
       - run: npm run build:playground --workspace @valo/web
+
+  canvas-conformance:
+    name: Canvas2D conformance
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run build:web
+      - run: npm run test:conformance
+      - name: Upload Canvas2D mismatches
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-conformance-mismatches
+          path: packages/valo-conformance/artifacts
+          if-no-files-found: ignore
 
   msrv:
     name: msrv (1.87)
