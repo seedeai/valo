@@ -3,8 +3,6 @@
 //! accumulate resources — the pools that self-evict plateau, and the two
 //! that didn't (glyph paths, spike-sized HostBuffer blocks) are pinned here.
 
-use std::sync::Arc;
-
 use valo::{
     Color, Context, DisplayListBuilder, DrawParagraphExt, FontCollection, Offscreen, Paint,
     ParagraphBuilder, PathBuilder, Rect, TextStyle,

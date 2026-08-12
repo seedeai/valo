@@ -694,7 +694,7 @@ mod tests {
 
     use valo_text::FontCollection;
 
-    fn fira() -> Arc<FontCollection> {
+    fn fira() -> FontCollection {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/fonts/fira_sans.ttf"
@@ -702,7 +702,7 @@ mod tests {
         let mut c = FontCollection::new();
         c.register("Fira Sans", std::fs::read(path).unwrap())
             .unwrap();
-        Arc::new(c)
+        c
     }
 
     /// Tiny pages force the whole policy: fill page 1, open pages 2..4,

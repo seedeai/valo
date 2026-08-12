@@ -13,8 +13,6 @@
 //! - BOTTOM RIGHT: huge text — the OUTLINE tier (real paths, stencil-then-
 //!   cover, sharp at any size).
 
-use std::sync::Arc;
-
 use valo::{
     Color, DisplayListBuilder, DrawParagraphExt, FontCollection, ParagraphBuilder, ParagraphStyle,
     TextAlign, TextStyle,
@@ -168,6 +166,6 @@ fn main() {
         "text",
         [660, 700],
         Color::rgb(0.09, 0.1, 0.13),
-        move |ctx| scene(&mut fonts),
+        move |_ctx| scene(&mut fonts),
     );
 }

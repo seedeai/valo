@@ -2,8 +2,6 @@
 //! machine's installed fonts:
 //! `cargo run -p valo-system-fonts --example selection_demo`
 
-use std::sync::Arc;
-
 use valo_system_fonts::SystemFonts;
 use valo_text::{
     FaceSet, Font, FontAttrs, FontCollection, FontId, FontSource, ParagraphBuilder, TextStyle,

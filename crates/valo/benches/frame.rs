@@ -19,7 +19,7 @@ use valo::{
 
 mod bench_fonts;
 
-fn design_canvas(fonts: &Arc<valo::FontCollection>) -> DisplayList {
+fn design_canvas(fonts: &mut valo::FontCollection) -> DisplayList {
     let mut b = DisplayListBuilder::new();
     b.draw_rect(
         Rect::new(0.0, 0.0, 800.0, 600.0),
@@ -91,7 +91,6 @@ fn frame_benches(c: &mut Criterion) {
     };
     let mut fonts = bench_fonts::fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [800, 600]);
     let dl = design_canvas(&mut fonts);
     let retained = Arc::new(design_canvas(&mut fonts));
@@ -137,7 +136,6 @@ fn board_benches(c: &mut Criterion) {
     };
     let mut fonts = bench_fonts::fonts();
     let mut ctx = Context::new(device.clone(), queue.clone());
-    ctx.set_fonts(fonts.clone());
     let offscreen = Offscreen::new(&device, [1600, 1000]);
     let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     let view = |zoom: f32, cx: f32, cy: f32| {

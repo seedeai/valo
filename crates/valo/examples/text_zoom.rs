@@ -10,8 +10,6 @@
 //!
 //! `stats.text_tiers` counts runs per tier: [mask, sdf, path].
 
-use std::sync::Arc;
-
 use valo::{
     Color, DisplayListBuilder, DrawParagraphExt, FontCollection, ParagraphBuilder, TextStyle,
 };
@@ -75,6 +73,6 @@ fn main() {
         "text_zoom",
         [660, 800],
         Color::rgb(0.09, 0.1, 0.13),
-        |ctx| scene(&mut fonts),
+        |_ctx| scene(&mut fonts),
     );
 }

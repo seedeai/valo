@@ -327,7 +327,7 @@ impl FontDemand {
 /// pluggable half of the demand loop. Implementations only
 /// locate and parse (an installed-fonts scan today; a platform-native
 /// CoreText/DirectWrite lookup can replace it without touching policy);
-/// the growth policy itself lives in [`FontCollection::grown_by`].
+/// the growth policy itself lives in [`FaceSet::grown_by`].
 pub trait FontSource {
     /// Every face answering to `name` (all weights and styles — the
     /// collection's nearest-variant matching picks per span).

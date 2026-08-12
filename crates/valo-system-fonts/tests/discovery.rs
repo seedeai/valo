@@ -2,8 +2,6 @@
 //! pattern) when this machine lacks the faces it needs, and asserts
 //! strictly when they exist.
 
-use std::sync::Arc;
-
 use valo_system_fonts::SystemFonts;
 use valo_text::{FontAttrs, FontCollection, FontSource, Paragraph, ParagraphBuilder, TextStyle};
 

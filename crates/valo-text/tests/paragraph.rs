@@ -1,8 +1,6 @@
 //! GPU-free pipeline proof: shaping, fallback, wrapping, bidi, raster, and
 //! the retained tiers (build = shape once; layout = wrap; recolor = place).
 
-use std::sync::Arc;
-
 use valo_geometry::Color;
 use valo_text::{
     FaceSet, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer, TextAlign,
@@ -235,7 +233,7 @@ fn align_shifts_lines() {
 
 #[test]
 fn rasterizes_alpha_sdf_and_path() {
-    let mut c = fonts();
+    let c = fonts();
     let font = c.family("Fira Sans").unwrap();
     let glyph = c.get(font).glyph_for('g').unwrap();
     let mut r = Rasterizer::new();

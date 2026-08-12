@@ -7,8 +7,6 @@
 //! samply record target/release/examples/frame_profile 8
 //! ```
 
-use std::sync::Arc;
-
 use valo::DrawParagraphExt;
 
 fn main() {

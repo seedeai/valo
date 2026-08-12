@@ -2,7 +2,7 @@
 //! gets from its platform font managers, kept out of valo-text so wasm
 //! builds never carry it. This crate only LOCATES and PARSES (fontdb:
 //! platform directories, .ttc face indices, memory-mapped bytes); the
-//! growth policy lives in [`FontCollection::grown_by`], so a
+//! growth policy lives in [`FaceSet::grown_by`], so a
 //! platform-native source (CoreText/DirectWrite) can replace this one
 //! without touching policy. valo's own parser reads names and attrs from
 //! the face tables, so faces found here and faces registered from

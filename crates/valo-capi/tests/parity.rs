@@ -326,7 +326,7 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
 
 #[test]
 fn text_queries_answer_over_the_ffi() {
-    let mut fonts = valo_fonts_new();
+    let fonts = valo_fonts_new();
     let bytes = fira_sans_bytes();
     let face = unsafe { valo_fonts_add(fonts, bytes.as_ptr(), bytes.len()) };
     assert!(face >= 0, "fira sans registers");
@@ -387,7 +387,7 @@ fn text_queries_answer_over_the_ffi() {
         assert!(!valo_paragraph_line_metrics(paragraph, 999, &mut metrics));
     }
 
-    render_matches_the_rust_route(fonts, paragraph, &bytes);
+    render_matches_the_rust_route(paragraph, &bytes);
 
     unsafe {
         valo_paragraph_dispose(paragraph);
@@ -395,14 +395,10 @@ fn text_queries_answer_over_the_ffi() {
     }
 }
 
-/// The paragraph must also DRAW over the FFI: glyph runs rasterize through
-/// the collection registered with [`valo_context_set_fonts`], and the
-/// frame must match the Rust route byte-for-byte.
-fn render_matches_the_rust_route(
-    fonts: *mut ValoFontCollection,
-    paragraph: *mut ValoParagraph,
-    font_bytes: &[u8],
-) {
+/// The paragraph must also DRAW over the FFI: a recorded glyph run carries its
+/// own font instance, so the C route needs no collection at render time, and
+/// the frame must match the Rust route byte-for-byte.
+fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8]) {
     let size = [140u32, 80u32];
 
     // ── the C route ──────────────────────────────────────────────────
@@ -482,7 +478,7 @@ fn render_matches_the_rust_route(
 /// cannot answer.
 #[test]
 fn system_fonts_answer_demands_over_the_ffi() {
-    let mut fonts = valo_fonts_new();
+    let fonts = valo_fonts_new();
     let bytes = fira_sans_bytes();
     let face = unsafe { valo_fonts_add(fonts, bytes.as_ptr(), bytes.len()) };
     assert!(face >= 0);
