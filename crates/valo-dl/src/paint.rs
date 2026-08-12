@@ -41,6 +41,23 @@ pub enum BlendMode {
     Luminosity,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{Paint, PaintStyle};
+    use valo_geometry::Stroke;
+
+    #[test]
+    fn hairline_padding_stays_large_enough_when_minified() {
+        let paint = Paint {
+            style: PaintStyle::Stroke(Stroke::new(0.0)),
+            ..Paint::default()
+        };
+        let scale = 0.1;
+        let device_padding = paint.stroke_padding_at_scale(scale) * scale;
+        assert!(device_padding >= 0.5);
+    }
+}
+
 impl BlendMode {
     /// Expressible as fixed-function pipeline blending (no dst read).
     pub fn is_pipeline_blendable(self) -> bool {
@@ -146,29 +163,15 @@ impl ColorFilter {
     /// `None` when the filter needs the drawn pixels as its destination, so
     /// only the GPU can answer it.
     pub fn folded_into(&self, color: Color) -> Option<Color> {
-        match self {
-            ColorFilter::Matrix(matrix) => Some(apply_color_matrix(matrix, color)),
-            ColorFilter::Blend(..) => None,
-        }
+        Some(crate::color_filter::apply(*self, color))
     }
-}
 
-/// `out[row] = clamp(matrix_row · [r, g, b, a, 1])`. Straight (unpremultiplied)
-/// in and out, which is what [`Color`] already holds.
-fn apply_color_matrix(matrix: &[f32; 20], color: Color) -> Color {
-    let input = [color.r, color.g, color.b, color.a, 1.0];
-    let channel = |row: usize| {
-        let start = row * 5;
-        (0..5)
-            .map(|column| matrix[start + column] * input[column])
-            .sum::<f32>()
-            .clamp(0.0, 1.0)
-    };
-    Color {
-        r: channel(0),
-        g: channel(1),
-        b: channel(2),
-        a: channel(3),
+    /// Whether this filter can turn an untouched transparent pixel into a
+    /// visible one. Layer coverage must include the full filter scope when
+    /// this is true (Flutter's `modifies_transparent_black`).
+    pub fn modifies_transparent_black(&self) -> bool {
+        self.folded_into(Color::TRANSPARENT)
+            .is_some_and(|color| color.a > 0.0)
     }
 }
 
@@ -227,11 +230,19 @@ impl Paint {
         }
     }
 
-    /// Fully transparent + `SrcOver` (or a zero-width stroke) draws
+    /// Fully transparent + `SrcOver` (or a negative-width stroke) draws
     /// nothing — the recorder drops them.
     pub fn is_nop(&self) -> bool {
-        let invisible = self.color.a <= 0.0 && self.blend_mode == BlendMode::SrcOver;
-        let empty_stroke = matches!(&self.style, PaintStyle::Stroke(s) if s.width <= 0.0);
+        let filter_keeps_transparent = self
+            .color_filter
+            .is_none_or(|filter| !filter.modifies_transparent_black());
+        let invisible = self.color.a <= 0.0
+            && self.blend_mode == BlendMode::SrcOver
+            && filter_keeps_transparent;
+        // Width ZERO is a hairline, not an empty stroke — Skia and Impeller
+        // both draw it one device pixel wide, and the renderer's hairline
+        // floor is what realises that. Only a negative width draws nothing.
+        let empty_stroke = matches!(&self.style, PaintStyle::Stroke(s) if s.width < 0.0);
         invisible || empty_stroke
     }
 
@@ -253,6 +264,13 @@ impl Paint {
     /// Half the stroke width, times the miter's worst-case spike (and √2
     /// for square-cap corners) — how far ink can reach past the geometry.
     pub fn stroke_padding(&self) -> f32 {
+        self.stroke_padding_at_scale(1.0)
+    }
+
+    /// Transform-aware stroke padding. The renderer floors every stroke to
+    /// one device pixel, so bounds must use that same effective width under
+    /// minification or a layer/cull edge can trim the widened geometry.
+    pub fn stroke_padding_at_scale(&self, scale: f32) -> f32 {
         match &self.style {
             PaintStyle::Fill => 0.0,
             PaintStyle::Stroke(s) => {
@@ -260,7 +278,8 @@ impl Paint {
                     valo_geometry::Join::Miter => s.miter_limit.max(1.5),
                     _ => 1.5,
                 };
-                s.width * 0.5 * spike
+                let effective_width = s.width.max(1.0 / scale.max(1e-3));
+                effective_width * 0.5 * spike
             }
         }
     }

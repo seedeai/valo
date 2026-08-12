@@ -858,8 +858,8 @@ fn color_filters_golden() {
         },
     );
 
-    // 2. Luminance grayscale over a gradient, so the filter has to run per
-    //    pixel rather than fold into one colour.
+    // 2. Luminance grayscale over a gradient. Impeller applies the filter to
+    //    every stop colour before the gradient interpolates them.
     #[rustfmt::skip]
     let grayscale = [
         0.2126, 0.7152, 0.0722, 0.0, 0.0,
@@ -937,11 +937,8 @@ fn color_filters_golden() {
         },
     );
 
-    // 6. Filtered AND blurred, with a filter that CANNOT fold — so this card
-    //    exercises the two-stage chain: a filter pass whose bucketed output the
-    //    blur then reads. (It also pins the record-time gate: the closed-form
-    //    blur has nowhere to run a filter, so a filtered shape must not take
-    //    it, or the shadow keeps its original colour.)
+    // 6. Filtered AND blurred. The blend folds into the solid source, but the
+    //    blur still requires the general effect layer.
     b.draw_rrect_radii(
         card(5),
         [20.0; 4],
@@ -957,15 +954,10 @@ fn color_filters_golden() {
     );
 
     let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
-    // Four, not six: cards 1 and 5 are solid fills with a colour MATRIX, so
-    // the filter folds into the paint colour on the CPU and they never open a
-    // layer. The other four need per-pixel work — a gradient source, two
-    // blends, and a blur. That the golden below is unchanged by this is the
-    // proof the fold is exact rather than merely close.
-    assert_eq!(
-        stats.layers_rendered, 4,
-        "only the filters that need per-pixel work take a layer"
-    );
+    // Every matrix and constant blend folds into the solid/gradient source,
+    // exactly as Impeller's `Contents::ApplyColorFilter` does. Only the blur
+    // still needs an effect layer.
+    assert_eq!(stats.layers_rendered, 1, "only the blur needs a layer");
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
 
     let centre = |index: u32| {
@@ -3013,4 +3005,240 @@ fn m12_perspective_golden() {
     );
 
     valo_harness::assert_golden(goldens_dir(), "m12_perspective", size, &rgba);
+}
+
+#[test]
+fn blend_filter_cpu_and_image_gpu_paths_agree() {
+    use valo::ImageDesc;
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP blend_filter_cpu_and_image_gpu_paths_agree: no GPU adapter");
+        return;
+    };
+    let mut context = Context::new(device.clone(), queue.clone());
+    let destination = Color::from_rgba8(43, 186, 105, 94);
+    let source = Color::from_rgba8(232, 31, 163, 148);
+    let image = context.upload_image(
+        ImageDesc {
+            size: [1, 1],
+            premultiplied: false,
+            mips: false,
+        },
+        &[43, 186, 105, 94],
+    );
+    let modes = [
+        BlendMode::Clear,
+        BlendMode::Src,
+        BlendMode::Dst,
+        BlendMode::SrcOver,
+        BlendMode::DstOver,
+        BlendMode::SrcIn,
+        BlendMode::DstIn,
+        BlendMode::SrcOut,
+        BlendMode::DstOut,
+        BlendMode::SrcAtop,
+        BlendMode::DstAtop,
+        BlendMode::Xor,
+        BlendMode::Plus,
+        BlendMode::Modulate,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::ColorBurn,
+        BlendMode::HardLight,
+        BlendMode::SoftLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Multiply,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+    let mut builder = DisplayListBuilder::new();
+    for (index, mode) in modes.into_iter().enumerate() {
+        let filter = valo::ColorFilter::Blend(source, mode);
+        let x = index as f32 * 2.0;
+        builder.draw_image(
+            &image,
+            Rect::new(x, 0.0, 1.0, 1.0),
+            &Paint {
+                color_filter: Some(filter),
+                ..Default::default()
+            },
+        );
+        builder.draw_rect(
+            Rect::new(x, 1.0, 1.0, 1.0),
+            &Paint::from_color(filter.folded_into(destination).unwrap()),
+        );
+        builder.draw_rect(
+            Rect::new(x, 2.0, 1.0, 1.0),
+            &Paint {
+                color: Color::WHITE,
+                shader: Some(valo::Shader::Image {
+                    image: image.clone(),
+                    sampling: Default::default(),
+                    local: valo::Matrix::IDENTITY,
+                }),
+                color_filter: Some(filter),
+                ..Default::default()
+            },
+        );
+    }
+    let list = builder.build();
+    let offscreen = Offscreen::new(&device, [58, 3]);
+    let first_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
+    let first = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [58, 3]);
+    assert_eq!(first_stats.filter_passes, 29, "one cached image per filter");
+    let second_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
+    let second = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [58, 3]);
+    assert_eq!(
+        second_stats.filter_passes, 0,
+        "filtered images are retained"
+    );
+    assert_eq!(first, second, "warming the cache cannot change pixels");
+    let empty = DisplayListBuilder::new().build();
+    context.render(&empty, &offscreen.target(Some(Color::TRANSPARENT)));
+    let resumed_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
+    assert_eq!(
+        resumed_stats.filter_passes, 29,
+        "an idle frame releases filtered snapshots"
+    );
+    for index in 0..29usize {
+        let gpu = &first[index * 8..index * 8 + 4];
+        let cpu_offset = (58 + index * 2) * 4;
+        let cpu = &first[cpu_offset..cpu_offset + 4];
+        let pattern_offset = (58 * 2 + index * 2) * 4;
+        let pattern = &first[pattern_offset..pattern_offset + 4];
+        assert!(
+            gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(*b) <= 2),
+            "{}: GPU {gpu:?}, CPU {cpu:?}",
+            index
+        );
+        assert_eq!(gpu, pattern, "{index}: direct image and pattern disagree");
+    }
+}
+
+#[test]
+fn matrix_filter_cpu_and_image_gpu_paths_agree() {
+    use valo::ImageDesc;
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP matrix_filter_cpu_and_image_gpu_paths_agree: no GPU adapter");
+        return;
+    };
+    let destination = Color::from_rgba8(43, 186, 105, 94);
+    #[rustfmt::skip]
+    let matrix = [
+        0.2, 0.3, 0.4, 0.1, 0.05,
+        0.5, 0.1, 0.2, 0.1, 0.03,
+        0.1, 0.4, 0.2, 0.2, 0.07,
+        0.1, 0.2, 0.1, 0.6, 0.08,
+    ];
+    let filter = valo::ColorFilter::Matrix(matrix);
+    let mut context = Context::new(device, queue);
+    let image = context.upload_image(
+        ImageDesc {
+            size: [1, 1],
+            premultiplied: false,
+            mips: false,
+        },
+        &[43, 186, 105, 94],
+    );
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_image(
+        &image,
+        Rect::new(0.0, 0.0, 1.0, 1.0),
+        &Paint {
+            color_filter: Some(filter),
+            ..Default::default()
+        },
+    );
+    builder.draw_rect(
+        Rect::new(1.0, 0.0, 1.0, 1.0),
+        &Paint::from_color(filter.folded_into(destination).unwrap()),
+    );
+    let pixels = context.render_to_rgba(&builder.build(), [2, 1], Some(Color::TRANSPARENT));
+    assert!(
+        pixels[..4]
+            .iter()
+            .zip(&pixels[4..])
+            .all(|(gpu, cpu)| gpu.abs_diff(*cpu) <= 2),
+        "GPU {:?}, CPU {:?}",
+        &pixels[..4],
+        &pixels[4..]
+    );
+}
+
+#[test]
+fn direct_image_filters_after_sampling() {
+    use valo::ImageDesc;
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP direct_image_filters_after_sampling: no GPU adapter");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let image = context.upload_image(
+        ImageDesc {
+            size: [2, 1],
+            premultiplied: false,
+            mips: false,
+        },
+        &[0, 0, 0, 255, 255, 255, 255, 255],
+    );
+    // Sampling the two texels first produces 0.5, then this nonlinear clamp
+    // produces 1.0. Filtering the source first would sample 0 and 1 back to
+    // 0.5, which is the ordering bug this test rejects.
+    #[rustfmt::skip]
+    let double_red = [
+        2.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_image(
+        &image,
+        Rect::new(0.0, 0.0, 1.0, 1.0),
+        &Paint {
+            color_filter: Some(valo::ColorFilter::Matrix(double_red)),
+            ..Default::default()
+        },
+    );
+    let pixel = context.render_to_rgba(&builder.build(), [1, 1], Some(Color::TRANSPARENT));
+    assert!(
+        pixel[0] >= 250,
+        "filter must see the sampled color: {pixel:?}"
+    );
+    assert_eq!(&pixel[1..], &[0, 0, 255]);
+}
+
+#[test]
+fn color_filter_that_changes_transparent_black_floods_layer_scope() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP color_filter_that_changes_transparent_black_floods_layer_scope");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let mut matrix = [0.0; 20];
+    matrix[4] = 0.25;
+    matrix[9] = 0.5;
+    matrix[14] = 0.75;
+    matrix[19] = 0.5;
+    let mut builder = DisplayListBuilder::new();
+    builder.save_layer(
+        None,
+        &Paint {
+            color_filter: Some(valo::ColorFilter::Matrix(matrix)),
+            ..Default::default()
+        },
+    );
+    builder.restore();
+    let pixels = context.render_to_rgba(&builder.build(), [8, 8], Some(Color::TRANSPARENT));
+    for pixel in pixels.chunks_exact(4) {
+        assert_eq!(pixel, &[64, 128, 191, 128]);
+    }
 }

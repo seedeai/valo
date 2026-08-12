@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Weak;
 
-use valo_dl::{Filter, Image, ImageInner, Sampling, TileMode};
+use valo_dl::{BlendMode, ColorFilter, Filter, Image, ImageInner, Sampling, TileMode};
 
 /// How pixels arrive at `upload`.
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +34,8 @@ pub struct ImageStore {
     queue: wgpu::Queue,
     samplers: HashMap<Sampling, wgpu::Sampler>,
     binds: HashMap<(u64, Sampling), (Weak<ImageInner>, wgpu::BindGroup)>,
+    filtered: HashMap<(u64, ColorFilterKey), FilteredImage>,
+    frame: u64,
     mips: MipGenerator,
 }
 
@@ -46,7 +48,46 @@ impl ImageStore {
             queue: queue.clone(),
             samplers: HashMap::new(),
             binds: HashMap::new(),
+            filtered: HashMap::new(),
+            frame: 0,
             mips: MipGenerator::new(device),
+        }
+    }
+
+    /// The immutable texture that represents `image` after `filter`. The
+    /// caller records the producing pass only when `created` is true.
+    pub fn filtered_image(&mut self, image: &Image, filter: ColorFilter) -> (Image, bool) {
+        self.sweep_if_crowded();
+        let key = (image.id(), ColorFilterKey::from(filter));
+        if let Some(entry) = self.filtered.get_mut(&key) {
+            entry.last_used = self.frame;
+            return (entry.image.clone(), false);
+        }
+        let texture = self.create_image_texture(image.size(), 1);
+        let filtered = Image::from_texture(texture, image.size(), 1);
+        self.filtered.insert(
+            key,
+            FilteredImage {
+                source: image.downgrade(),
+                image: filtered.clone(),
+                last_used: self.frame,
+            },
+        );
+        (filtered, true)
+    }
+
+    /// One idle frame releases a filtered snapshot even when the host keeps
+    /// its source image alive, bounding retention to the visible working set.
+    pub fn end_frame(&mut self) {
+        let current = self.frame;
+        self.frame += 1;
+        let before = self.filtered.len();
+        self.filtered
+            .retain(|_, entry| entry.last_used >= current && entry.source.strong_count() > 0);
+        if self.filtered.len() != before {
+            // Bind groups retain texture views. Drop dead ones now so cache
+            // eviction releases the corresponding GPU textures promptly.
+            self.binds.retain(|_, (weak, _)| weak.strong_count() > 0);
         }
     }
 
@@ -181,6 +222,35 @@ impl ImageStore {
     fn sweep_if_crowded(&mut self) {
         if self.binds.len() > 256 {
             self.binds.retain(|_, (weak, _)| weak.strong_count() > 0);
+        }
+    }
+}
+
+struct FilteredImage {
+    source: Weak<ImageInner>,
+    image: Image,
+    last_used: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ColorFilterKey {
+    Matrix([u32; 20]),
+    Blend([u32; 4], BlendMode),
+}
+
+impl From<ColorFilter> for ColorFilterKey {
+    fn from(filter: ColorFilter) -> Self {
+        match filter {
+            ColorFilter::Matrix(matrix) => Self::Matrix(matrix.map(f32::to_bits)),
+            ColorFilter::Blend(color, mode) => Self::Blend(
+                [
+                    color.r.to_bits(),
+                    color.g.to_bits(),
+                    color.b.to_bits(),
+                    color.a.to_bits(),
+                ],
+                mode,
+            ),
         }
     }
 }

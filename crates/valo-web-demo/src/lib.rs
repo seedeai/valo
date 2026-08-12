@@ -41,7 +41,7 @@ pub async fn start() -> Result<(), JsValue> {
         .map_err(|e| JsValue::from_str(&format!("no surface: {e:?}")))?;
 
     let mut fonts = embedded_fonts();
-    let mut ctx = Context::new(device, queue);
+    let ctx = Context::new(device, queue);
     let board = Arc::new(valo_harness::scenes::figma_board(&mut fonts));
     let mut camera = Camera {
         offset: Point::ZERO,
@@ -100,7 +100,7 @@ impl App {
         let note = format!("{:>6.2}x", self.camera.zoom);
         self.hud.draw(
             &mut b,
-            &self.fonts,
+            &mut self.fonts,
             &self.last,
             self.last_memory.as_ref(),
             &note,
@@ -158,7 +158,7 @@ fn embedded_fonts() -> FontCollection {
             include_bytes!("../../../assets/fonts/jetbrains_mono.ttf").to_vec(),
         )
         .expect("mono");
-    Arc::new(fonts)
+    fonts
 }
 
 fn hook_pointer_events(

@@ -2632,6 +2632,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "valo-web"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "valo",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "valo-web-demo"
 version = "0.1.0"
 dependencies = [

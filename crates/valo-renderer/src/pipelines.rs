@@ -13,6 +13,10 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusSt
 pub enum Frag {
     Solid,
     Image,
+    /// Direct-image color filters run after texture sampling, matching
+    /// Impeller's ColorFilterAtlas draw-image fast paths.
+    ImageMatrix,
+    ImageBlend,
     Linear,
     Radial,
     Sweep,
@@ -50,6 +54,8 @@ impl Frag {
         match self {
             Frag::Solid => "fs_solid",
             Frag::Image => "fs_image",
+            Frag::ImageMatrix => "fs_image_matrix",
+            Frag::ImageBlend => "fs_image_blend",
             Frag::Linear => "fs_linear",
             Frag::Radial => "fs_radial",
             Frag::Sweep => "fs_sweep",
@@ -274,6 +280,8 @@ impl PipelineCache {
             _ if matches!(key.kind, PipelineKind::Text { .. }) => &self.textured_layout,
             Some(Frag::BlendTexture) | Some(Frag::MaskCombine) => &self.blend_layout,
             Some(Frag::Image)
+            | Some(Frag::ImageMatrix)
+            | Some(Frag::ImageBlend)
             | Some(Frag::BlendSolid)
             | Some(Frag::Blur)
             | Some(Frag::MaskComposite)

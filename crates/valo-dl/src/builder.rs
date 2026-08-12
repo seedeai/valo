@@ -132,11 +132,18 @@ impl DisplayListBuilder {
                 Some(c) => c.intersect(&h).unwrap_or_default(),
             });
         }
+        // A filter that changes transparent black has output outside child
+        // ink. Its input coverage is therefore the explicit/active clip, or
+        // the renderer's eventual surface limit when no clip is known yet.
+        let flooded_bounds = paint
+            .color_filter
+            .filter(|filter| filter.modifies_transparent_black())
+            .map(|_| scope.clip.unwrap_or(Rect::EVERYTHING));
         self.scopes.push(scope);
         self.pending_clips.push(Vec::new());
         self.layers.push(LayerScope {
             op_index: self.ops.len(),
-            bounds: None,
+            bounds: flooded_bounds,
             child_bounds: Vec::new(),
             compatible: true,
             // Blurred layers spread ink past their children:
@@ -279,9 +286,10 @@ impl DisplayListBuilder {
         if path.is_empty() || paint.is_nop() {
             return;
         }
+        let scale = self.top().transform.max_scale();
         let local = path
             .bounds()
-            .expand(paint.mask_padding() + paint.stroke_padding());
+            .expand(paint.mask_padding() + paint.stroke_padding_at_scale(scale));
         let Some(bounds) = self.clipped_device_bounds(&local) else {
             return;
         };
@@ -412,7 +420,9 @@ impl DisplayListBuilder {
         if glyphs.is_empty() || paint.is_nop() {
             return;
         }
-        let padded = local_bounds.expand(paint.mask_padding() + paint.stroke_padding());
+        let scale = self.top().transform.max_scale();
+        let padded =
+            local_bounds.expand(paint.mask_padding() + paint.stroke_padding_at_scale(scale));
         let Some(bounds) = self.clipped_device_bounds(&padded) else {
             return;
         };

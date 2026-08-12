@@ -13,6 +13,7 @@
 //! GPU-free and `Send + Sync`: record on any thread, no `Context` required.
 
 mod builder;
+mod color_filter;
 mod list;
 mod paint;
 mod resources;

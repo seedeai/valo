@@ -52,7 +52,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # valo-system-fonts, valo-capi and the dev harness are native-only by
       # design; these are the crates that must stay wasm-clean.
-      - run: cargo check --target wasm32-unknown-unknown -p valo -p valo-svg
+      - run: |
+          cargo check --target wasm32-unknown-unknown \
+            -p valo -p valo-svg -p valo-web -p valo-web-demo
+
+  web:
+    name: TypeScript + web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run check:web
+      - run: npm run build:playground --workspace @valo/web
 
   msrv:
     name: msrv (1.87)

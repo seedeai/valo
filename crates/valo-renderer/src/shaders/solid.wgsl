@@ -298,10 +298,10 @@ fn clip_color(c_in: vec3<f32>) -> vec3<f32> {
     let n = min(min(c.r, c.g), c.b);
     let x = max(max(c.r, c.g), c.b);
     if n < 0.0 {
-        c = l + (c - l) * l / (l - n);
+        c = l + (c - l) * l / (l - n + 1e-3);
     }
     if x > 1.0 {
-        c = l + (c - l) * (1.0 - l) / (x - l);
+        c = l + (c - l) * (1.0 - l) / (x - l + 1e-3);
     }
     return c;
 }
@@ -333,13 +333,13 @@ fn soft_light(s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
 }
 
 fn color_dodge(s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
-    let r = min(vec3(1.0), d / max(1.0 - s, vec3(1e-6)));
-    return select(select(r, vec3(1.0), s >= vec3(1.0)), vec3(0.0), d <= vec3(0.0));
+    let r = min(vec3(1.0), d / max(1.0 - s, vec3(1e-3)));
+    return select(select(r, vec3(1.0), 1.0 - s < vec3(1e-3)), vec3(0.0), d < vec3(1e-3));
 }
 
 fn color_burn(s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
-    let r = 1.0 - min(vec3(1.0), (1.0 - d) / max(s, vec3(1e-6)));
-    return select(select(r, vec3(0.0), s <= vec3(0.0)), vec3(1.0), d >= vec3(1.0));
+    let r = 1.0 - min(vec3(1.0), (1.0 - d) / max(s, vec3(1e-3)));
+    return select(select(r, vec3(0.0), s < vec3(1e-3)), vec3(1.0), 1.0 - d < vec3(1e-3));
 }
 
 fn blend_advanced(mode: u32, s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
@@ -419,6 +419,10 @@ fn fs_pattern(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_color_matrix(in: VsOut) -> @location(0) vec4<f32> {
     let m = u.payload[1];
     let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    return apply_color_matrix(texel);
+}
+
+fn apply_color_matrix(texel: vec4<f32>) -> vec4<f32> {
     // Colour matrices are defined on STRAIGHT colour; layers are premultiplied.
     let color = vec4(unpremul(texel), texel.a);
     let filtered = clamp(
@@ -466,12 +470,33 @@ fn composite_porter_duff(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32>
 fn fs_color_blend(in: VsOut) -> @location(0) vec4<f32> {
     let m = u.payload[1];
     let dst = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    return apply_color_blend(dst);
+}
+
+fn apply_color_blend(dst: vec4<f32>) -> vec4<f32> {
     let src = u.payload[17];
     let mode = u32(u.payload[2].x);
     if mode >= 15u {
         return composite_advanced(mode - 15u, src, dst);
     }
     return composite_porter_duff(mode, src, dst);
+}
+
+// Draw-image filters happen AFTER crop/tile/filter/mipmap sampling, exactly
+// like Impeller's ColorFilterAtlasContents optimization. Paint alpha remains
+// last, so it cannot be folded into the color-filter math.
+@fragment
+fn fs_image_matrix(in: VsOut) -> @location(0) vec4<f32> {
+    let m = u.payload[1];
+    let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    return apply_color_matrix(texel) * u.color;
+}
+
+@fragment
+fn fs_image_blend(in: VsOut) -> @location(0) vec4<f32> {
+    let m = u.payload[1];
+    let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
+    return apply_color_blend(texel) * u.color;
 }
 
 // ── gaussian blur, one direction ────────────────────────────────────────────

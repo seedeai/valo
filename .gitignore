@@ -1,3 +1,7 @@
 /target
 *.actual.png
 .DS_Store
+node_modules
+packages/*/dist
+packages/*/playground/dist
+packages/valo-web/wasm

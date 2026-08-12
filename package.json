@@ -1,0 +1,10 @@
+{
+  "name": "valo-workspace",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build:web": "npm run build --workspace @valo/web",
+    "dev:web": "npm run dev --workspace @valo/web",
+    "check:web": "npm run check --workspace @valo/web"
+  }
+}

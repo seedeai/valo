@@ -1,0 +1,2 @@
+# package.json's `files` allowlist selects dist/ and wasm/. This file keeps
+# wasm-pack's generated wasm/.gitignore from excluding the runtime at publish.

@@ -184,6 +184,7 @@ impl RendererCore {
         self.encode_and_submit(&plan, target, &mut stats);
         (stats.glyph_rasters, stats.atlas_gcs, stats.held_rasters) = self.glyphs.frame_counters();
         self.pool.end_frame();
+        self.images.end_frame();
         self.contours.end_frame();
         self.glyphs.end_frame();
         self.ramps.end_frame();

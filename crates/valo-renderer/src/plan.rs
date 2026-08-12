@@ -18,7 +18,7 @@ use valo_geometry::{
 use crate::contours::ContourCache;
 use crate::glyphs::{GlyphStore, PageRef};
 use crate::host_buffer::{DrawSlot, HostBuffer, VertexSlot, UNIFORM_SIZE};
-use crate::images::ImageStore;
+use crate::images::{ImageStore, IMAGE_FORMAT};
 use crate::pipelines::{
     advanced_mode_id, blend_filter_id, blur_style_id, Frag, PipelineCache, PipelineKey,
     PipelineKind, TextMode,
@@ -245,6 +245,18 @@ struct FilteredTexture {
     /// actually used. A pass that reads this texture must scale its uv by
     /// THESE, not by the layer's size.
     size: [u32; 2],
+}
+
+struct ColorFilterTarget {
+    view: wgpu::TextureView,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+}
+
+#[derive(Clone, Copy)]
+enum EncodedColorFilter {
+    Matrix,
+    Blend,
 }
 
 /// What kind of scope each recorded Save/SaveLayer opened — replay's Restore
@@ -1060,7 +1072,7 @@ impl<'a> Planner<'a> {
     // ── draw planning (z decided by the caller) ─────────────────────────────
 
     fn plan_rect(&mut self, rect: &Rect, paint: &Paint, current: &Matrix, z: f32) {
-        let folded = folded_paint(paint);
+        let folded = self.prepared_paint(paint);
         let paint = folded.as_ref().unwrap_or(paint);
         self.stats.draws += 1;
         if needs_effect_layer(paint) {
@@ -1123,12 +1135,13 @@ impl<'a> Planner<'a> {
         current: &Matrix,
         z: f32,
     ) {
-        let folded = folded_paint(paint);
+        let folded = self.prepared_paint(paint);
         let paint = folded.as_ref().unwrap_or(paint);
         self.stats.draws += 1;
         let bounds = path.bounds();
         if needs_effect_layer(paint) {
-            let local = bounds.expand(paint.mask_padding() + paint.stroke_padding());
+            let local = bounds
+                .expand(paint.mask_padding() + paint.stroke_padding_at_scale(current.max_scale()));
             let path2 = path.clone();
             let (paint2, current2) = (plain(paint), *current);
             self.plan_via_effect_layer(&local, paint, current, z, move |p| {
@@ -1152,7 +1165,7 @@ impl<'a> Planner<'a> {
                     mode,
                 );
             } else {
-                let padded = bounds.expand(paint.stroke_padding());
+                let padded = bounds.expand(paint.stroke_padding_at_scale(current.max_scale()));
                 let device_bounds = current.map_rect(&padded);
                 let path2 = path.clone();
                 let (paint2, current2) = (plain(paint), *current);
@@ -1208,9 +1221,11 @@ impl<'a> Planner<'a> {
     ) {
         let tolerance = local_tolerance(current);
         let contours = self.contours.contours(path, tolerance);
-        // Hairline rule (Impeller): never let a stroke vanish below one
-        // device pixel.
+        // Impeller renders at least one device pixel of geometry, then fades
+        // positive subpixel strokes to preserve their intended coverage. A
+        // zero-width stroke is a true hairline and remains fully opaque.
         let mut stroke = stroke.clone();
+        let coverage = stroke_alpha_coverage(current, stroke.width);
         stroke.width = stroke.width.max(1.0 / current.max_scale().max(1e-3));
         let vertices = match &stroke.dash {
             Some(dash) => {
@@ -1224,7 +1239,7 @@ impl<'a> Planner<'a> {
         }
         let slot = self.host.alloc_vertices(bytemuck::cast_slice(&vertices));
         let mesh = (slot, (vertices.len() / 2) as u32);
-        let tint = tinted(paint, self.elision_alpha());
+        let tint = tinted(paint, self.elision_alpha() * coverage);
         let mut record = UniformRecord::new(self.ortho(current, z), tint);
         let bind = self.shader_payload(&mut record, paint);
         self.push_step(
@@ -1249,7 +1264,10 @@ impl<'a> Planner<'a> {
         z: f32,
     ) {
         self.stats.draws += 1;
-        if needs_effect_layer(paint) {
+        // Direct images filter the SAMPLED pixel in one draw, like Impeller's
+        // ColorFilterAtlasContents. A blur still needs an effect layer so its
+        // order remains sample → color filter → blur.
+        if paint.mask_blur.is_some() {
             let local = dst.expand(paint.mask_padding());
             let (image2, src2, dst2, paint2, current2) =
                 (image.clone(), *src, *dst, plain(paint), *current);
@@ -1270,6 +1288,52 @@ impl<'a> Planner<'a> {
         self.plan_image_step(image, src, dst, sampling, paint, current, z);
     }
 
+    fn filtered_image(&mut self, source: &Image, filter: ColorFilter) -> Image {
+        let (filtered, created) = self.images.filtered_image(source, filter);
+        if created {
+            // Preserve ordering with any frame segment already accumulated;
+            // the new independent pass then produces the cached texture.
+            self.emit_segment();
+            let whole = Rect::new(0.0, 0.0, source.width(), source.height());
+            self.push_color_filter_to(
+                source.view(),
+                source.size(),
+                &whole,
+                filter,
+                ColorFilterTarget {
+                    view: filtered.view().clone(),
+                    size: source.size(),
+                    format: IMAGE_FORMAT,
+                },
+            );
+        }
+        filtered
+    }
+
+    fn prepared_paint(&mut self, paint: &Paint) -> Option<Paint> {
+        if let Some(folded) = folded_paint(paint) {
+            return Some(folded);
+        }
+        if paint.mask_blur.is_some() {
+            return None;
+        }
+        let filter = paint.color_filter?;
+        let Some(Shader::Image { image, .. }) = paint.shader.as_ref() else {
+            return None;
+        };
+        // Image SHADERS match Impeller's TiledTextureContents: filter one
+        // immutable source snapshot, then apply the pattern transform and
+        // tile sampler. Direct drawImage takes the post-sampling atlas path.
+        let filtered_image = self.filtered_image(image, filter);
+        let mut prepared = paint.clone();
+        let Some(Shader::Image { image, .. }) = prepared.shader.as_mut() else {
+            unreachable!("source kind changed while cloning paint");
+        };
+        *image = filtered_image;
+        prepared.color_filter = None;
+        Some(prepared)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn plan_image_step(
         &mut self,
@@ -1288,11 +1352,18 @@ impl<'a> Planner<'a> {
         let mut record = UniformRecord::new(self.ortho(&model, z), tint);
         record.set_local_rect(dst);
         record.set_payload(PAYLOAD_GEOM, uv_mapping(image, src, dst));
+        let fragment = match paint.color_filter {
+            None => Frag::Image,
+            Some(filter) => match encode_color_filter(&mut record, filter) {
+                EncodedColorFilter::Matrix => Frag::ImageMatrix,
+                EncodedColorFilter::Blend => Frag::ImageBlend,
+            },
+        };
         let bind = self
             .images
             .bind_group(self.pipelines.texture_bind_layout(), image, sampling);
         self.push_step(
-            PipelineKind::Draw(Frag::Image),
+            PipelineKind::Draw(fragment),
             paint.blend_mode,
             record,
             Some(bind),
@@ -2052,45 +2123,45 @@ impl<'a> Planner<'a> {
         let work = [whole.width, whole.height];
         let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
         let target = self.pool.take_filter(bucket, self.format);
-        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(whole), bucket, 0.0), [0.0; 4]);
-        record.set_local_rect(whole);
-        record.set_payload(PAYLOAD_GEOM, source_region_uv(whole, source_size, work));
-        let frag = match filter {
-            ColorFilter::Matrix(matrix) => {
-                // Rows 0..3 of the 4×5, then the translation column: the same
-                // mat4-plus-vec4 split Impeller's shader takes.
-                for row in 0..4 {
-                    let start = row * 5;
-                    record.set_payload(
-                        PAYLOAD_COLOR_MATRIX + row,
-                        [
-                            matrix[start],
-                            matrix[start + 1],
-                            matrix[start + 2],
-                            matrix[start + 3],
-                        ],
-                    );
-                }
-                record.set_payload(
-                    PAYLOAD_COLOR_MATRIX + 4,
-                    [matrix[4], matrix[9], matrix[14], matrix[19]],
-                );
-                Frag::ColorMatrix
-            }
-            ColorFilter::Blend(color, mode) => {
-                let premultiplied = color.premultiplied();
-                record.set_payload(PAYLOAD_COLOR_MATRIX, premultiplied);
-                record.set_payload(PAYLOAD_MISC, [blend_filter_id(mode) as f32, 0.0, 0.0, 0.0]);
-                Frag::ColorBlend
-            }
-        };
-        let bind = self.texture_bind(source);
-        self.push_filter(target.view.clone(), frag, record, bind, Vec::new());
+        self.push_color_filter_to(
+            source,
+            source_size,
+            whole,
+            filter,
+            ColorFilterTarget {
+                view: target.view.clone(),
+                size: bucket,
+                format: self.format,
+            },
+        );
         FilteredTexture {
             view: target.view,
             uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
             size: bucket,
         }
+    }
+
+    fn push_color_filter_to(
+        &mut self,
+        source: &wgpu::TextureView,
+        source_size: [u32; 2],
+        whole: &Rect,
+        filter: ColorFilter,
+        target: ColorFilterTarget,
+    ) {
+        let mut record =
+            UniformRecord::new(ortho_mvp(&rect_to_unit(whole), target.size, 0.0), [0.0; 4]);
+        record.set_local_rect(whole);
+        record.set_payload(
+            PAYLOAD_GEOM,
+            source_region_uv(whole, source_size, [whole.width, whole.height]),
+        );
+        let frag = match encode_color_filter(&mut record, filter) {
+            EncodedColorFilter::Matrix => Frag::ColorMatrix,
+            EncodedColorFilter::Blend => Frag::ColorBlend,
+        };
+        let bind = self.texture_bind(source);
+        self.push_filter_with_format(target.view, target.format, frag, record, bind, Vec::new());
     }
 
     /// Merge blur B with the SHARP layer M into one texture (fs_mask_combine)
@@ -2144,8 +2215,24 @@ impl<'a> Planner<'a> {
         bind: wgpu::BindGroup,
         pre_copies: Vec<TextureCopy>,
     ) {
+        self.push_filter_with_format(target, self.format, frag, record, bind, pre_copies);
+    }
+
+    fn push_filter_with_format(
+        &mut self,
+        target: wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+        frag: Frag,
+        record: UniformRecord,
+        bind: wgpu::BindGroup,
+        pre_copies: Vec<TextureCopy>,
+    ) {
         let uniforms = self.host.alloc_uniform(&record.bytes);
-        let key = PipelineKey::new(self.format, BlendMode::SrcOver, PipelineKind::Filter(frag));
+        let key = PipelineKey::new(
+            target_format,
+            BlendMode::SrcOver,
+            PipelineKind::Filter(frag),
+        );
         self.passes.push(PlannedPass {
             color: PassColor::Filter { view: target },
             depth: None,
@@ -2464,6 +2551,49 @@ fn tinted(paint: &Paint, extra: f32) -> [f32; 4] {
         scaled_premul(paint.color, extra)
     } else {
         alpha_tint(paint.color.a * extra)
+    }
+}
+
+/// Encode Impeller's mat4-plus-translation-vector layout, or its constant
+/// premultiplied blend source. Draw and filter-pass shaders share this ABI.
+fn encode_color_filter(record: &mut UniformRecord, filter: ColorFilter) -> EncodedColorFilter {
+    match filter {
+        ColorFilter::Matrix(matrix) => {
+            for row in 0..4 {
+                let start = row * 5;
+                record.set_payload(
+                    PAYLOAD_COLOR_MATRIX + row,
+                    [
+                        matrix[start],
+                        matrix[start + 1],
+                        matrix[start + 2],
+                        matrix[start + 3],
+                    ],
+                );
+            }
+            record.set_payload(
+                PAYLOAD_COLOR_MATRIX + 4,
+                [matrix[4], matrix[9], matrix[14], matrix[19]],
+            );
+            EncodedColorFilter::Matrix
+        }
+        ColorFilter::Blend(color, mode) => {
+            record.set_payload(PAYLOAD_COLOR_MATRIX, color.premultiplied());
+            record.set_payload(PAYLOAD_MISC, [blend_filter_id(mode) as f32, 0.0, 0.0, 0.0]);
+            EncodedColorFilter::Blend
+        }
+    }
+}
+
+/// Impeller's `Geometry::ComputeStrokeAlphaCoverage`: geometry below one
+/// device pixel is widened, so positive-width strokes compensate in alpha.
+/// Width zero deliberately means a fully covered one-pixel hairline.
+fn stroke_alpha_coverage(transform: &Matrix, width: f32) -> f32 {
+    let device_width = transform.max_scale() * width;
+    if device_width == 0.0 || device_width >= 1.0 {
+        1.0
+    } else {
+        (device_width * 2.0).clamp(0.0, 1.0)
     }
 }
 
@@ -3012,24 +3142,24 @@ fn plain(paint: &Paint) -> Paint {
     }
 }
 
-/// A solid paint absorbs a colour MATRIX on the CPU, the way Impeller folds
-/// one before reaching for a filter pass. That skips the layer, the pass and
-/// the composite entirely, and it keeps a matrix that writes alpha from
-/// flooding the layer's padded bounds — the filtered shape stays the shape.
-///
-/// `None` when the filter has to run per pixel: a shader or image source has
-/// no single colour to fold, and a blend needs the drawn pixels as its
-/// destination.
+/// A solid or gradient paint absorbs its colour filter on the CPU, matching
+/// Impeller's `Contents::ApplyColorFilter`. Image patterns return `None` and
+/// become cached filtered-source textures in `prepared_paint`.
 fn folded_paint(paint: &Paint) -> Option<Paint> {
     let filter = paint.color_filter?;
-    if paint.shader.is_some() {
-        return None;
+    let mut folded = paint.clone();
+    match &mut folded.shader {
+        // A gradient absorbs the filter into its stops.
+        Some(shader) => {
+            if !shader.fold_color_filter(&filter) {
+                return None;
+            }
+        }
+        // A solid paint absorbs it into the colour itself.
+        None => folded.color = filter.folded_into(paint.color)?,
     }
-    Some(Paint {
-        color: filter.folded_into(paint.color)?,
-        color_filter: None,
-        ..paint.clone()
-    })
+    folded.color_filter = None;
+    Some(folded)
 }
 
 /// Does this paint need its own layer for the renderer to apply its effects?
@@ -3107,4 +3237,18 @@ pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stroke_alpha_coverage;
+    use valo_geometry::Matrix;
+
+    #[test]
+    fn hairline_coverage_matches_impeller() {
+        assert_eq!(stroke_alpha_coverage(&Matrix::IDENTITY, 0.0), 1.0);
+        assert_eq!(stroke_alpha_coverage(&Matrix::IDENTITY, 0.25), 0.5);
+        assert_eq!(stroke_alpha_coverage(&Matrix::IDENTITY, 0.5), 1.0);
+        assert_eq!(stroke_alpha_coverage(&Matrix::scale(2.0, 2.0), 0.25), 1.0);
+    }
 }

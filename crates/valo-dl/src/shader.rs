@@ -111,6 +111,31 @@ impl Shader {
         }
     }
 
+    /// Fold a colour filter into this source, Impeller's
+    /// `Contents::ApplyColorFilter`: a gradient filters its STOP COLOURS,
+    /// matching Impeller's gradient-source semantics (including clamping each
+    /// transformed stop before interpolation). Returns false when the source
+    /// cannot answer on the CPU and needs a texture snapshot instead.
+    pub fn fold_color_filter(&mut self, filter: &crate::ColorFilter) -> bool {
+        let stops = match self {
+            Shader::Linear { stops, .. }
+            | Shader::Radial { stops, .. }
+            | Shader::Sweep { stops, .. } => stops,
+            // A pattern's colours live in texels; the image fragment applies
+            // the filter as it samples.
+            Shader::Image { .. } => return false,
+        };
+        let mut folded = Vec::with_capacity(stops.len());
+        for stop in stops.iter() {
+            match filter.folded_into(stop.color) {
+                Some(color) => folded.push(GradientStop { color, ..*stop }),
+                None => return false,
+            }
+        }
+        *stops = folded;
+        true
+    }
+
     /// Two-color convenience: `from` at 0, `to` at 1.
     pub fn linear(start: Point, end: Point, from: Color, to: Color) -> Self {
         Shader::Linear {
