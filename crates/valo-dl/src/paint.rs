@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use valo_geometry::{Color, Rect, Stroke};
+use valo_geometry::{Color, Matrix, Point, Rect, Stroke};
 
 /// Porter–Duff + advanced blend modes — the full Skia/Flutter vocabulary, declared
 /// up front so the recorded format never changes. The renderer implements the
@@ -45,7 +45,7 @@ pub enum BlendMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorFilter, ImageFilter, Paint, PaintStyle};
+    use super::{ColorFilter, ImageFilter, MaskBlur, Paint, PaintStyle};
     use valo_geometry::Stroke;
 
     #[test]
@@ -69,6 +69,71 @@ mod tests {
             ),
         );
         assert_eq!(filter.padding(), [15.0, 15.0]);
+    }
+
+    #[test]
+    fn drop_shadow_padding_covers_the_offset_on_both_sides() {
+        let filter = ImageFilter::drop_shadow(
+            valo_geometry::Point::new(4.0, -6.0),
+            2.0,
+            1.0,
+            valo_geometry::Color::BLACK,
+        );
+        assert_eq!(filter.padding(), [10.0, 9.0]);
+    }
+
+    /// A rotation reaches further than any axis length reports: `max_scale`
+    /// is 1 for a pure rotation, so a scalar padding × max_scale bound would
+    /// leave a diagonal drop shadow short by 4.14 px and the combine pass
+    /// would cut the remainder away as transparent.
+    #[test]
+    fn device_padding_bounds_a_rotated_effect() {
+        use valo_geometry::Matrix;
+        let paint = Paint {
+            image_filter: Some(ImageFilter::drop_shadow(
+                valo_geometry::Point::new(10.0, 10.0),
+                0.0,
+                0.0,
+                valo_geometry::Color::BLACK,
+            )),
+            ..Paint::default()
+        };
+        assert_eq!(paint.effect_padding(), 10.0);
+
+        let quarter_turn = Matrix::rotation(std::f32::consts::FRAC_PI_4);
+        let padding = paint.device_effect_padding(&quarter_turn);
+        assert!(
+            (padding - 14.142136).abs() < 1e-3,
+            "a 45° rotation maps the (10, 10) padding box to 14.14, got {padding}"
+        );
+        assert!(
+            padding > paint.effect_padding() * quarter_turn.max_scale(),
+            "the scalar bound is exactly what this has to beat"
+        );
+    }
+
+    #[test]
+    fn device_padding_matches_the_scalar_bound_under_a_plain_scale() {
+        use valo_geometry::Matrix;
+        let paint = Paint {
+            mask_blur: Some(MaskBlur::new(2.0)),
+            ..Paint::default()
+        };
+        let scale = Matrix::scale(3.0, 3.0);
+        assert_eq!(paint.effect_padding(), 6.0);
+        assert!((paint.device_effect_padding(&scale) - 18.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_invisible_drop_shadow_is_a_nop() {
+        let filter = ImageFilter::drop_shadow(
+            valo_geometry::Point::new(4.0, 4.0),
+            2.0,
+            2.0,
+            valo_geometry::Color::TRANSPARENT,
+        );
+        assert!(filter.is_nop());
+        assert!(!filter.modifies_transparent_black());
     }
 }
 
@@ -217,6 +282,19 @@ pub enum ImageFilter {
     Blur { sigma_x: f32, sigma_y: f32 },
     /// Run a color filter as a texture-stage image filter.
     Color(ColorFilter),
+    /// The input composited over a blurred, recoloured, offset copy of its own
+    /// alpha — Skia's `SkImageFilters::DropShadow` and what CSS
+    /// `filter: drop-shadow()` lowers to. `offset` and the sigmas are in local
+    /// units and ride the effect transform, like every other filter here.
+    ///
+    /// The plain shadow, not `DropShadowOnly`: the source survives in the
+    /// output. A caller that wants only the shadow composes a colour filter.
+    DropShadow {
+        offset: Point,
+        sigma_x: f32,
+        sigma_y: f32,
+        color: Color,
+    },
     /// `outer(inner(input))`.
     Compose {
         outer: Arc<ImageFilter>,
@@ -243,6 +321,15 @@ impl ImageFilter {
         }
     }
 
+    pub fn drop_shadow(offset: Point, sigma_x: f32, sigma_y: f32, color: Color) -> Self {
+        Self::DropShadow {
+            offset,
+            sigma_x: sigma_x.max(0.0),
+            sigma_y: sigma_y.max(0.0),
+            color,
+        }
+    }
+
     /// Whether the chain leaves every pixel exactly as it found it. A
     /// zero-sigma blur is the case that matters: Flutter rejects one outright,
     /// and letting it through here would buy a layer and two full-size
@@ -253,6 +340,8 @@ impl ImageFilter {
         match self {
             Self::Blur { sigma_x, sigma_y } => *sigma_x <= 0.0 && *sigma_y <= 0.0,
             Self::Color(_) => false,
+            // An invisible shadow leaves the input exactly as it found it.
+            Self::DropShadow { color, .. } => color.a <= 0.0,
             Self::Compose { outer, inner } => outer.is_nop() && inner.is_nop(),
         }
     }
@@ -262,6 +351,17 @@ impl ImageFilter {
         match self {
             Self::Blur { sigma_x, sigma_y } => [(sigma_x * 3.0).ceil(), (sigma_y * 3.0).ceil()],
             Self::Color(_) => [0.0; 2],
+            // Padding is symmetric, so a one-sided offset has to be paid on
+            // both sides — the shadow is free to land on either.
+            Self::DropShadow {
+                offset,
+                sigma_x,
+                sigma_y,
+                ..
+            } => [
+                (sigma_x * 3.0).ceil() + offset.x.abs(),
+                (sigma_y * 3.0).ceil() + offset.y.abs(),
+            ],
             Self::Compose { outer, inner } => {
                 let outer = outer.padding();
                 let inner = inner.padding();
@@ -274,6 +374,9 @@ impl ImageFilter {
         match self {
             Self::Blur { .. } => false,
             Self::Color(filter) => filter.modifies_transparent_black(),
+            // The shadow is the input's own alpha recoloured, so transparent
+            // input stays transparent however opaque the shadow colour is.
+            Self::DropShadow { .. } => false,
             Self::Compose { outer, inner } => {
                 outer.modifies_transparent_black() || inner.modifies_transparent_black()
             }
@@ -382,13 +485,44 @@ impl Paint {
         self.mask_blur.map_or(0.0, |blur| (blur.sigma * 3.0).ceil())
     }
 
-    /// Padding for every raster-stage effect applied to this paint.
-    pub fn effect_padding(&self) -> f32 {
+    /// Padding for every raster-stage effect applied to this paint, in LOCAL
+    /// units and per axis. Callers working in local space (a draw's own effect
+    /// layer) can expand before mapping and are done; callers that already
+    /// hold device-space bounds want [`Self::device_effect_padding`].
+    pub fn effect_padding_axes(&self) -> [f32; 2] {
         let image = self
             .image_filter
             .as_ref()
             .map_or([0.0; 2], ImageFilter::padding);
-        self.mask_padding() + image[0].max(image[1])
+        let mask = self.mask_padding();
+        [image[0] + mask, image[1] + mask]
+    }
+
+    /// Padding for every raster-stage effect applied to this paint.
+    pub fn effect_padding(&self) -> f32 {
+        let axes = self.effect_padding_axes();
+        axes[0].max(axes[1])
+    }
+
+    /// The same padding expressed in DEVICE pixels under `transform` — what a
+    /// scope whose bounds are already device-space has to expand by.
+    ///
+    /// The local padding box is mapped through the transform's linear part,
+    /// which is the only thing that bounds a rotated or sheared effect.
+    /// `max(local padding) × max_scale` does not: a 45° rotation sends a
+    /// (10, 10) drop-shadow offset to 14.14 device px while `max_scale` stays
+    /// 1, and the combine pass cuts the missing 4.14 px away as transparent.
+    pub fn device_effect_padding(&self, transform: &Matrix) -> f32 {
+        let [x, y] = self.effect_padding_axes();
+        if x <= 0.0 && y <= 0.0 {
+            return 0.0;
+        }
+        // The half-extent of an axis-aligned box under a linear map is the
+        // component-wise absolute matrix applied to the half-extent.
+        let [a, b, c, d, ..] = transform.to_affine();
+        let device_x = (x * a).abs() + (y * c).abs();
+        let device_y = (x * b).abs() + (y * d).abs();
+        device_x.max(device_y)
     }
 
     /// Local bounds needed to evaluate this paint's post-raster effects.

@@ -449,6 +449,7 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
     let mut builder = valo::ParagraphBuilder::new(&mut collection);
     builder.style(valo::ParagraphStyle {
         align: valo::TextAlign::Left,
+        direction: None,
         preserve_trailing_whitespace: false,
         max_lines: None,
         ellipsis: None,
@@ -540,6 +541,7 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
     let mut builder = valo::ParagraphBuilder::new(&mut collection);
     builder.style(valo::ParagraphStyle {
         align: valo::TextAlign::Left,
+        direction: None,
         preserve_trailing_whitespace: false,
         max_lines: None,
         ellipsis: None,

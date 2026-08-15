@@ -1277,6 +1277,7 @@ fn patterns_golden() {
         filter: Filter::Nearest,
         tile_x: TileMode::Repeat,
         tile_y: TileMode::Repeat,
+        ..Default::default()
     };
     let pattern = |local: valo::Matrix| {
         Paint::from_shader(Shader::Image {
@@ -1342,6 +1343,122 @@ fn patterns_golden() {
     );
 
     valo_harness::assert_golden(goldens_dir(), "patterns", size, &rgba);
+}
+
+/// Per-axis tiling, which is what Canvas2D's `repeat-x` / `repeat-y` /
+/// `no-repeat` need. The point of `Decal` is that it leaves the shape
+/// UNPAINTED past one tile — `Clamp` would smear the tile's border texels
+/// over the rest instead, which reads as a plausible but wrong image.
+#[test]
+fn pattern_tile_modes_cover_only_their_own_axes() {
+    use valo::{Filter, ImageDesc, Sampling, Shader, TileMode};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP pattern_tile_modes_cover_only_their_own_axes");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let tile = context.upload_image(
+        ImageDesc {
+            size: [32, 32],
+            premultiplied: true,
+            mips: false,
+        },
+        &checker_pixels(32, 16),
+    );
+    let mut sample = |tile_x: TileMode, tile_y: TileMode| {
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(
+            Rect::new(0.0, 0.0, 96.0, 96.0),
+            &Paint::from_shader(Shader::Image {
+                image: tile.clone(),
+                sampling: Sampling {
+                    filter: Filter::Nearest,
+                    tile_x,
+                    tile_y,
+                    ..Default::default()
+                },
+                local: valo::Matrix::IDENTITY,
+            }),
+        );
+        let pixels = context.render_to_rgba(&b.build(), [96, 96], Some(Color::TRANSPARENT));
+        // Inside the first tile, one tile to the right, one tile down.
+        [(8usize, 8usize), (40, 8), (8, 40)].map(|(x, y)| pixels[(y * 96 + x) * 4 + 3])
+    };
+
+    let [origin, right, down] = sample(TileMode::Repeat, TileMode::Repeat);
+    assert_eq!([origin, right, down], [255, 255, 255], "repeat fills both");
+
+    let [origin, right, down] = sample(TileMode::Repeat, TileMode::Decal);
+    assert_eq!([origin, right], [255, 255], "repeat-x still tiles across");
+    assert_eq!(down, 0, "repeat-x must paint nothing below the tile");
+
+    let [origin, right, down] = sample(TileMode::Decal, TileMode::Repeat);
+    assert_eq!([origin, down], [255, 255], "repeat-y still tiles down");
+    assert_eq!(right, 0, "repeat-y must paint nothing beside the tile");
+
+    let [origin, right, down] = sample(TileMode::Decal, TileMode::Decal);
+    assert_eq!(origin, 255, "no-repeat still paints the tile itself");
+    assert_eq!([right, down], [0, 0], "no-repeat paints nothing else");
+}
+
+/// `Sampling` is public and `draw_image_rect` takes it, so `TileMode::Decal`
+/// has to mean the same thing there as it does in a pattern. The cutoff used
+/// to live only in `fs_pattern`, which quietly degraded a direct draw to
+/// clamp — the edge texels smeared instead of stopping.
+#[test]
+fn a_direct_image_draw_honours_decal_tiling() {
+    use valo::{Filter, ImageDesc, Sampling, TileMode};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_direct_image_draw_honours_decal_tiling");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let tile = context.upload_image(
+        ImageDesc {
+            size: [32, 32],
+            premultiplied: true,
+            mips: false,
+        },
+        &checker_pixels(32, 16),
+    );
+    // The source rect reaches a tile's width past the image on every side,
+    // so the quad's outer band samples uv outside [0, 1] — the only place a
+    // direct draw's tile mode can show at all. The image itself lands in the
+    // middle third of the destination.
+    let mut sample = |tile_x: TileMode, tile_y: TileMode| {
+        let mut b = DisplayListBuilder::new();
+        b.draw_image_rect(
+            &tile,
+            Rect::new(-32.0, -32.0, 96.0, 96.0),
+            Rect::new(0.0, 0.0, 96.0, 96.0),
+            Sampling {
+                filter: Filter::Nearest,
+                tile_x,
+                tile_y,
+                ..Default::default()
+            },
+            &Paint::default(),
+        );
+        let pixels = context.render_to_rgba(&b.build(), [96, 96], Some(Color::TRANSPARENT));
+        [(48usize, 48usize), (10, 48), (48, 10)].map(|(x, y)| pixels[(y * 96 + x) * 4 + 3])
+    };
+
+    let [inside, left, above] = sample(TileMode::Clamp, TileMode::Clamp);
+    assert_eq!(
+        [inside, left, above],
+        [255, 255, 255],
+        "clamp smears the edge texels outwards, which is its whole job"
+    );
+
+    let [inside, left, above] = sample(TileMode::Decal, TileMode::Decal);
+    assert_eq!(inside, 255, "the image itself still draws");
+    assert_eq!(
+        [left, above],
+        [0, 0],
+        "decal paints nothing past the source"
+    );
 }
 
 /// F3: mask layers. Content = an opaque two-tone card; masks =
@@ -2884,6 +3001,76 @@ fn m12_nested_opacity_golden() {
     valo_harness::assert_golden(goldens_dir(), "m12_nested_opacity", size, &rgba);
 }
 
+/// A bare `move_to` paints nothing under EVERY cap; an explicit zero-length
+/// segment paints for round and square. The two reduce to the same single
+/// point once flattened, so this is the pixel-level proof that the contour's
+/// `has_segments` metadata survives all the way to the rasterizer.
+///
+/// Chrome agrees: `moveTo(x, y); stroke()` is blank for all three caps, and
+/// adding `lineTo(x, y)` gives blank / circle / square.
+#[test]
+fn a_bare_move_to_paints_nothing_but_a_zero_length_subpath_does() {
+    use valo::{Cap, FillRule, PaintStyle, PathBuilder, Stroke};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_bare_move_to_paints_nothing_but_a_zero_length_segment_does");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    // 0 = a bare move, 1 = an explicit zero-length line, 2 = a closepath.
+    let mut ink = |kind: u8, cap: Cap| {
+        let mut path = PathBuilder::new();
+        path.move_to((20.0, 20.0));
+        match kind {
+            1 => {
+                path.line_to((20.0, 20.0));
+            }
+            2 => {
+                path.close();
+            }
+            _ => {}
+        }
+        let mut paint = Paint {
+            color: Color::rgb(1.0, 1.0, 1.0),
+            style: PaintStyle::Stroke(Stroke {
+                cap,
+                ..Stroke::new(16.0)
+            }),
+            ..Default::default()
+        };
+        paint.color = Color::rgb(1.0, 1.0, 1.0);
+        let mut b = DisplayListBuilder::new();
+        b.draw_path(&path.build(), FillRule::NonZero, &paint);
+        let pixels = context.render_to_rgba(&b.build(), [40, 40], Some(Color::TRANSPARENT));
+        pixels.chunks_exact(4).filter(|p| p[3] > 0).count()
+    };
+
+    for cap in [Cap::Butt, Cap::Round, Cap::Square] {
+        assert_eq!(ink(0, cap), 0, "a bare move_to must not paint ({cap:?})");
+        assert_eq!(
+            ink(2, cap),
+            ink(1, cap),
+            "move+close must paint exactly like an explicit zero-length line ({cap:?})"
+        );
+    }
+    assert_eq!(
+        ink(1, Cap::Butt),
+        0,
+        "a butt cap has no area to give a zero-length segment"
+    );
+    // A 16px round cap is a disc of radius 8; a square cap is the full box.
+    let round = ink(1, Cap::Round);
+    let square = ink(1, Cap::Square);
+    assert!(
+        (180..=220).contains(&round),
+        "a round cap should cover ~π·8² ≈ 201 px, got {round}"
+    );
+    assert!(
+        (250..=262).contains(&square),
+        "a square cap should cover 16² = 256 px, got {square}"
+    );
+}
+
 /// Shapes a correctness audit un-broke: stroked LINES (flatten used to drop
 /// 2-point contours — nothing rendered), stroked RECTS (the closing edge
 /// was missing and the seam capped), a dashed closed rect, and lone-point
@@ -2920,9 +3107,12 @@ fn m12_strokes_fixed_golden() {
         });
     }
     b.draw_rect(Rect::new(300.0, 40.0, 170.0, 100.0), &dashed);
-    // Lone points render as their caps (round dot + square dot).
+    // EXPLICIT zero-length segments render as their caps (round dot + square
+    // dot). A bare `move_to` would paint nothing at all under either cap —
+    // that distinction is asserted on pixels in
+    // `a_bare_move_to_paints_nothing_but_a_zero_length_segment_does`.
     let mut dot = PathBuilder::new();
-    dot.move_to((320.0, 220.0));
+    dot.move_to((320.0, 220.0)).line_to((320.0, 220.0));
     let mut round_dot = stroke(26.0);
     if let PaintStyle::Stroke(s) = &mut round_dot.style {
         s.cap = Cap::Round;
@@ -2930,7 +3120,7 @@ fn m12_strokes_fixed_golden() {
     }
     b.draw_path(&dot.build(), FillRule::NonZero, &round_dot);
     let mut dot2 = PathBuilder::new();
-    dot2.move_to((400.0, 220.0));
+    dot2.move_to((400.0, 220.0)).line_to((400.0, 220.0));
     let mut square_dot = stroke(26.0);
     if let PaintStyle::Stroke(s) = &mut square_dot.style {
         s.cap = Cap::Square;
@@ -3529,6 +3719,178 @@ fn composed_image_filter_runs_inner_before_outer() {
         assert!(pixel[0].abs_diff(153) <= 2, "unexpected pixel {pixel:?}");
         assert_eq!(&pixel[1..], &[0, 0, 255]);
     }
+}
+
+/// A blur wide enough to downsample must still spread in every direction.
+/// The downsample passes used to map their (smaller) target quad through the
+/// SOURCE's extent rather than their own, so they read only the top-left
+/// corner of their input — the halo lost its left and top halves at exactly
+/// the σ where `blur_scale` first drops below 1.
+#[test]
+fn a_downsampled_blur_spreads_symmetrically() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_downsampled_blur_spreads_symmetrically");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    for sigma in [3.0f32, 6.0, 12.0, 24.0] {
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(
+            Rect::new(90.0, 90.0, 60.0, 60.0),
+            &Paint {
+                color: Color::rgb(1.0, 1.0, 1.0),
+                image_filter: Some(valo::ImageFilter::blur(sigma, sigma)),
+                ..Default::default()
+            },
+        );
+        let pixels = context.render_to_rgba(&b.build(), [240, 240], Some(Color::TRANSPARENT));
+        let alpha = |x: usize, y: usize| pixels[(y * 240 + x) * 4 + 3] as i32;
+        let reach = (sigma * 1.5).round() as usize;
+        let (left, right) = (alpha(90 - reach, 120), alpha(150 + reach, 120));
+        let (top, bottom) = (alpha(120, 90 - reach), alpha(120, 150 + reach));
+        assert!(left > 8, "σ={sigma} lost its left spread (α={left})");
+        assert!(top > 8, "σ={sigma} lost its top spread (α={top})");
+        assert!(
+            (left - right).abs() <= 16 && (top - bottom).abs() <= 16,
+            "σ={sigma} is lopsided: l={left} r={right} t={top} b={bottom}"
+        );
+    }
+}
+
+/// `ImageFilter::DropShadow` — CSS `filter: drop-shadow()`. Varies offset
+/// direction, σ, and shadow colour, and includes a translucent source so the
+/// "shadow comes from the input's ALPHA, not its colour" rule is visible.
+fn drop_shadow_scene() -> valo::DisplayList {
+    use valo::{ImageFilter, Point};
+    let cases = [
+        (Point::new(8.0, 8.0), 0.0, Color::rgba(0.0, 0.0, 0.0, 0.7)),
+        (Point::new(8.0, 8.0), 4.0, Color::rgba(0.0, 0.0, 0.0, 0.7)),
+        (Point::new(-10.0, 6.0), 6.0, Color::rgba(0.1, 0.2, 0.8, 0.9)),
+        (Point::new(0.0, 0.0), 10.0, Color::rgba(0.9, 0.1, 0.1, 1.0)),
+    ];
+    let mut b = DisplayListBuilder::new();
+    for (index, (offset, sigma, color)) in cases.into_iter().enumerate() {
+        let x = 40.0 + index as f32 * 130.0;
+        for (row, alpha) in [1.0, 0.45].into_iter().enumerate() {
+            let y = 40.0 + row as f32 * 130.0;
+            b.draw_rrect(
+                Rect::new(x, y, 80.0, 80.0),
+                14.0,
+                &Paint {
+                    color: Color::rgba(1.0, 0.72, 0.15, alpha),
+                    image_filter: Some(ImageFilter::drop_shadow(offset, sigma, sigma, color)),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    b.build()
+}
+
+#[test]
+fn image_filter_drop_shadow_golden() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP image_filter_drop_shadow_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let size = [560u32, 300u32];
+    let offscreen = Offscreen::new(&device, size);
+    ctx.render(
+        &drop_shadow_scene(),
+        &offscreen.target(Some(Color::rgb(0.93, 0.94, 0.96))),
+    );
+    let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+    valo_harness::assert_golden(goldens_dir(), "image_filter_drop_shadow", size, &rgba);
+}
+
+/// A rotated explicit `save_layer` must still hold its whole shadow.
+///
+/// Record-time padding used to be `max(local padding) × max_scale`, which is
+/// 10 for a pure rotation — but a 45° turn sends a local `(10, 10)` offset to
+/// 14.14 device px, and the combine pass forces everything past the layer
+/// transparent. The shadow lost its last 4 px silently.
+#[test]
+fn a_rotated_layer_keeps_its_whole_drop_shadow() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_rotated_layer_keeps_its_whole_drop_shadow");
+        return;
+    };
+    let mut b = DisplayListBuilder::new();
+    b.translate(60.0, 40.0);
+    b.rotate(std::f32::consts::FRAC_PI_4);
+    b.save_layer(
+        None,
+        &Paint {
+            image_filter: Some(valo::ImageFilter::drop_shadow(
+                valo::Point::new(10.0, 10.0),
+                0.0,
+                0.0,
+                Color::rgb(1.0, 0.0, 0.0),
+            )),
+            ..Default::default()
+        },
+    );
+    b.draw_rect(
+        Rect::new(-8.0, -8.0, 16.0, 16.0),
+        &Paint::from_color(Color::rgb(1.0, 1.0, 1.0)),
+    );
+    b.restore();
+
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(&b.build(), [120, 120], Some(Color::TRANSPARENT));
+    let at = |x: usize, y: usize| {
+        let start = (y * 120 + x) * 4;
+        [pixels[start], pixels[start + 1], pixels[start + 2]]
+    };
+    // The rotated square is centred on (60, 40); (10, 10) turned 45° is
+    // (0, 14.14), so the shadow's centre lands at (60, 54.14) and its far
+    // corner reaches y ≈ 65.5. The scalar bound cropped it at y ≈ 61.3, so
+    // y = 63 is the pixel that tells the two apart.
+    assert_eq!(at(60, 40), [255, 255, 255], "the source draws as recorded");
+    assert_eq!(at(60, 52), [255, 0, 0], "the shadow reaches its offset");
+    assert_eq!(at(60, 63), [255, 0, 0], "the shadow is not cropped short");
+    assert_eq!(at(60, 70), [0, 0, 0], "and it still ends somewhere");
+}
+
+/// The three rules a drop shadow has to obey, asserted on pixels rather than
+/// eyeballed: the source survives untouched, an unblurred shadow lands at
+/// exactly the offset, and nothing outside source ∪ shadow is painted.
+#[test]
+fn drop_shadow_places_the_shadow_at_the_offset() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP drop_shadow_places_the_shadow_at_the_offset");
+        return;
+    };
+    let mut b = DisplayListBuilder::new();
+    b.draw_rect(
+        Rect::new(4.0, 4.0, 8.0, 8.0),
+        &Paint {
+            color: Color::rgb(1.0, 1.0, 1.0),
+            image_filter: Some(valo::ImageFilter::drop_shadow(
+                valo::Point::new(8.0, 8.0),
+                0.0,
+                0.0,
+                Color::rgb(1.0, 0.0, 0.0),
+            )),
+            ..Default::default()
+        },
+    );
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(&b.build(), [24, 24], Some(Color::TRANSPARENT));
+    let at = |x: usize, y: usize| {
+        let start = (y * 24 + x) * 4;
+        [
+            pixels[start],
+            pixels[start + 1],
+            pixels[start + 2],
+            pixels[start + 3],
+        ]
+    };
+    assert_eq!(at(8, 8), [255, 255, 255, 255], "the source is untouched");
+    assert_eq!(at(16, 16), [255, 0, 0, 255], "the shadow sits at +8,+8");
+    assert_eq!(at(2, 2), [0, 0, 0, 0], "nothing leaks before the source");
+    assert_eq!(at(22, 22), [0, 0, 0, 0], "nothing leaks past the shadow");
 }
 
 /// Every blend mode, evaluated twice: once folded into a solid paint on the

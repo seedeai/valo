@@ -20,13 +20,38 @@ import {
   type Affine,
 } from "./matrix.js";
 import { ValoCanvasGradient, ValoCanvasPattern } from "./resources.js";
+import { ImageSourceCache, type ValoImageSource } from "./images.js";
+import { radiiArray, sweep, ValoPath2D } from "./path2d.js";
+import {
+  DEFAULT_FONT_SIZE,
+  directionId,
+  fontStretchPercentages,
+  parseFilter,
+  parseFont,
+  parsePixels,
+  pixelsOrDefault,
+  variantCapsIds,
+  type FilterStage,
+  type FontSizeReference,
+} from "./css.js";
 
 export type ValoCanvasStyle = string | ValoCanvasGradient | ValoCanvasPattern;
 export type ValoFillRule = "nonzero" | "evenodd";
+/** Either path shape the drawing methods accept. */
+export type ValoPathArgument = ValoPath2D | Path;
 
 export interface ValoCanvasOptions {
   autoPresent?: boolean;
   clearColor?: string;
+}
+
+/** What `getContextAttributes()` reports. Valo's surface is always alpha-capable
+ *  and never desynchronized: it presents once per frame under its own control. */
+export interface ValoContextAttributes {
+  alpha: boolean;
+  colorSpace: PredefinedColorSpace;
+  desynchronized: boolean;
+  willReadFrequently: boolean;
 }
 
 interface ClipRecord {
@@ -55,8 +80,12 @@ interface State {
   imageSmoothingEnabled: boolean;
   imageSmoothingQuality: ImageSmoothingQuality;
   font: string;
+  fontKerning: CanvasFontKerning;
+  fontStretch: CanvasFontStretch;
+  fontVariantCaps: CanvasFontVariantCaps;
   textAlign: CanvasTextAlign;
   textBaseline: CanvasTextBaseline;
+  direction: CanvasDirection;
   letterSpacing: string;
   wordSpacing: string;
   textRendering: CanvasTextRendering;
@@ -85,8 +114,12 @@ const defaultState = (): State => ({
   imageSmoothingEnabled: true,
   imageSmoothingQuality: "low",
   font: "10px sans-serif",
+  fontKerning: "auto",
+  fontStretch: "normal",
+  fontVariantCaps: "normal",
   textAlign: "start",
   textBaseline: "alphabetic",
+  direction: "inherit",
   letterSpacing: "0px",
   wordSpacing: "0px",
   textRendering: "auto",
@@ -118,9 +151,10 @@ export class ValoCanvasRenderingContext2D {
   #clearColor: Rgba;
   #state = defaultState();
   #stack: State[] = [];
-  #path = new Path();
+  #path = new ValoPath2D();
   #builder = new DisplayListBuilder();
   #history: DisplayList[] = [];
+  #images: ImageSourceCache;
   #scheduled = false;
   #dirty = false;
   #lastStats: ValoFrameStats | undefined;
@@ -128,6 +162,7 @@ export class ValoCanvasRenderingContext2D {
   constructor(canvas: HTMLCanvasElement, renderer: Renderer, options: ValoCanvasOptions = {}) {
     this.canvas = canvas;
     this.#renderer = renderer;
+    this.#images = new ImageSourceCache(renderer);
     this.#autoPresent = options.autoPresent ?? true;
     this.#clearColor = parseColor(options.clearColor ?? "transparent");
   }
@@ -136,14 +171,16 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.fillStyle;
   }
   set fillStyle(value: ValoCanvasStyle) {
-    this.#state.fillStyle = value;
+    const style = acceptedStyle(value);
+    if (style !== undefined) this.#state.fillStyle = style;
   }
 
   get strokeStyle(): ValoCanvasStyle {
     return this.#state.strokeStyle;
   }
   set strokeStyle(value: ValoCanvasStyle) {
-    this.#state.strokeStyle = value;
+    const style = acceptedStyle(value);
+    if (style !== undefined) this.#state.strokeStyle = style;
   }
 
   get globalAlpha(): number {
@@ -200,8 +237,9 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.shadowColor;
   }
   set shadowColor(value: string) {
-    parseColor(value);
-    this.#state.shadowColor = value;
+    const text = String(value);
+    if (!accepted(() => parseColor(text))) return;
+    this.#state.shadowColor = text;
   }
 
   get shadowBlur(): number {
@@ -245,8 +283,41 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.font;
   }
   set font(value: string) {
-    parseFont(value);
-    this.#state.font = value;
+    const text = String(value);
+    if (!accepted(() => parseFont(text, this.#fontSizeReference()))) return;
+    this.#state.font = text;
+  }
+
+  get fontKerning(): CanvasFontKerning {
+    return this.#state.fontKerning;
+  }
+  set fontKerning(value: CanvasFontKerning) {
+    if (value === "auto" || value === "normal" || value === "none") {
+      this.#state.fontKerning = value;
+    }
+  }
+
+  get fontStretch(): CanvasFontStretch {
+    return this.#state.fontStretch;
+  }
+  set fontStretch(value: CanvasFontStretch) {
+    if (value in fontStretchPercentages) this.#state.fontStretch = value;
+  }
+
+  get fontVariantCaps(): CanvasFontVariantCaps {
+    return this.#state.fontVariantCaps;
+  }
+  set fontVariantCaps(value: CanvasFontVariantCaps) {
+    if (value in variantCapsIds) this.#state.fontVariantCaps = value;
+  }
+
+  get direction(): CanvasDirection {
+    return this.#state.direction;
+  }
+  set direction(value: CanvasDirection) {
+    if (value === "ltr" || value === "rtl" || value === "inherit") {
+      this.#state.direction = value;
+    }
   }
 
   get textAlign(): CanvasTextAlign {
@@ -267,16 +338,18 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.letterSpacing;
   }
   set letterSpacing(value: string) {
-    parsePixels(value);
-    this.#state.letterSpacing = value;
+    const text = String(value);
+    if (!accepted(() => parsePixels(text))) return;
+    this.#state.letterSpacing = text;
   }
 
   get wordSpacing(): string {
     return this.#state.wordSpacing;
   }
   set wordSpacing(value: string) {
-    parsePixels(value);
-    this.#state.wordSpacing = value;
+    const text = String(value);
+    if (!accepted(() => parsePixels(text))) return;
+    this.#state.wordSpacing = text;
   }
 
   get textRendering(): CanvasTextRendering {
@@ -297,11 +370,12 @@ export class ValoCanvasRenderingContext2D {
     return this.#state.filter;
   }
   set filter(value: string) {
-    const stages = parseFilter(value);
+    const text = String(value);
+    const stages = parseFilter(text);
     if (!stages) return;
     const filter = stages.length > 0 ? buildImageFilter(stages) : undefined;
     this.#state.imageFilter?.free();
-    this.#state.filter = value;
+    this.#state.filter = text;
     this.#state.imageFilter = filter;
   }
 
@@ -326,7 +400,7 @@ export class ValoCanvasRenderingContext2D {
     for (const saved of this.#stack) disposeState(saved);
     this.#state = defaultState();
     this.#stack = [];
-    this.#path = new Path();
+    this.#path = new ValoPath2D();
     this.#builder = new DisplayListBuilder();
     this.#dirty = true;
     this.#schedule();
@@ -334,11 +408,15 @@ export class ValoCanvasRenderingContext2D {
 
   beginPath(): void {
     this.#path.free();
-    this.#path = new Path();
+    this.#path = new ValoPath2D();
   }
 
+  // The current path is a `ValoPath2D`, so these are one-line forwards. The
+  // spec's non-finite and radius rules live there and cannot drift between
+  // the two surfaces — which is exactly how `Path2D` ended up unguarded while
+  // the context methods were guarded.
   closePath(): void {
-    this.#path.close();
+    this.#path.closePath();
   }
 
   moveTo(x: number, y: number): void {
@@ -375,7 +453,7 @@ export class ValoCanvasRenderingContext2D {
     height: number,
     radii: number | readonly number[] = 0,
   ): void {
-    this.#path.roundRect(x, y, width, height, radiiArray(radii));
+    this.#path.roundRect(x, y, width, height, radii);
   }
 
   arc(
@@ -386,8 +464,7 @@ export class ValoCanvasRenderingContext2D {
     endAngle: number,
     counterclockwise = false,
   ): void {
-    if (radius < 0) throw new DOMException("The radius must be non-negative", "IndexSizeError");
-    this.#path.arc(x, y, radius, startAngle, sweep(startAngle, endAngle, counterclockwise));
+    this.#path.arc(x, y, radius, startAngle, endAngle, counterclockwise);
   }
 
   ellipse(
@@ -400,37 +477,26 @@ export class ValoCanvasRenderingContext2D {
     endAngle: number,
     counterclockwise = false,
   ): void {
-    if (radiusX < 0 || radiusY < 0) {
-      throw new DOMException("Ellipse radii must be non-negative", "IndexSizeError");
-    }
-    this.#path.ellipse(
-      x,
-      y,
-      radiusX,
-      radiusY,
-      rotation,
-      startAngle,
-      sweep(startAngle, endAngle, counterclockwise),
-    );
+    this.#path.ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise);
   }
 
   arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void {
-    if (radius < 0) throw new DOMException("The radius must be non-negative", "IndexSizeError");
     this.#path.arcTo(x1, y1, x2, y2, radius);
   }
 
-  fill(pathOrRule?: Path | ValoFillRule, rule: ValoFillRule = "nonzero"): void {
-    const path = pathOrRule instanceof Path ? pathOrRule : this.#path;
+  fill(pathOrRule?: ValoPathArgument | ValoFillRule, rule: ValoFillRule = "nonzero"): void {
+    const path = rawPath(pathOrRule) ?? this.#path.toRaw();
     const fillRule = typeof pathOrRule === "string" ? pathOrRule : rule;
     this.#drawShape((paint) => this.#builder.drawPath(path, ruleId(fillRule), paint), false);
   }
 
-  stroke(path: Path = this.#path): void {
-    this.#drawShape((paint) => this.#builder.drawPath(path, 0, paint), true);
+  stroke(path?: ValoPathArgument): void {
+    const target = rawPath(path) ?? this.#path.toRaw();
+    this.#drawShape((paint) => this.#builder.drawPath(target, 0, paint), true);
   }
 
-  clip(pathOrRule?: Path | ValoFillRule, rule: ValoFillRule = "nonzero"): void {
-    const path = pathOrRule instanceof Path ? pathOrRule : this.#path;
+  clip(pathOrRule?: ValoPathArgument | ValoFillRule, rule: ValoFillRule = "nonzero"): void {
+    const path = rawPath(pathOrRule) ?? this.#path.toRaw();
     const fillRule = typeof pathOrRule === "string" ? pathOrRule : rule;
     const record = {
       path: path.clone(),
@@ -442,14 +508,19 @@ export class ValoCanvasRenderingContext2D {
   }
 
   fillRect(x: number, y: number, width: number, height: number): void {
-    this.#drawShape((paint) => this.#builder.drawRect(x, y, width, height, paint), false);
+    if (!allFinite(x, y, width, height)) return;
+    const [left, top, w, h] = normalizedRectangle(x, y, width, height);
+    this.#drawShape((paint) => this.#builder.drawRect(left, top, w, h, paint), false);
   }
 
   strokeRect(x: number, y: number, width: number, height: number): void {
+    if (!allFinite(x, y, width, height)) return;
     this.#drawShape((paint) => this.#builder.drawRect(x, y, width, height, paint), true);
   }
 
   clearRect(x: number, y: number, width: number, height: number): void {
+    if (!allFinite(x, y, width, height)) return;
+    [x, y, width, height] = normalizedRectangle(x, y, width, height);
     if (
       equalMatrix(this.#state.transform, identity) &&
       this.#state.clips.length === 0 &&
@@ -471,9 +542,22 @@ export class ValoCanvasRenderingContext2D {
     this.#markDirty();
   }
 
-  drawImage(image: Image, ...argumentsList: number[]): void {
+  drawImage(source: ValoImageSource, ...argumentsList: number[]): void {
+    // Arity is overload resolution, so it fails BEFORE the source is looked
+    // at: `drawImage(img, 1, 2, 3)` is a TypeError even for an image that has
+    // not decoded, where a correct call would draw nothing at all.
+    if (argumentsList.length !== 2 && argumentsList.length !== 4 && argumentsList.length !== 8) {
+      throw new TypeError("drawImage expects 3, 5, or 9 total arguments");
+    }
+    if (!allFinite(...argumentsList)) return;
+    const image = this.#resolveImage(source);
+    // A source with nothing to draw yet — an undecoded `<img>`, a `<video>`
+    // with no current frame — is a silent no-op, as in Canvas2D.
+    if (!image) return;
+    const rectangles = imageArguments(image, argumentsList);
+    if (!rectangles) return;
     const [sourceX, sourceY, sourceWidth, sourceHeight, destinationX, destinationY, destinationWidth, destinationHeight] =
-      imageArguments(image, argumentsList);
+      rectangles;
     this.#drawStyled(
       (paint) => this.#builder.drawImageRect(
         image,
@@ -486,6 +570,7 @@ export class ValoCanvasRenderingContext2D {
         destinationWidth,
         destinationHeight,
         this.#state.imageSmoothingEnabled ? 0 : 1,
+        this.#mipmapMode(),
         0,
         0,
         paint,
@@ -520,31 +605,69 @@ export class ValoCanvasRenderingContext2D {
     return new ValoCanvasGradient({ type: "sweep", values: [x, y, startAngle] });
   }
 
-  createPattern(image: Image, repetition: string | null = "repeat"): ValoCanvasPattern {
-    return new ValoCanvasPattern(image, repetition);
+  /**
+   * KNOWN DIVERGENCE, left deliberately: this pattern is LIVE. WHATWG checks
+   * the source's usability here and snapshots it, so later changes to the
+   * image must not show; Valo instead re-resolves the source at every paint,
+   * which means a canvas mutated after `createPattern()` changes the pattern,
+   * and a not-yet-decoded image yields a pattern rather than `null`.
+   *
+   * Snapshotting is a behaviour change the owner should weigh — it costs an
+   * upload per `createPattern` call and makes a pattern over an animating
+   * canvas stop animating — so it is flagged rather than quietly decided.
+   */
+  createPattern(source: ValoImageSource, repetition: string | null = "repeat"): ValoCanvasPattern {
+    return new ValoCanvasPattern(source, repetition);
   }
 
   isPointInPath(
-    pathOrX: Path | number,
+    pathOrX: ValoPathArgument | number,
     xOrY: number,
     yOrRule?: number | ValoFillRule,
     maybeRule: ValoFillRule = "nonzero",
   ): boolean {
-    const path = pathOrX instanceof Path ? pathOrX : this.#path;
-    const x = pathOrX instanceof Path ? xOrY : pathOrX;
-    const y = pathOrX instanceof Path ? (yOrRule as number) : xOrY;
-    const rule = pathOrX instanceof Path ? maybeRule : (yOrRule as ValoFillRule | undefined) ?? "nonzero";
-    const inverseTransform = inverse(this.#state.transform);
-    if (!inverseTransform) return false;
-    const local = mapPoint(inverseTransform, x, y);
+    const explicit = rawPath(pathOrX);
+    const path = explicit ?? this.#path.toRaw();
+    const [x, y] = explicit ? [xOrY, yOrRule as number] : [pathOrX as number, xOrY];
+    const rule = explicit
+      ? maybeRule
+      : ((yOrRule as ValoFillRule | undefined) ?? "nonzero");
+    const local = this.#toPathSpace(x, y);
+    if (!local) return false;
     return path.contains(local[0], local[1], ruleId(rule));
   }
 
-  isPointInStroke(): boolean {
-    throw new DOMException(
-      "isPointInStroke is not implemented; use Path.contains for fill hit-testing or application geometry for strokes",
-      "NotSupportedError",
+  isPointInStroke(pathOrX: ValoPathArgument | number, xOrY: number, y?: number): boolean {
+    const explicit = rawPath(pathOrX);
+    const path = explicit ?? this.#path.toRaw();
+    const [pointX, pointY] = explicit ? [xOrY, y as number] : [pathOrX as number, xOrY];
+    const local = this.#toPathSpace(pointX, pointY);
+    if (!local) return false;
+    return path.strokeContains(
+      local[0],
+      local[1],
+      this.#state.lineWidth,
+      capId(this.#state.lineCap),
+      joinId(this.#state.lineJoin),
+      this.#state.miterLimit,
+      new Float32Array(this.#state.lineDash),
+      this.#state.lineDashOffset,
     );
+  }
+
+  /** Whether the GPU device was lost. Valo does not yet observe device loss,
+   *  so this is honest only for the case it can answer: a live context. */
+  isContextLost(): boolean {
+    return false;
+  }
+
+  getContextAttributes(): ValoContextAttributes {
+    return {
+      alpha: true,
+      colorSpace: "srgb",
+      desynchronized: false,
+      willReadFrequently: false,
+    };
   }
 
   translate(x: number, y: number): void {
@@ -562,6 +685,7 @@ export class ValoCanvasRenderingContext2D {
   }
 
   transform(a: number, b: number, c: number, d: number, e: number, f: number): void {
+    if (!allFinite(a, b, c, d, e, f)) return;
     const local: Affine = [a, b, c, d, e, f];
     this.#state.transform = multiply(this.#state.transform, local);
     this.#builder.transform(new Float32Array(local));
@@ -579,6 +703,7 @@ export class ValoCanvasRenderingContext2D {
       typeof aOrMatrix === "number"
         ? [aOrMatrix, b ?? 0, c ?? 0, d ?? 1, e ?? 0, f ?? 0]
         : domMatrixValues(aOrMatrix);
+    if (!allFinite(...target)) return;
     const currentInverse = inverse(this.#state.transform);
     if (!currentInverse) return;
     this.#builder.transform(new Float32Array(multiply(currentInverse, target)));
@@ -613,11 +738,11 @@ export class ValoCanvasRenderingContext2D {
     }
   }
 
-  fillText(text: string, x: number, y: number, maxWidth = Number.POSITIVE_INFINITY): void {
+  fillText(text: string, x: number, y: number, maxWidth?: number): void {
     this.#drawText(text, x, y, maxWidth, false);
   }
 
-  strokeText(text: string, x: number, y: number, maxWidth = Number.POSITIVE_INFINITY): void {
+  strokeText(text: string, x: number, y: number, maxWidth?: number): void {
     this.#drawText(text, x, y, maxWidth, true);
   }
 
@@ -626,16 +751,27 @@ export class ValoCanvasRenderingContext2D {
     const [horizontal, vertical] = this.#textOffset(paragraph);
     const alphabeticDisplacement = vertical + paragraph.alphabeticBaseline;
     const hasOutline = paragraph.hasOutline;
+    // Text with no ink still HAS an actual bounding box: an empty one sitting
+    // on the alphabetic baseline. Reporting 0/0 instead would place it at the
+    // anchor, which moves with `textBaseline` and is a different point —
+    // measuring `""` under `textBaseline: "top"` would claim the box is at the
+    // top of the em rather than a font's ascent below it.
+    const emptyAscent = -alphabeticDisplacement;
     const metrics = new ValoTextMetrics(
       paragraph.width,
       hasOutline ? -horizontal - paragraph.outlineLeft : 0,
       hasOutline ? horizontal + paragraph.outlineRight : 0,
-      hasOutline ? -vertical - paragraph.outlineTop : 0,
-      hasOutline ? vertical + paragraph.outlineBottom : 0,
+      hasOutline ? -vertical - paragraph.outlineTop : emptyAscent,
+      hasOutline ? vertical + paragraph.outlineBottom : -emptyAscent,
       paragraph.primaryFontAscent - alphabeticDisplacement,
       paragraph.primaryFontDescent + alphabeticDisplacement,
       paragraph.emAscent - alphabeticDisplacement,
       paragraph.emDescent + alphabeticDisplacement,
+      // The three baselines, measured UP from the anchor `textBaseline` put
+      // the text on — the same sign convention as the ascents above.
+      -alphabeticDisplacement,
+      paragraph.hangingBaselineOffset - alphabeticDisplacement,
+      paragraph.ideographicBaselineOffset - alphabeticDisplacement,
     );
     paragraph.free();
     return metrics;
@@ -652,11 +788,61 @@ export class ValoCanvasRenderingContext2D {
     );
   }
 
-  putImageData(): never {
-    throw new DOMException(
-      "putImageData is asynchronous in a GPU renderer. Upload the bytes with Renderer.uploadRgba and draw the returned Valo Image.",
-      "NotSupportedError",
+  /**
+   * `ImageData` is one of the sources `copyExternalImageToTexture` accepts, so
+   * this is an ordinary upload-and-blit. Unlike every other source it is NOT
+   * cached: the caller owns a mutable `Uint8ClampedArray` and typically edits
+   * it between calls, so reusing a texture would show stale pixels.
+   *
+   * Per the spec this ignores the transform, globalAlpha, the blend mode and
+   * every filter — it REPLACES the destination pixels. DIVERGENCE: the spec
+   * also says it ignores the CLIP, which valo cannot honour, because clips are
+   * recorded into the display list and a draw cannot step outside the scope it
+   * sits in. Under an active clip the write is clipped.
+   */
+  putImageData(
+    data: ImageData,
+    x: number,
+    y: number,
+    dirtyX = 0,
+    dirtyY = 0,
+    dirtyWidth = data.width,
+    dirtyHeight = data.height,
+  ): void {
+    const region = clampedDirtyRect(data, dirtyX, dirtyY, dirtyWidth, dirtyHeight);
+    if (!region) return;
+    const [left, top, width, height] = region;
+    // Only the dirty rectangle is copied: a one-pixel update to a large
+    // ImageData would otherwise move the whole buffer to the GPU and leave a
+    // full-size texture retained by the display list to sample one texel.
+    const image = this.#renderer.uploadExternalImageRegion(data, left, top, width, height);
+    const paint = new Paint(1, 1, 1, 1);
+    paint.setBlendMode(blendModes.copy!);
+    // Everything about the current state is bypassed, including the
+    // transform, so the placement is recorded under an identity matrix.
+    this.#builder.save();
+    const currentInverse = inverse(this.#state.transform);
+    if (currentInverse) this.#builder.transform(new Float32Array(currentInverse));
+    this.#builder.drawImageRect(
+      image,
+      0,
+      0,
+      width,
+      height,
+      x + left,
+      y + top,
+      width,
+      height,
+      1,
+      0,
+      0,
+      0,
+      paint,
     );
+    this.#builder.restore();
+    paint.free();
+    image.free();
+    this.#markDirty();
   }
 
   /** Valo extension: apply a 4×5 color matrix to subsequent draws. */
@@ -725,6 +911,9 @@ export class ValoCanvasRenderingContext2D {
     this.#builder = new DisplayListBuilder();
     this.#replayState();
     this.#dirty = false;
+    // Live sources (a `<video>`, a `<canvas>`) become stale here, so the next
+    // frame re-reads them once however many times they are drawn.
+    this.#images.advanceFrame();
     return this.#lastStats;
   }
 
@@ -738,6 +927,38 @@ export class ValoCanvasRenderingContext2D {
     this.#dirty = true;
     this.#schedule();
     return true;
+  }
+
+  /** A hit-test point carried from canvas space into path space. */
+  #toPathSpace(x: number, y: number): [number, number] | undefined {
+    const inverseTransform = inverse(this.#state.transform);
+    if (!inverseTransform) return undefined;
+    return mapPoint(inverseTransform, x, y);
+  }
+
+  /**
+   * The image for a source, uploading or refreshing it as needed. Retained
+   * history is what decides whether a live source may reuse its texture: an
+   * earlier frame's display list still referencing it must keep the pixels it
+   * was recorded with.
+   */
+  #resolveImage(source: ValoImageSource): Image | undefined {
+    return this.#images.resolve(source, this.#history.length > 0);
+  }
+
+  /**
+   * `imageSmoothingQuality` as a mip mode. This is a REAL sampling difference,
+   * not a stored-and-ignored setting: `low` pins the sampler to level 0, so a
+   * minified draw stays sharp and aliases, while the higher tiers pick and
+   * then blend mip levels. Skia's own top tier is cubic resampling, which
+   * valo has no pipeline for, so `high` lands on trilinear.
+   */
+  #mipmapMode(): number {
+    switch (this.#state.imageSmoothingQuality) {
+      case "low": return 0;
+      case "medium": return 1;
+      default: return 2;
+    }
   }
 
   #drawShape(
@@ -811,10 +1032,21 @@ export class ValoCanvasRenderingContext2D {
     if (inverseTransform) this.#builder.restore();
   }
 
-  #drawText(text: string, x: number, y: number, maxWidth: number, stroke: boolean): void {
-    if (maxWidth <= 0 || Number.isNaN(maxWidth)) return;
+  #drawText(
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number | undefined,
+    stroke: boolean,
+  ): void {
+    // Text preparation returns when any SUPPLIED argument is non-finite, so
+    // an omitted `maxWidth` and an explicit `Infinity` are different calls:
+    // the first draws, the second draws nothing.
+    if (!allFinite(x, y)) return;
+    if (maxWidth !== undefined && (!Number.isFinite(maxWidth) || maxWidth <= 0)) return;
+    const limit = maxWidth ?? Number.POSITIVE_INFINITY;
     const paragraph = this.#paragraph(text, Number.POSITIVE_INFINITY);
-    const horizontalScale = textHorizontalScale(paragraph.width, maxWidth);
+    const horizontalScale = textHorizontalScale(paragraph.width, limit);
     const [left, top] = this.#textOffset(paragraph);
     this.#builder.save();
     this.#builder.translate(x, y);
@@ -895,9 +1127,16 @@ export class ValoCanvasRenderingContext2D {
       paint.setShader(shader);
       shader.free();
     } else if (style instanceof ValoCanvasPattern) {
-      const shader = style.toRaw(this.#state.imageSmoothingEnabled);
-      paint.setShader(shader);
-      shader.free();
+      const image = this.#resolveImage(style.source);
+      if (image) {
+        const shader = style.toRaw(image, this.#state.imageSmoothingEnabled, this.#mipmapMode());
+        paint.setShader(shader);
+        shader.free();
+      } else {
+        // A pattern over a source with no pixels yet paints nothing, the same
+        // way `drawImage` on one does.
+        paint.setColor(0, 0, 0, 0);
+      }
     }
     if (stroke) {
       paint.setStroke(
@@ -918,11 +1157,21 @@ export class ValoCanvasRenderingContext2D {
   }
 
   #paragraph(text: string, maxWidth: number): Paragraph {
-    const font = parseFont(this.#state.font);
+    const font = parseFont(this.#state.font, this.#fontSizeReference());
     const color = parseColor(
       typeof this.#state.fillStyle === "string" ? this.#state.fillStyle : "#000000",
     );
     const preparedText = text.replace(/[\u0009-\u000d]/g, " ");
+    // The shorthand seeds small-caps and width; the dedicated attributes win
+    // once they have been moved off their own defaults.
+    const variantCaps =
+      this.#state.fontVariantCaps === "normal" && font.smallCaps
+        ? variantCapsIds["small-caps"]
+        : variantCapsIds[this.#state.fontVariantCaps];
+    const stretch =
+      this.#state.fontStretch === "normal"
+        ? font.stretch
+        : fontStretchPercentages[this.#state.fontStretch];
     return new Paragraph(
       this.fonts,
       preparedText,
@@ -934,10 +1183,14 @@ export class ValoCanvasRenderingContext2D {
       color[1],
       color[2],
       color[3] * this.#state.globalAlpha,
+      stretch,
+      this.#state.fontKerning !== "none",
+      variantCaps,
       parsePixels(this.#state.letterSpacing),
       parsePixels(this.#state.wordSpacing),
+      font.lineHeight ?? 0,
       0,
-      0,
+      directionId(this.#state.direction),
       0,
       "",
       maxWidth,
@@ -945,13 +1198,36 @@ export class ValoCanvasRenderingContext2D {
     );
   }
 
+  /**
+   * What `em`, `ex`, `ch` and `%` in the `font` shorthand resolve against: the
+   * canvas element's own computed font-size, with `rem` against the root
+   * element. Outside a document both fall back to the CSS initial 16px rather
+   * than to a guess.
+   */
+  #fontSizeReference(): FontSizeReference {
+    if (typeof getComputedStyle !== "function" || !this.canvas.isConnected) {
+      return { element: DEFAULT_FONT_SIZE, root: DEFAULT_FONT_SIZE };
+    }
+    return {
+      element: pixelsOrDefault(getComputedStyle(this.canvas).fontSize),
+      root: pixelsOrDefault(
+        getComputedStyle(this.canvas.ownerDocument.documentElement).fontSize,
+      ),
+    };
+  }
+
   #textOffset(paragraph: Paragraph): [number, number] {
+    // `start` and `end` follow the writing direction, so they are the only
+    // alignments `direction` can move. `inherit` keeps the LTR reading, since
+    // valo has no ambient element style to inherit from.
+    const rightToLeft = this.#state.direction === "rtl";
+    const align = this.#state.textAlign;
+    const alignsRight =
+      align === "right" ||
+      (align === "end" && !rightToLeft) ||
+      (align === "start" && rightToLeft);
     const horizontal =
-      this.#state.textAlign === "center"
-        ? -paragraph.width / 2
-        : this.#state.textAlign === "right" || this.#state.textAlign === "end"
-          ? -paragraph.width
-          : 0;
+      align === "center" ? -paragraph.width / 2 : alignsRight ? -paragraph.width : 0;
     const vertical =
       this.#state.textBaseline === "top"
         ? paragraph.topBaselineOrigin
@@ -1010,7 +1286,40 @@ export class ValoTextMetrics {
     readonly fontBoundingBoxDescent: number,
     readonly emHeightAscent: number,
     readonly emHeightDescent: number,
+    readonly alphabeticBaseline: number,
+    /** Approximated at 0.8 × ascent: valo does not read the OpenType `BASE`
+     *  table, so it always takes the fallback Skia uses for fonts without one. */
+    readonly hangingBaseline: number,
+    readonly ideographicBaseline: number,
   ) {}
+}
+
+/**
+ * Canvas2D's rule for every style attribute: a value the parser cannot make
+ * sense of is IGNORED, leaving the previous one in place. Nothing a setter
+ * receives throws — not `null`, not `"12"`, not `"chartreuse-ish"`.
+ *
+ * The parsers themselves throw because their other callers are specified to:
+ * `addColorStop` raises `SyntaxError`, and the paragraph builder must not
+ * silently lay text out in the wrong font. This is the one place that turns
+ * that back into the setters' silence, so the `catch` covers exactly one
+ * parse and nothing else.
+ */
+function accepted(parse: () => unknown): boolean {
+  try {
+    parse();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A fill/stroke style the state may keep: gradients and patterns as they
+ *  are, colour strings only once they parse. */
+function acceptedStyle(value: ValoCanvasStyle): ValoCanvasStyle | undefined {
+  if (value instanceof ValoCanvasGradient || value instanceof ValoCanvasPattern) return value;
+  if (typeof value !== "string") return undefined;
+  return accepted(() => parseColor(value)) ? value : undefined;
 }
 
 function textHorizontalScale(width: number, maxWidth: number): number {
@@ -1065,21 +1374,8 @@ function disposeState(state: State): void {
   state.imageFilter = undefined;
 }
 
-function sweep(start: number, end: number, counterclockwise: boolean): number {
-  const fullTurn = Math.PI * 2;
-  let result = end - start;
-  if (!counterclockwise && result < 0) result = ((result % fullTurn) + fullTurn) % fullTurn;
-  if (counterclockwise && result > 0) result = -(((-result % fullTurn) + fullTurn) % fullTurn);
-  if (Math.abs(end - start) >= fullTurn) return counterclockwise ? -fullTurn : fullTurn;
-  return result;
-}
-
 function ruleId(rule: ValoFillRule): number {
   return rule === "evenodd" ? 1 : 0;
-}
-
-function radiiArray(radii: number | readonly number[]): Float32Array {
-  return new Float32Array(typeof radii === "number" ? [radii] : radii);
 }
 
 function capId(cap: CanvasLineCap): number {
@@ -1099,20 +1395,105 @@ function equalMatrix(left: Affine, right: Affine): boolean {
   return left.every((value, index) => value === right[index]);
 }
 
-function imageArguments(
+export type ImageRectangles = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
+/**
+ * The source and destination rectangles for a `drawImage` call, after the
+ * spec's two corrections. `undefined` = the call draws nothing.
+ *
+ * NEGATIVE sizes flip the rectangle rather than emptying it, so
+ * `drawImage(img, 0, 0, 40, 40, 40, 40, -40, -40)` draws into `(0, 0, 40, 40)`
+ * exactly like the positive form. Valo's `Rect` treats a negative extent as
+ * empty, so without this the draw silently disappears.
+ *
+ * A source rectangle reaching OUTSIDE the image is clipped to it, and the
+ * destination is clipped by the same proportion so the visible part keeps its
+ * position and scale. Without this the sampler clamps instead, smearing the
+ * image's border texels across the overhang.
+ */
+/**
+ * Canvas2D IGNORES a call carrying a non-finite argument — it returns
+ * silently rather than throwing or applying it. Valo's recorder has no such
+ * rule and would take NaN at face value, and NaN spreads: it reaches the
+ * transform stack and the recorded bounds, so every LATER draw in the frame
+ * disappears too. One stray value blanks the rest of the canvas, which is why
+ * this is a boundary guard rather than something the core defends against.
+ */
+function allFinite(...values: number[]): boolean {
+  return values.every(Number.isFinite);
+}
+
+export function imageArguments(
   image: Image,
   values: readonly number[],
-): readonly [number, number, number, number, number, number, number, number] {
+): ImageRectangles | undefined {
   if (values.length === 2) {
     return [0, 0, image.width, image.height, values[0]!, values[1]!, image.width, image.height];
   }
   if (values.length === 4) {
-    return [0, 0, image.width, image.height, values[0]!, values[1]!, values[2]!, values[3]!];
+    const [x, y, width, height] = normalizedRectangle(values[0]!, values[1]!, values[2]!, values[3]!);
+    return [0, 0, image.width, image.height, x, y, width, height];
   }
-  if (values.length === 8) {
-    return [values[0]!, values[1]!, values[2]!, values[3]!, values[4]!, values[5]!, values[6]!, values[7]!];
-  }
-  throw new TypeError("drawImage expects 3, 5, or 9 total arguments");
+  const source = normalizedRectangle(values[0]!, values[1]!, values[2]!, values[3]!);
+  const destination = normalizedRectangle(values[4]!, values[5]!, values[6]!, values[7]!);
+  return clippedToImage(image, source, destination);
+}
+
+type Rectangle = readonly [number, number, number, number];
+
+/**
+ * Canvas2D rectangles admit negative extents and mean the same rectangle
+ * walked the other way, so they normalise before use. Valo's `Rect` stores
+ * width and height as given — correct for a geometry type, where a negative
+ * extent is degenerate rather than reversed — so the conversion belongs here.
+ *
+ * `strokeRect` deliberately does NOT normalise: it is specified on the signed
+ * dimensions, and its traversal direction is what places the dash phase.
+ */
+function normalizedRectangle(x: number, y: number, width: number, height: number): Rectangle {
+  return [
+    width < 0 ? x + width : x,
+    height < 0 ? y + height : y,
+    Math.abs(width),
+    Math.abs(height),
+  ];
+}
+
+function clippedToImage(
+  image: Image,
+  source: Rectangle,
+  destination: Rectangle,
+): ImageRectangles | undefined {
+  const [sourceX, sourceY, sourceWidth, sourceHeight] = source;
+  if (sourceWidth === 0 || sourceHeight === 0) return undefined;
+  const left = Math.max(sourceX, 0);
+  const top = Math.max(sourceY, 0);
+  const right = Math.min(sourceX + sourceWidth, image.width);
+  const bottom = Math.min(sourceY + sourceHeight, image.height);
+  if (right <= left || bottom <= top) return undefined;
+
+  const [destinationX, destinationY, destinationWidth, destinationHeight] = destination;
+  const horizontal = destinationWidth / sourceWidth;
+  const vertical = destinationHeight / sourceHeight;
+  return [
+    left,
+    top,
+    right - left,
+    bottom - top,
+    destinationX + (left - sourceX) * horizontal,
+    destinationY + (top - sourceY) * vertical,
+    (right - left) * horizontal,
+    (bottom - top) * vertical,
+  ];
 }
 
 function shadowColorMatrix([red, green, blue, alpha]: Rgba): Float32Array {
@@ -1124,116 +1505,52 @@ function shadowColorMatrix([red, green, blue, alpha]: Rgba): Float32Array {
   ]);
 }
 
-interface ParsedFont {
-  italic: boolean;
-  weight: number;
-  size: number;
-  families: string[];
+/** Either path shape, as the raw Valo path the recorder needs. */
+function rawPath(source: unknown): Path | undefined {
+  if (source instanceof ValoPath2D) return source.toRaw();
+  if (source instanceof Path) return source;
+  return undefined;
 }
 
-function parseFont(value: string): ParsedFont {
-  const match = /^(?:(italic)\s+)?(?:(normal|bold|[1-9]00)\s+)?([0-9.]+)px\s+(.+)$/.exec(
-    value.trim(),
-  );
-  if (!match) {
-    throw new TypeError(
-      `Unsupported font '${value}'. Use '[italic] [weight] <size>px <family-list>'.`,
-    );
-  }
-  return {
-    italic: match[1] === "italic",
-    weight: match[2] === "bold" ? 700 : Number.parseInt(match[2] ?? "400", 10),
-    size: Number.parseFloat(match[3]!),
-    families: match[4]!.split(",").map((family) => family.trim().replace(/^['"]|['"]$/g, "")),
-  };
+/**
+ * `putImageData`'s dirty rectangle, normalized for negative extents and
+ * clipped to the data — the spec's own steps. `undefined` = nothing to write.
+ */
+function clampedDirtyRect(
+  data: ImageData,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): [number, number, number, number] | undefined {
+  const left = Math.max(0, Math.min(x, x + width));
+  const top = Math.max(0, Math.min(y, y + height));
+  const right = Math.min(data.width, Math.max(x, x + width));
+  const bottom = Math.min(data.height, Math.max(y, y + height));
+  if (right <= left || bottom <= top) return undefined;
+  return [left, top, right - left, bottom - top];
 }
 
-function parsePixels(value: string): number {
-  const match = /^(-?[0-9.]+)px$/.exec(value.trim());
-  if (!match) throw new TypeError(`Expected a pixel length, received '${value}'`);
-  return Number.parseFloat(match[1]!);
-}
-
-type FilterStage =
-  | { type: "blur"; sigma: number }
-  | { type: "color"; matrix: number[] };
-
-function parseFilter(value: string): FilterStage[] | undefined {
-  const source = value.trim();
-  if (source.toLowerCase() === "none") return [];
-  if (source.length === 0) return undefined;
-  const stages: FilterStage[] = [];
-  const call = /([a-z-]+)\(([^()]*)\)/iy;
-  let offset = 0;
-  while (offset < source.length) {
-    while (/\s/.test(source[offset] ?? "")) offset += 1;
-    call.lastIndex = offset;
-    const match = call.exec(source);
-    if (!match) return undefined;
-    const stage = parseFilterFunction(match[1]!.toLowerCase(), match[2]!.trim().toLowerCase());
-    if (stage === undefined) return undefined;
-    if (stage) stages.push(stage);
-    offset = call.lastIndex;
-  }
-  return stages;
-}
-
-function parseFilterFunction(name: string, argument: string): FilterStage | null | undefined {
-  if (name === "blur") {
-    const match = /^([+]?(?:\d+(?:\.\d*)?|\.\d+))(px)?$/.exec(argument || "0");
-    if (match?.[2] === undefined && Number(match?.[1]) !== 0) return undefined;
-    const radius = match ? Number(match[1]) : Number.NaN;
-    if (!Number.isFinite(radius)) return undefined;
-    return radius === 0 ? null : { type: "blur", sigma: radius };
-  }
-  if (name === "hue-rotate") {
-    const radians = parseAngle(argument || "0deg");
-    if (radians === undefined) return undefined;
-    return Math.abs(radians % (Math.PI * 2)) < 1e-12
-      ? null
-      : { type: "color", matrix: hueRotate(radians) };
-  }
-  const amount = parseFilterAmount(argument || "100%");
-  if (amount === undefined) return undefined;
-  switch (name) {
-    case "brightness": return amount === 1 ? null : { type: "color", matrix: brightness(amount) };
-    case "contrast": return amount === 1 ? null : { type: "color", matrix: contrast(amount) };
-    case "grayscale": return amount === 0 ? null : { type: "color", matrix: grayscale(Math.min(amount, 1)) };
-    case "invert": return amount === 0 ? null : { type: "color", matrix: invert(Math.min(amount, 1)) };
-    case "opacity": return amount === 1 ? null : { type: "color", matrix: opacity(Math.min(amount, 1)) };
-    case "saturate": return amount === 1 ? null : { type: "color", matrix: saturate(amount) };
-    case "sepia": return amount === 0 ? null : { type: "color", matrix: sepia(Math.min(amount, 1)) };
-    default: return undefined;
-  }
-}
-
-function parseFilterAmount(value: string): number | undefined {
-  const match = /^([+]?(?:\d+(?:\.\d*)?|\.\d+))(%)?$/.exec(value);
-  if (!match) return undefined;
-  const amount = Number(match[1]) / (match[2] ? 100 : 1);
-  return Number.isFinite(amount) ? amount : undefined;
-}
-
-function parseAngle(value: string): number | undefined {
-  const match = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad|turn)$/.exec(value);
-  if (!match) return undefined;
-  const amount = Number(match[1]);
-  const radians = match[2] === "deg"
-    ? amount * Math.PI / 180
-    : match[2] === "grad"
-      ? amount * Math.PI / 200
-      : match[2] === "turn"
-        ? amount * Math.PI * 2
-        : amount;
-  return Number.isFinite(radians) ? radians : undefined;
-}
+export
 
 function buildImageFilter(stages: readonly FilterStage[]): ImageFilter {
   let chain: ImageFilter | undefined;
   for (const stage of stages) {
-    const next = stage.type === "blur"
-      ? ImageFilter.blur(stage.sigma, stage.sigma)
-      : imageColorFilter(stage.matrix);
+    const next =
+      stage.type === "blur"
+        ? ImageFilter.blur(stage.sigma, stage.sigma)
+        : stage.type === "drop-shadow"
+          ? ImageFilter.dropShadow(
+              stage.offsetX,
+              stage.offsetY,
+              stage.sigma,
+              stage.sigma,
+              stage.color[0],
+              stage.color[1],
+              stage.color[2],
+              stage.color[3],
+            )
+          : imageColorFilter(stage.matrix);
     if (!chain) {
       chain = next;
       continue;
@@ -1252,82 +1569,6 @@ function imageColorFilter(matrix: readonly number[]): ImageFilter {
   const image = ImageFilter.color(color);
   color.free();
   return image;
-}
-
-function diagonal(red: number, green: number, blue: number, alpha = 1): number[] {
-  return [
-    red, 0, 0, 0, 0,
-    0, green, 0, 0, 0,
-    0, 0, blue, 0, 0,
-    0, 0, 0, alpha, 0,
-  ];
-}
-
-function brightness(amount: number): number[] {
-  return diagonal(amount, amount, amount);
-}
-
-function contrast(amount: number): number[] {
-  const offset = 0.5 * (1 - amount);
-  return [
-    amount, 0, 0, 0, offset,
-    0, amount, 0, 0, offset,
-    0, 0, amount, 0, offset,
-    0, 0, 0, 1, 0,
-  ];
-}
-
-function opacity(amount: number): number[] {
-  return diagonal(1, 1, 1, amount);
-}
-
-function invert(amount: number): number[] {
-  const scale = 1 - 2 * amount;
-  return [
-    scale, 0, 0, 0, amount,
-    0, scale, 0, 0, amount,
-    0, 0, scale, 0, amount,
-    0, 0, 0, 1, 0,
-  ];
-}
-
-function saturate(amount: number): number[] {
-  return [
-    0.213 + 0.787 * amount, 0.715 - 0.715 * amount, 0.072 - 0.072 * amount, 0, 0,
-    0.213 - 0.213 * amount, 0.715 + 0.285 * amount, 0.072 - 0.072 * amount, 0, 0,
-    0.213 - 0.213 * amount, 0.715 - 0.715 * amount, 0.072 + 0.928 * amount, 0, 0,
-    0, 0, 0, 1, 0,
-  ];
-}
-
-function grayscale(amount: number): number[] {
-  return saturate(1 - amount);
-}
-
-function sepia(amount: number): number[] {
-  return [
-    1 - 0.607 * amount, 0.769 * amount, 0.189 * amount, 0, 0,
-    0.349 * amount, 1 - 0.314 * amount, 0.168 * amount, 0, 0,
-    0.272 * amount, 0.534 * amount, 1 - 0.869 * amount, 0, 0,
-    0, 0, 0, 1, 0,
-  ];
-}
-
-function hueRotate(angle: number): number[] {
-  const cosine = Math.cos(angle);
-  const sine = Math.sin(angle);
-  return [
-    0.213 + 0.787 * cosine - 0.213 * sine,
-    0.715 - 0.715 * cosine - 0.715 * sine,
-    0.072 - 0.072 * cosine + 0.928 * sine, 0, 0,
-    0.213 - 0.213 * cosine + 0.143 * sine,
-    0.715 + 0.285 * cosine + 0.140 * sine,
-    0.072 - 0.072 * cosine - 0.283 * sine, 0, 0,
-    0.213 - 0.213 * cosine - 0.787 * sine,
-    0.715 - 0.715 * cosine + 0.715 * sine,
-    0.072 + 0.928 * cosine + 0.072 * sine, 0, 0,
-    0, 0, 0, 1, 0,
-  ];
 }
 
 const blendModes: Partial<Record<GlobalCompositeOperation, number>> = {

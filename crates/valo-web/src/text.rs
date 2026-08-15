@@ -1,5 +1,6 @@
 use valo::{
-    Color, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, TextAlign, TextStyle,
+    Color, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, TextAlign, TextDirection,
+    TextStyle, VariantCaps,
 };
 use wasm_bindgen::prelude::*;
 
@@ -61,10 +62,14 @@ impl WebParagraph {
         green: f32,
         blue: f32,
         alpha: f32,
+        stretch: f32,
+        kerning: bool,
+        variant_caps: u32,
         letter_spacing: f32,
         word_spacing: f32,
         line_height: f32,
         align: u32,
+        direction: u32,
         max_lines: u32,
         ellipsis: &str,
         max_width: f32,
@@ -83,6 +88,9 @@ impl WebParagraph {
                 .collect(),
             weight: weight.clamp(1, u16::MAX as u32) as u16,
             italic,
+            stretch,
+            kerning,
+            variant_caps: variant_caps_of(variant_caps),
             size,
             color: Color::rgba(red, green, blue, alpha),
             letter_spacing,
@@ -92,6 +100,7 @@ impl WebParagraph {
         };
         let paragraph_style = ParagraphStyle {
             align: text_align(align),
+            direction: text_direction(direction),
             preserve_trailing_whitespace,
             max_lines: (max_lines > 0).then_some(max_lines),
             ellipsis: (!ellipsis.is_empty()).then(|| ellipsis.to_owned()),
@@ -190,12 +199,24 @@ impl WebParagraph {
         -baseline + em_ascent
     }
 
+    /// How far ABOVE the alphabetic baseline the hanging baseline sits.
+    /// valo does not read the OpenType `BASE` table, so this is always
+    /// Skia's fallback approximation for a font that lacks one.
+    #[wasm_bindgen(getter, js_name = hangingBaselineOffset)]
+    pub fn hanging_baseline_offset(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| font.ascent_px(size) * 0.8)
+    }
+
+    /// How far above the alphabetic baseline the ideographic-under baseline
+    /// sits — negative, since it sits below by the font's descent.
+    #[wasm_bindgen(getter, js_name = ideographicBaselineOffset)]
+    pub fn ideographic_baseline_offset(&self) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(_, font, size)| -font.descent_px(size))
+    }
+
     #[wasm_bindgen(getter, js_name = hangingBaselineOrigin)]
     pub fn hanging_baseline_origin(&self) -> f32 {
-        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
-            return 0.0;
-        };
-        -baseline + font.ascent_px(size) * 0.8
+        self.baseline_origin(self.hanging_baseline_offset())
     }
 
     #[wasm_bindgen(getter, js_name = middleBaselineOrigin)]
@@ -218,10 +239,7 @@ impl WebParagraph {
 
     #[wasm_bindgen(getter, js_name = ideographicBaselineOrigin)]
     pub fn ideographic_baseline_origin(&self) -> f32 {
-        let Some((baseline, font, size)) = primary_metrics(&self.inner) else {
-            return 0.0;
-        };
-        -baseline - font.descent_px(size)
+        self.baseline_origin(self.ideographic_baseline_offset())
     }
 
     #[wasm_bindgen(getter, js_name = minIntrinsicWidth)]
@@ -241,6 +259,12 @@ impl WebParagraph {
 }
 
 impl WebParagraph {
+    /// Where the paragraph's top goes so that a baseline `offset` above the
+    /// alphabetic baseline lands on the draw origin.
+    fn baseline_origin(&self, offset: f32) -> f32 {
+        primary_metrics(&self.inner).map_or(0.0, |(baseline, _, _)| -baseline + offset)
+    }
+
     fn outline_bounds(&mut self) -> Option<valo::Rect> {
         *self
             .outline_bounds
@@ -262,6 +286,30 @@ fn em_metrics(font: &valo::Font, size: f32) -> (f32, f32) {
         return (size, 0.0);
     }
     (size * ascent / line_height, size * descent / line_height)
+}
+
+/// 0 = infer from content (Canvas2D's `"inherit"`), 1 = ltr, 2 = rtl.
+fn text_direction(value: u32) -> Option<TextDirection> {
+    match value {
+        1 => Some(TextDirection::Ltr),
+        2 => Some(TextDirection::Rtl),
+        _ => None,
+    }
+}
+
+fn variant_caps_of(value: u32) -> VariantCaps {
+    [
+        VariantCaps::Normal,
+        VariantCaps::SmallCaps,
+        VariantCaps::AllSmallCaps,
+        VariantCaps::PetiteCaps,
+        VariantCaps::AllPetiteCaps,
+        VariantCaps::Unicase,
+        VariantCaps::TitlingCaps,
+    ]
+    .get(value as usize)
+    .copied()
+    .unwrap_or_default()
 }
 
 fn text_align(value: u32) -> TextAlign {

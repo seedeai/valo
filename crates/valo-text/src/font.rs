@@ -22,13 +22,22 @@ pub struct FontAttrs {
     /// CSS weight, 100–900.
     pub weight: u16,
     pub italic: bool,
+    /// CSS `font-width` (legacy `font-stretch`) as a PERCENTAGE: 100 is
+    /// normal, 75 condensed, 125 expanded. A variable font's `wdth` named
+    /// instances register as separate variants and are matched on this, the
+    /// same way weight already picks among a family's faces.
+    pub stretch: f32,
 }
+
+/// Neither condensed nor expanded — CSS `font-width: normal`.
+pub const NORMAL_STRETCH: f32 = 100.0;
 
 impl Default for FontAttrs {
     fn default() -> Self {
         Self {
             weight: 400,
             italic: false,
+            stretch: NORMAL_STRETCH,
         }
     }
 }
@@ -557,8 +566,10 @@ impl FaceSet {
             .map(|(at, f)| (FontId(at as u32), f.as_ref()))
     }
 
-    /// CSS-style nearest among `faces`: matching style first, then smallest
-    /// weight distance, ties to the first registered.
+    /// CSS-style nearest among `faces`: width first, then matching style,
+    /// then smallest weight distance, ties to the first registered. That is
+    /// the CSS font-matching precedence; the distances themselves stay plain
+    /// absolute differences rather than CSS's directional walk.
     fn nearest<'a>(
         &self,
         faces: impl Iterator<Item = (FontId, &'a Font)>,
@@ -567,6 +578,7 @@ impl FaceSet {
         faces
             .min_by_key(|(_, f)| {
                 (
+                    stretch_distance(f.attrs.stretch, attrs.stretch),
                     f.attrs.italic != attrs.italic,
                     f.attrs.weight.abs_diff(attrs.weight),
                 )
@@ -716,8 +728,8 @@ fn named_instance_coordinates(bytes: &[u8], face_index: u32) -> Vec<Vec<([u8; 4]
         .collect()
 }
 
-/// A named instance's place in its family: the weight/italic axes override
-/// what the file's default-instance OS/2 table says.
+/// A named instance's place in its family: the weight/italic/width axes
+/// override what the file's default-instance OS/2 table says.
 fn instance_attrs(base: FontAttrs, coordinates: &[([u8; 4], f32)]) -> FontAttrs {
     let mut attrs = base;
     for (tag, value) in coordinates {
@@ -725,10 +737,19 @@ fn instance_attrs(base: FontAttrs, coordinates: &[([u8; 4], f32)]) -> FontAttrs 
             b"wght" => attrs.weight = value.clamp(1.0, 1000.0) as u16,
             b"ital" => attrs.italic = *value >= 0.5,
             b"slnt" => attrs.italic = attrs.italic || *value < 0.0,
+            // `wdth` is already a percentage, which is what CSS asks for.
+            b"wdth" => attrs.stretch = value.clamp(1.0, 1000.0),
             _ => {}
         }
     }
     attrs
+}
+
+/// Ordered width distance for variant matching. Quantized to 1/16 of a
+/// percent so it can be an integer sort key without collapsing the named
+/// widths (they are 12.5 apart at the closest).
+fn stretch_distance(candidate: f32, wanted: f32) -> u32 {
+    ((candidate - wanted).abs() * 16.0) as u32
 }
 
 /// WOFF2 arrives brotli-wrapped; faces parse the unwrapped TrueType bytes
@@ -771,7 +792,7 @@ fn embedded_names(data: &[u8], face_index: u32) -> Option<(String, Vec<String>)>
     Some((primary, aliases))
 }
 
-/// OS/2 weight + style flags via swash attributes.
+/// OS/2 weight + width + style flags via swash attributes.
 fn embedded_attrs(data: &[u8], face_index: u32) -> FontAttrs {
     let Some(font) = swash::FontRef::from_index(data, face_index as usize) else {
         return FontAttrs::default();
@@ -780,6 +801,7 @@ fn embedded_attrs(data: &[u8], face_index: u32) -> FontAttrs {
     FontAttrs {
         weight: attrs.weight().0,
         italic: attrs.style() != swash::Style::Normal,
+        stretch: attrs.stretch().to_percentage(),
     }
 }
 

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use valo::{Path, PathBuilder, Point, Rect};
+use valo::{Dash, Path, PathBuilder, Point, Rect, Stroke, Winding};
 use wasm_bindgen::prelude::*;
 
 use crate::types;
@@ -92,6 +92,12 @@ impl WebPath {
         });
     }
 
+    /// `counterclockwise` comes from Canvas2D's sign-parity rule: a
+    /// `roundRect` with exactly one negative extent is traversed the other
+    /// way, and under the non-zero fill rule that makes it subtract from an
+    /// overlapping rectangle rather than add to it. The box arrives already
+    /// normalized, so the direction has to travel separately.
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = roundRect)]
     pub fn round_rect(
         &mut self,
@@ -100,10 +106,16 @@ impl WebPath {
         width: f32,
         height: f32,
         radii: &[f32],
+        counterclockwise: bool,
     ) -> Result<(), JsValue> {
         let radii = elliptical_radii(radii)?;
+        let winding = if counterclockwise {
+            Winding::CounterClockwise
+        } else {
+            Winding::Clockwise
+        };
         self.change(|path| {
-            path.rrect_radii_elliptical(Rect::new(x, y, width, height), radii);
+            path.rrect_radii_elliptical_wound(Rect::new(x, y, width, height), radii, winding);
         });
         Ok(())
     }
@@ -150,9 +162,61 @@ impl WebPath {
         });
     }
 
+    /// Canvas2D's `Path2D.addPath`: another path's verbs, optionally through
+    /// a transform. Six affine values, or none for the identity.
+    #[wasm_bindgen(js_name = addPath)]
+    pub fn add_path(&mut self, other: &mut WebPath, transform: &[f32]) -> Result<(), JsValue> {
+        let matrix = if transform.is_empty() {
+            valo::Matrix::IDENTITY
+        } else {
+            types::matrix(transform)?
+        };
+        let appended = other.built();
+        self.change(|path| {
+            path.append(&appended, &matrix);
+        });
+        Ok(())
+    }
+
     pub fn contains(&mut self, x: f32, y: f32, fill_rule: u32) -> bool {
         self.built()
             .contains(Point::new(x, y), types::fill_rule(fill_rule))
+    }
+
+    /// Canvas2D's `isPointInStroke`: does the point land on the ink this path
+    /// would produce under `stroke`? Dashing counts — a gap is not ink.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = strokeContains)]
+    pub fn stroke_contains(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        cap: u32,
+        join: u32,
+        miter_limit: f32,
+        dash: &[f32],
+        dash_offset: f32,
+    ) -> bool {
+        let stroke = Stroke {
+            width,
+            cap: types::cap(cap),
+            join: types::join(join),
+            miter_limit,
+            dash: (!dash.is_empty()).then(|| Dash {
+                intervals: dash.to_vec(),
+                phase: dash_offset,
+            }),
+        };
+        // Hit-testing happens in the path's own space, so the flattening
+        // tolerance is the identity transform's.
+        let tolerance = valo::local_tolerance(&valo::Matrix::IDENTITY);
+        let contours = self.built().flatten(tolerance);
+        let contours = match &stroke.dash {
+            Some(dash) => valo::dash_contours(&contours, dash),
+            None => contours,
+        };
+        valo::stroke_contains(&contours, &stroke, tolerance, Point::new(x, y))
     }
 }
 

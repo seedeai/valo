@@ -32,6 +32,9 @@ pub enum Frag {
     /// Blur style combine: blurred layer × sharp layer → one texture
     /// (filter passes only; blend layout: 0 = blurred, 2 = sharp).
     MaskCombine,
+    /// Drop-shadow combine: the sharp layer over its offset blurred shadow
+    /// (filter passes only; blend layout: 0 = shadow, 2 = sharp).
+    DropShadow,
     /// Mask layer composite: texture → coverage in alpha
     /// (luminance or alpha per payload flag), drawn with DstIn.
     MaskComposite,
@@ -64,6 +67,7 @@ impl Frag {
             Frag::RRectBlur => "fs_rrect_blur",
             Frag::Blur => "fs_blur",
             Frag::MaskCombine => "fs_mask_combine",
+            Frag::DropShadow => "fs_drop_shadow",
             Frag::MaskComposite => "fs_mask_composite",
             Frag::LinearRamp => "fs_linear_ramp",
             Frag::RadialRamp => "fs_radial_ramp",
@@ -278,7 +282,9 @@ impl PipelineCache {
     fn create(&self, device: &wgpu::Device, key: PipelineKey) -> wgpu::RenderPipeline {
         let layout = match key.kind.frag() {
             _ if matches!(key.kind, PipelineKind::Text { .. }) => &self.textured_layout,
-            Some(Frag::BlendTexture) | Some(Frag::MaskCombine) => &self.blend_layout,
+            Some(Frag::BlendTexture) | Some(Frag::MaskCombine) | Some(Frag::DropShadow) => {
+                &self.blend_layout
+            }
             Some(Frag::Image)
             | Some(Frag::ImageMatrix)
             | Some(Frag::ImageBlend)

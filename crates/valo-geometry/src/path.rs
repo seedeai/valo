@@ -10,6 +10,19 @@ pub enum FillRule {
     EvenOdd,
 }
 
+/// Which way a closed contour is traversed.
+///
+/// Observable wherever direction carries meaning: under the NON-ZERO fill
+/// rule two overlapping contours cancel when their windings oppose and add
+/// when they agree, and dashing walks a contour in order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Winding {
+    #[default]
+    Clockwise,
+    CounterClockwise,
+}
+
 // Serialize ONLY (the serde feature is a debug dump): a deserializer would
 // let malformed verb/point counts reach flatten() and index out of bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +45,28 @@ enum Verb {
 pub struct Contour {
     pub points: Vec<Point>,
     pub closed: bool,
+    /// This contour was DRAWN, not merely positioned: some verb after the
+    /// opening `move_to` produced geometry.
+    ///
+    /// `close` counts. That is the subtle part, and it is deliberate: a
+    /// closepath emits the closing edge, so `move_to(p)` + `close()` is an
+    /// explicit zero-length SUBPATH and strokes exactly like `move_to(p)` +
+    /// `line_to(p)`. Only a bare `move_to` with nothing after it paints
+    /// nothing. Impeller frames it the same way — its `Close()` calls
+    /// `SegmentEncountered()` — and Skia converts move+close into a
+    /// zero-length line for every non-butt cap.
+    ///
+    /// Metadata from the path walk, for the same reason `closed` is: point
+    /// coincidence cannot answer it. All three of `move_to(p)`,
+    /// `move_to(p) line_to(p)` and `move_to(p) close()` reduce to the
+    /// identical single point, and the first strokes differently from the
+    /// other two — nothing under any cap, versus a circle under round caps
+    /// and a square under square caps (SVG 2 §13.4; Chrome agrees).
+    ///
+    /// Both references keep the same bit: Skia's `fSegmentCount`, which
+    /// `finishContour` requires to be positive before it emits anything, and
+    /// Impeller's `contour_has_segments_`, which gates `BeginContour`.
+    pub has_segments: bool,
 }
 
 /// An immutable path: verb + point arrays (SoA), built once via [`PathBuilder`],
@@ -327,7 +362,15 @@ pub struct PathBuilder {
     verbs: Vec<Verb>,
     points: Vec<Point>,
     bounds: Option<Rect>,
-    /// Where the current contour started (for `close`'s implicit edge).
+    /// Where the current contour began.
+    ///
+    /// It OUTLIVES the close. A segment recorded after `close` resumes at
+    /// this point rather than starting at its own destination, which is what
+    /// keeps the diagonal in `M10,10 L30,10 Z L30,30`. WHATWG requires it of
+    /// `closePath`, `rect` and `roundRect` alike, and Skia's `ensureMove`
+    /// does exactly this — `moveTo(fPts[fLastMoveIndex])` when the last verb
+    /// was a close. Impeller inherits it by building on `SkPathBuilder`.
+    contour_start: Option<Point>,
     contour_open: bool,
 }
 
@@ -340,6 +383,7 @@ impl PathBuilder {
         let p = p.into();
         self.verbs.push(Verb::Move);
         self.push_point(p);
+        self.contour_start = Some(p);
         self.contour_open = true;
         self
     }
@@ -414,25 +458,67 @@ impl PathBuilder {
         r: impl Into<Rect>,
         radii: [[f32; 2]; 4],
     ) -> &mut Self {
+        self.rrect_radii_elliptical_wound(r, radii, Winding::Clockwise)
+    }
+
+    /// The same rounded rectangle, traversed in a chosen direction.
+    ///
+    /// Direction is not cosmetic: two overlapping contours with OPPOSITE
+    /// windings cancel under the non-zero fill rule, and dashing walks a
+    /// contour in order. Canvas2D's `roundRect` reaches this — it is
+    /// specified on SIGNED extents, and mismatched signs mean
+    /// counter-clockwise, so normalizing the box without carrying the
+    /// direction silently turns a subtractive rectangle into an additive one.
+    pub fn rrect_radii_elliptical_wound(
+        &mut self,
+        r: impl Into<Rect>,
+        radii: [[f32; 2]; 4],
+        winding: Winding,
+    ) -> &mut Self {
         let r = r.into();
         let [tl, tr, br, bl] = constrain_radii_elliptical(&r, radii);
+        let (l, t, rr, b) = (r.x, r.y, r.right(), r.bottom());
         if [tl, tr, br, bl].iter().all(|[x, y]| *x == 0.0 && *y == 0.0) {
-            return self.rect(r);
+            return match winding {
+                Winding::Clockwise => self.rect(r),
+                Winding::CounterClockwise => self
+                    .move_to((l, t))
+                    .line_to((l, b))
+                    .line_to((rr, b))
+                    .line_to((rr, t))
+                    .close(),
+            };
         }
         // Cubic arc approximation of a quarter ELLIPSE per corner: the
         // quarter-circle control offsets, scaled per axis.
         let k = |rad: f32| rad * (1.0 - KAPPA);
-        let (l, t, rr, b) = (r.x, r.y, r.right(), r.bottom());
-        self.move_to((l + tl[0], t))
-            .line_to((rr - tr[0], t))
-            .cubic_to((rr - k(tr[0]), t), (rr, t + k(tr[1])), (rr, t + tr[1]))
-            .line_to((rr, b - br[1]))
-            .cubic_to((rr, b - k(br[1])), (rr - k(br[0]), b), (rr - br[0], b))
-            .line_to((l + bl[0], b))
-            .cubic_to((l + k(bl[0]), b), (l, b - k(bl[1])), (l, b - bl[1]))
-            .line_to((l, t + tl[1]))
-            .cubic_to((l, t + k(tl[1])), (l + k(tl[0]), t), (l + tl[0], t))
-            .close()
+        match winding {
+            Winding::Clockwise => self
+                .move_to((l + tl[0], t))
+                .line_to((rr - tr[0], t))
+                .cubic_to((rr - k(tr[0]), t), (rr, t + k(tr[1])), (rr, t + tr[1]))
+                .line_to((rr, b - br[1]))
+                .cubic_to((rr, b - k(br[1])), (rr - k(br[0]), b), (rr - br[0], b))
+                .line_to((l + bl[0], b))
+                .cubic_to((l + k(bl[0]), b), (l, b - k(bl[1])), (l, b - bl[1]))
+                .line_to((l, t + tl[1]))
+                .cubic_to((l, t + k(tl[1])), (l + k(tl[0]), t), (l + tl[0], t))
+                .close(),
+            // The same anchors in reverse, each corner's two control points
+            // swapped with it — so the two directions are the identical
+            // outline and differ only in traversal.
+            Winding::CounterClockwise => self
+                .move_to((l + tl[0], t))
+                .cubic_to((l + k(tl[0]), t), (l, t + k(tl[1])), (l, t + tl[1]))
+                .line_to((l, b - bl[1]))
+                .cubic_to((l, b - k(bl[1])), (l + k(bl[0]), b), (l + bl[0], b))
+                .line_to((rr - br[0], b))
+                .cubic_to((rr - k(br[0]), b), (rr, b - k(br[1])), (rr, b - br[1]))
+                .line_to((rr, t + tr[1]))
+                .cubic_to((rr, t + k(tr[1])), (rr - k(tr[0]), t), (rr - tr[0], t))
+                .line_to((l + tl[0], t))
+                .close(),
+        }
     }
 
     /// Circular arc — Canvas2D's `arc`, the equal-radii case of
@@ -502,7 +588,13 @@ impl PathBuilder {
 
         let unit_circle_to_ellipse = unit_circle_map(center, radii, x_axis_rotation);
         let first = unit_circle_to_ellipse.map_point(unit_circle_point(start_angle));
-        if self.contour_open {
+        // Canvas2D runs a straight line in to the arc's start when a contour
+        // is live. A CLOSED contour still counts as live for this: it resumes
+        // at its origin and then runs the line, so an arc after `closePath`
+        // stays connected to the seam. Only a path with no contour at all
+        // starts at the arc.
+        if self.contour_open || self.contour_start.is_some() {
+            self.ensure_contour(first);
             self.line_to(first);
         } else {
             self.move_to(first);
@@ -591,6 +683,63 @@ impl PathBuilder {
             .close()
     }
 
+    /// Append a finished path, each point carried through `transform` —
+    /// Canvas2D's `Path2D.addPath` and SVG's `<use>`. Verbs are copied
+    /// verbatim: the source is already flat verb data, so nothing has to be
+    /// re-derived, and a shear that no arc verb could express is harmless
+    /// because arcs became cubics when the source was built.
+    pub fn append(&mut self, path: &Path, transform: &Matrix) -> &mut Self {
+        if path.verbs.is_empty() {
+            // Appending nothing must change nothing — in particular it must
+            // not close this builder's open contour.
+            return self;
+        }
+        let mut point = path.points.iter();
+        let mut cursor = Point::ZERO;
+        let mut contour_start = Point::ZERO;
+        for verb in &path.verbs {
+            let count = match verb {
+                Verb::Move | Verb::Line => 1,
+                Verb::Quad => 2,
+                Verb::Cubic => 3,
+                Verb::Close => 0,
+            };
+            self.verbs.push(*verb);
+            for _ in 0..count {
+                let Some(&p) = point.next() else {
+                    return self;
+                };
+                cursor = transform.map_point(p);
+                self.push_point(cursor);
+            }
+            match verb {
+                Verb::Move => contour_start = cursor,
+                Verb::Close => cursor = contour_start,
+                _ => {}
+            }
+        }
+        // WHATWG's `Path2D.addPath` ends by "creating a new subpath with the
+        // last point in path", which is what lets a following `line_to`
+        // continue from where the source stopped. A source ending mid-contour
+        // already leaves this builder there; one ending in `close` does not,
+        // and without the reopen the next segment would start at its own
+        // endpoint and the connecting edge would vanish.
+        //
+        // The reopen leaves a lone-point contour when nothing follows. That
+        // costs no pixels here: it sits exactly on the closed contour's seam,
+        // which the fill and the stroke's join already cover.
+        if matches!(path.verbs.last(), Some(Verb::Close)) {
+            self.move_to(cursor);
+        } else {
+            // The appended contour is this builder's contour now, origin and
+            // all — leaving the receiver's own origin in place would send a
+            // later `close` + segment back to the wrong seam.
+            self.contour_start = Some(contour_start);
+            self.contour_open = true;
+        }
+        self
+    }
+
     pub fn build(self) -> Arc<Path> {
         Arc::new(Path {
             verbs: self.verbs,
@@ -627,12 +776,20 @@ impl PathBuilder {
         }
     }
 
-    /// A curve/line without a preceding move starts a contour at that point
-    /// (Skia's implicit moveTo(0,0) is a footgun; starting at the target isn't).
+    /// Guarantee an open contour before a segment is recorded.
+    ///
+    /// After a `close` the path resumes at the CLOSED contour's origin — the
+    /// spec's "new subpath with the last point", and Skia's `ensureMove`.
+    /// Resuming at the incoming point instead silently deletes the segment
+    /// from the seam, which is the whole bug this exists to prevent.
+    ///
+    /// A path that never had a contour starts at the incoming point: Skia's
+    /// implicit `moveTo(0, 0)` there is a footgun valo does not copy.
     fn ensure_contour(&mut self, p: Point) {
-        if !self.contour_open {
-            self.move_to(p);
+        if self.contour_open {
+            return;
         }
+        self.move_to(self.contour_start.unwrap_or(p));
     }
 
     fn push_point(&mut self, p: Point) {
@@ -726,6 +883,8 @@ struct Flattener {
     tolerance: f32,
     contours: Vec<Contour>,
     current: Vec<Point>,
+    /// Whether a segment verb has landed since the last `move_to`.
+    has_segments: bool,
 }
 
 impl Flattener {
@@ -734,22 +893,26 @@ impl Flattener {
             tolerance,
             contours: Vec::new(),
             current: Vec::new(),
+            has_segments: false,
         }
     }
 
     fn move_to(&mut self, p: Point) {
         self.flush(false);
         self.current.push(p);
+        self.has_segments = false;
     }
 
     fn line_to(&mut self, p: Point) {
         self.current.push(p);
+        self.has_segments = true;
     }
 
     fn quad_to(&mut self, c: Point, p: Point) {
         let Some(&start) = self.current.last() else {
             return;
         };
+        self.has_segments = true;
         let dev = second_difference(start, c, p);
         let n = segment_count((dev / (8.0 * self.tolerance)).sqrt());
         for i in 1..=n {
@@ -762,6 +925,7 @@ impl Flattener {
         let Some(&start) = self.current.last() else {
             return;
         };
+        self.has_segments = true;
         let dev = second_difference(start, c1, c2).max(second_difference(c1, c2, p));
         let n = segment_count((3.0 * dev / (4.0 * self.tolerance)).sqrt());
         for i in 1..=n {
@@ -778,6 +942,14 @@ impl Flattener {
                 self.current.push(first);
             }
         }
+        // Closing is itself a drawing command: `move_to(p)` then `close()` is
+        // an explicit zero-length SUBPATH, which strokes exactly like an
+        // explicit zero-length segment. Impeller says so directly — its
+        // `Close()` calls `SegmentEncountered()` — and Skia turns move+close
+        // into a zero-length line for every non-butt cap.
+        if !self.current.is_empty() {
+            self.has_segments = true;
+        }
         self.flush(true);
     }
 
@@ -787,14 +959,18 @@ impl Flattener {
     }
 
     /// Keep EVERYTHING, even lone points — fills fan nothing from <3 points,
-    /// but the stroker draws 2-point lines and caps lone points.
+    /// but the stroker draws 2-point lines and caps EXPLICIT zero-length
+    /// subpaths. A move-only contour is kept too, carrying `has_segments:
+    /// false` so the stroker can tell the two apart.
     fn flush(&mut self, closed: bool) {
         if !self.current.is_empty() {
             self.contours.push(Contour {
                 points: std::mem::take(&mut self.current),
                 closed,
+                has_segments: self.has_segments,
             });
         }
+        self.has_segments = false;
     }
 }
 
@@ -834,6 +1010,240 @@ pub fn local_tolerance(transform: &Matrix) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The observable meaning of winding: under the NON-ZERO rule two
+    /// overlapping contours cancel when their directions oppose and reinforce
+    /// when they agree. This is the property Chrome exhibits for a
+    /// `roundRect` given with a negative width, and the reason normalizing
+    /// the box without carrying the direction is wrong — the second rectangle
+    /// would add instead of subtract.
+    #[test]
+    fn opposed_windings_cancel_under_the_non_zero_rule() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let radii = [[12.0, 12.0]; 4];
+        let inside = Point::new(50.0, 50.0);
+
+        let mut opposed = PathBuilder::new();
+        opposed.rrect_radii_elliptical_wound(rect, radii, Winding::Clockwise);
+        opposed.rrect_radii_elliptical_wound(rect, radii, Winding::CounterClockwise);
+        assert!(
+            !opposed.build().contains(inside, FillRule::NonZero),
+            "opposed windings must cancel"
+        );
+
+        let mut agreeing = PathBuilder::new();
+        agreeing.rrect_radii_elliptical_wound(rect, radii, Winding::Clockwise);
+        agreeing.rrect_radii_elliptical_wound(rect, radii, Winding::Clockwise);
+        assert!(
+            agreeing.build().contains(inside, FillRule::NonZero),
+            "agreeing windings must reinforce"
+        );
+    }
+
+    /// Direction must not move the OUTLINE, only the traversal. A reversed
+    /// corner whose control points were not swapped with it would bulge the
+    /// wrong way and show up here.
+    #[test]
+    fn winding_reverses_the_walk_without_moving_the_outline() {
+        let rect = Rect::new(10.0, 20.0, 80.0, 60.0);
+        let radii = [[8.0, 14.0], [4.0, 4.0], [20.0, 6.0], [0.0, 0.0]];
+        let wound = |winding| {
+            let mut path = PathBuilder::new();
+            path.rrect_radii_elliptical_wound(rect, radii, winding);
+            path.build()
+        };
+        let clockwise = wound(Winding::Clockwise);
+        let counter = wound(Winding::CounterClockwise);
+        assert_eq!(clockwise.tight_bounds(), counter.tight_bounds());
+        // Sample across the shape, including just inside and outside each
+        // rounded corner.
+        for point in [
+            Point::new(50.0, 50.0),
+            Point::new(14.0, 30.0),
+            Point::new(86.0, 24.0),
+            Point::new(74.0, 76.0),
+            Point::new(12.0, 78.0),
+            Point::new(5.0, 15.0),
+            Point::new(95.0, 85.0),
+        ] {
+            assert_eq!(
+                clockwise.contains(point, FillRule::NonZero),
+                counter.contains(point, FillRule::NonZero),
+                "the two directions disagree about {point:?}"
+            );
+        }
+    }
+
+    /// WHATWG leaves a one-point subpath at the closed contour's origin, so a
+    /// segment recorded after `closePath` starts from the SEAM.
+    ///
+    /// The bug this pins is invisible to any test that paints immediately
+    /// after the close — the closed shape looks right and the missing
+    /// diagonal is a segment that was never recorded at all. That is exactly
+    /// why the conformance fuzzer never caught it.
+    #[test]
+    fn a_segment_after_close_resumes_at_the_contour_origin() {
+        let mut path = PathBuilder::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((30.0, 10.0));
+        path.close();
+        path.line_to((30.0, 30.0));
+        let path = path.build();
+
+        // The diagonal runs (10,10) → (30,30); its midpoint is (20,20).
+        let contours = path.flatten(0.05);
+        let resumed = contours.last().expect("the path continues after the close");
+        assert_eq!(
+            resumed.points.first().copied(),
+            Some(Point::new(10.0, 10.0)),
+            "the segment after close must start at the contour origin, not its own end"
+        );
+        assert!(crate::stroke_contains(
+            &contours,
+            &crate::Stroke::new(6.0),
+            0.05,
+            Point::new(20.0, 20.0)
+        ));
+    }
+
+    /// `rect` and `roundRect` close their contour, so the same rule applies —
+    /// and this is the route the Canvas surface actually takes.
+    #[test]
+    fn a_segment_after_a_shape_helper_resumes_at_its_origin() {
+        for corner in [0.0f32, 12.0] {
+            let mut path = PathBuilder::new();
+            if corner == 0.0 {
+                path.rect(Rect::new(10.0, 10.0, 40.0, 40.0));
+            } else {
+                path.rrect_radii_elliptical(Rect::new(10.0, 10.0, 40.0, 40.0), [[corner; 2]; 4]);
+            }
+            let origin = *path
+                .clone()
+                .build()
+                .flatten(0.05)
+                .first()
+                .expect("the shape recorded a contour")
+                .points
+                .first()
+                .expect("a contour has points");
+
+            path.line_to((90.0, 90.0));
+            let contours = path.build().flatten(0.05);
+            let resumed = contours.last().expect("the path continues after the shape");
+            assert_eq!(
+                resumed.points.first().copied(),
+                Some(origin),
+                "corner radius {corner}: the trailing segment must start at the shape's origin"
+            );
+        }
+    }
+
+    /// A path that never opened a contour still starts where it is told —
+    /// Skia's implicit `moveTo(0, 0)` is deliberately not copied.
+    #[test]
+    fn a_first_segment_with_no_contour_starts_at_its_own_point() {
+        let mut path = PathBuilder::new();
+        path.line_to((30.0, 30.0));
+        assert_eq!(
+            path.build().bounds(),
+            Rect::from_ltrb(30.0, 30.0, 30.0, 30.0)
+        );
+    }
+
+    #[test]
+    fn append_carries_verbs_through_the_transform() {
+        let mut source = PathBuilder::new();
+        source.rect(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let source = source.build();
+
+        let mut target = PathBuilder::new();
+        target.rect(Rect::new(0.0, 0.0, 4.0, 4.0));
+        target.append(&source, &Matrix::translation(100.0, 50.0));
+        let target = target.build();
+
+        assert_eq!(target.bounds(), Rect::from_ltrb(0.0, 0.0, 110.0, 60.0));
+        assert!(target.contains(Point::new(105.0, 55.0), FillRule::NonZero));
+        assert!(!target.contains(Point::new(5.0, 5.0), FillRule::NonZero));
+    }
+
+    /// The reopen after a closed source is what keeps the next segment
+    /// connected. Without it the `line_to` below starts a fresh contour at
+    /// its own endpoint and the edge from the seam disappears.
+    #[test]
+    fn appending_a_closed_contour_reopens_at_its_seam() {
+        let mut source = PathBuilder::new();
+        source.move_to((10.0, 10.0));
+        source.line_to((20.0, 10.0));
+        source.close();
+        let source = source.build();
+
+        let mut target = PathBuilder::new();
+        target.append(&source, &Matrix::IDENTITY);
+        target.line_to((10.0, 40.0));
+        let built = target.build();
+
+        // The seam is (10, 10); the new edge runs from there to (10, 40).
+        assert_eq!(built.bounds(), Rect::from_ltrb(10.0, 10.0, 20.0, 40.0));
+        assert!(built.contains(Point::new(10.0, 25.0), FillRule::NonZero));
+    }
+
+    /// An appended OPEN contour becomes the receiver's contour, origin
+    /// included. Keeping the receiver's own origin would send a later
+    /// `close` + segment back to the wrong seam.
+    #[test]
+    fn appending_an_open_contour_hands_over_its_origin() {
+        let mut source = PathBuilder::new();
+        source.move_to((50.0, 50.0));
+        source.line_to((60.0, 50.0));
+        let source = source.build();
+
+        let mut target = PathBuilder::new();
+        target.move_to((0.0, 0.0));
+        target.line_to((10.0, 0.0));
+        target.append(&source, &Matrix::IDENTITY);
+        target.close();
+        target.line_to((90.0, 90.0));
+
+        let contours = target.build().flatten(0.05);
+        let resumed = contours.last().expect("the path continues after the close");
+        assert_eq!(
+            resumed.points.first().copied(),
+            Some(Point::new(50.0, 50.0)),
+            "the resumed segment must start at the APPENDED contour's origin"
+        );
+    }
+
+    #[test]
+    fn appending_nothing_leaves_an_open_contour_open() {
+        let empty = PathBuilder::new().build();
+        let mut target = PathBuilder::new();
+        target.move_to((0.0, 0.0));
+        target.line_to((10.0, 0.0));
+        target.append(&empty, &Matrix::IDENTITY);
+        target.line_to((10.0, 10.0));
+        assert_eq!(
+            target.build().bounds(),
+            Rect::from_ltrb(0.0, 0.0, 10.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn appending_an_open_contour_leaves_it_open() {
+        let mut source = PathBuilder::new();
+        source.move_to((0.0, 0.0));
+        source.line_to((10.0, 0.0));
+        let source = source.build();
+
+        let mut target = PathBuilder::new();
+        target.append(&source, &Matrix::IDENTITY);
+        // Without the contour-open handoff this would restart at the origin
+        // and the bounds would be unchanged by the new point.
+        target.line_to((10.0, 10.0));
+        assert_eq!(
+            target.build().bounds(),
+            Rect::from_ltrb(0.0, 0.0, 10.0, 10.0)
+        );
+    }
 
     #[test]
     fn tight_bounds_use_curve_extrema_not_control_points() {

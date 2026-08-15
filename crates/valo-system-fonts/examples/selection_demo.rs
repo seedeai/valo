@@ -11,6 +11,7 @@ fn attrs(weight: u16) -> FontAttrs {
     FontAttrs {
         weight,
         italic: false,
+        ..Default::default()
     }
 }
 
@@ -67,6 +68,7 @@ fn weight_and_style_matching(system: &mut SystemFonts) {
             FontAttrs {
                 weight: 400,
                 italic: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -81,6 +83,7 @@ fn weight_and_style_matching(system: &mut SystemFonts) {
         FontAttrs {
             weight: 400,
             italic: true,
+            ..Default::default()
         },
     ) {
         println!(

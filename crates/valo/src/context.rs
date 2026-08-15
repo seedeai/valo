@@ -101,6 +101,42 @@ impl Context {
     #[cfg(target_arch = "wasm32")]
     pub fn upload_image_bitmap(&mut self, bitmap: &web_sys::ImageBitmap, mips: bool) -> Image {
         let size = [bitmap.width(), bitmap.height()];
+        self.upload_external_image(
+            wgpu::ExternalImageSource::ImageBitmap(bitmap.clone()),
+            size,
+            mips,
+        )
+    }
+
+    /// Any WebGPU-copyable DOM source — `<img>`, `<canvas>`, `<video>`,
+    /// `ImageBitmap`, `OffscreenCanvas`, `ImageData` — into a fresh [`Image`].
+    ///
+    /// The copy is SYNCHRONOUS, which is what lets a Canvas2D `drawImage`
+    /// shim exist at all. The caller owns the source's readiness: an
+    /// undecoded `<img>` makes this throw, where Canvas2D silently draws
+    /// nothing.
+    #[cfg(target_arch = "wasm32")]
+    pub fn upload_external_image(
+        &mut self,
+        source: wgpu::ExternalImageSource,
+        size: [u32; 2],
+        mips: bool,
+    ) -> Image {
+        self.upload_external_image_region(source, [0, 0], size, mips)
+    }
+
+    /// The same, reading only `size` pixels starting at `origin` in the
+    /// source. `putImageData` with a dirty rectangle needs this: without it a
+    /// one-pixel update to a 4K `ImageData` would copy every one of its
+    /// ~32 MiB and retain a full-size texture to sample one texel from.
+    #[cfg(target_arch = "wasm32")]
+    pub fn upload_external_image_region(
+        &mut self,
+        source: wgpu::ExternalImageSource,
+        origin: [u32; 2],
+        size: [u32; 2],
+        mips: bool,
+    ) -> Image {
         let mip_levels = if mips {
             32 - size[0].max(size[1]).max(1).leading_zeros()
         } else {
@@ -110,28 +146,65 @@ impl Context {
             .renderer
             .images()
             .create_image_texture(size, mip_levels);
-        self.queue.copy_external_image_to_texture(
-            &wgpu::CopyExternalImageSourceInfo {
-                source: wgpu::ExternalImageSource::ImageBitmap(bitmap.clone()),
-                origin: wgpu::Origin2d::ZERO,
-                flip_y: false,
-            },
-            wgpu::CopyExternalImageDestInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-                color_space: wgpu::PredefinedColorSpace::Srgb,
-                premultiplied_alpha: true,
-            },
-            wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-        );
+        copy_external_image(&self.queue, source, origin, &texture, size);
         self.renderer
             .images()
             .finish_external(texture, size, mip_levels)
     }
+
+    /// Re-copy a changed source into an image that already exists. A
+    /// `<video>` produces a new frame every tick, and minting a new [`Image`]
+    /// each time would throw away the renderer's per-image bind-group cache
+    /// and leave a texture per frame for the pool to reclaim. Same handle,
+    /// same bind group, new pixels.
+    ///
+    /// `false` when the source no longer matches the image's dimensions —
+    /// the caller has to upload afresh.
+    #[cfg(target_arch = "wasm32")]
+    pub fn refresh_external_image(
+        &mut self,
+        image: &Image,
+        source: wgpu::ExternalImageSource,
+        size: [u32; 2],
+    ) -> bool {
+        if image.size() != size {
+            return false;
+        }
+        copy_external_image(&self.queue, source, [0, 0], image.texture(), size);
+        self.renderer.images().regenerate_mips(image);
+        true
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn copy_external_image(
+    queue: &wgpu::Queue,
+    source: wgpu::ExternalImageSource,
+    origin: [u32; 2],
+    texture: &wgpu::Texture,
+    size: [u32; 2],
+) {
+    queue.copy_external_image_to_texture(
+        &wgpu::CopyExternalImageSourceInfo {
+            source,
+            origin: wgpu::Origin2d {
+                x: origin[0],
+                y: origin[1],
+            },
+            flip_y: false,
+        },
+        wgpu::CopyExternalImageDestInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+            color_space: wgpu::PredefinedColorSpace::Srgb,
+            premultiplied_alpha: true,
+        },
+        wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+    );
 }

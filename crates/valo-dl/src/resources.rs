@@ -107,8 +107,28 @@ impl serde::Serialize for Image {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Sampling {
     pub filter: Filter,
+    pub mipmap: MipmapMode,
     pub tile_x: TileMode,
     pub tile_y: TileMode,
+}
+
+/// How a minified draw picks between an image's mip levels — the second axis
+/// of Skia's `SkSamplingOptions`, and what Canvas2D's `imageSmoothingQuality`
+/// actually selects.
+///
+/// Skia's top tier is cubic resampling rather than trilinear; valo has no
+/// cubic, so its highest setting is [`MipmapMode::Linear`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MipmapMode {
+    /// Level 0 only: sharpest, and it aliases as soon as the draw minifies.
+    None,
+    /// One level, chosen per pixel — cheap, with a visible band at each
+    /// level change.
+    Nearest,
+    /// Trilinear: blend the two bracketing levels.
+    #[default]
+    Linear,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -128,4 +148,8 @@ pub enum TileMode {
     Clamp,
     Repeat,
     Mirror,
+    /// Nothing outside the image — Skia's `SkTileMode::kDecal`, and what
+    /// Canvas2D's `no-repeat` means. Distinct from `Clamp`, which smears the
+    /// edge texels outwards forever.
+    Decal,
 }

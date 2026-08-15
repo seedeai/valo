@@ -380,6 +380,7 @@ fn weight_matching_picks_nearest_variant() {
             valo_text::FontAttrs {
                 weight: 400,
                 italic: false,
+                ..Default::default()
             },
             bytes.clone(),
         )
@@ -390,6 +391,7 @@ fn weight_matching_picks_nearest_variant() {
             valo_text::FontAttrs {
                 weight: 700,
                 italic: false,
+                ..Default::default()
             },
             bytes,
         )
@@ -399,7 +401,8 @@ fn weight_matching_picks_nearest_variant() {
             "Fira",
             valo_text::FontAttrs {
                 weight: 400,
-                italic: false
+                italic: false,
+                ..Default::default()
             }
         ),
         Some(regular)
@@ -409,7 +412,8 @@ fn weight_matching_picks_nearest_variant() {
             "Fira",
             valo_text::FontAttrs {
                 weight: 800,
-                italic: false
+                italic: false,
+                ..Default::default()
             }
         ),
         Some(bold)
@@ -419,7 +423,8 @@ fn weight_matching_picks_nearest_variant() {
             "Fira",
             valo_text::FontAttrs {
                 weight: 550,
-                italic: true
+                italic: true,
+                ..Default::default()
             }
         ),
         Some(regular)

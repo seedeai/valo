@@ -111,6 +111,9 @@ impl ContourMeasure {
         Some(Contour {
             points: dedup_adjacent(points),
             closed: false,
+            // A slice of a measured contour is real geometry by construction:
+            // `end <= start` returned above, so there is length here.
+            has_segments: true,
         })
     }
 

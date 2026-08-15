@@ -153,7 +153,7 @@ impl DisplayListBuilder {
             compatible: true,
             // Blurred layers spread ink past their children:
             // pad the recorded bounds so the texture holds the falloff.
-            blur_pad: paint.effect_padding() * self.top().transform.max_scale(),
+            blur_pad: paint.device_effect_padding(&self.top().transform),
         });
         // Children keep counting on the SAME depth line (Impeller's global
         // numbering) — the layer's pass rebases against base_slot.

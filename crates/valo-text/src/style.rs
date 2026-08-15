@@ -9,6 +9,14 @@ pub struct TextStyle {
     /// CSS weight, 100–900.
     pub weight: u16,
     pub italic: bool,
+    /// CSS `font-width` (legacy `font-stretch`) percentage; 100 is normal.
+    /// Selects among a family's registered widths — valo never synthesizes
+    /// one, and neither do browsers.
+    pub stretch: f32,
+    /// Let the font kern (`kern`). Canvas2D's `fontKerning: "none"` clears it.
+    pub kerning: bool,
+    /// OpenType capital-letter forms — Canvas2D's `fontVariantCaps`.
+    pub variant_caps: VariantCaps,
     pub size: f32,
     pub color: Color,
     /// Added after every grapheme cluster (px).
@@ -31,6 +39,9 @@ impl Default for TextStyle {
             families: Vec::new(),
             weight: 400,
             italic: false,
+            stretch: crate::font::NORMAL_STRETCH,
+            kerning: true,
+            variant_caps: VariantCaps::Normal,
             size: 14.0,
             color: Color::BLACK,
             letter_spacing: 0.0,
@@ -49,6 +60,53 @@ impl TextStyle {
             size,
             color,
             ..Default::default()
+        }
+    }
+
+    /// What this style asks of face selection — the CSS matching axes,
+    /// separated from everything shaping and painting care about.
+    pub fn font_attrs(&self) -> crate::font::FontAttrs {
+        crate::font::FontAttrs {
+            weight: self.weight,
+            italic: self.italic,
+            stretch: self.stretch,
+        }
+    }
+}
+
+/// CSS `font-variant-caps`, lowered to the OpenType features a shaper
+/// understands. Every variant here is a font capability: a face without the
+/// feature renders unchanged rather than synthesizing small capitals, which
+/// is what browsers do for `font-synthesis: none` and what valo always does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VariantCaps {
+    #[default]
+    Normal,
+    /// `smcp` — lowercase becomes small capitals.
+    SmallCaps,
+    /// `c2sc` + `smcp` — capitals shrink to small capitals too.
+    AllSmallCaps,
+    /// `pcap` — the lighter-weight petite variant.
+    PetiteCaps,
+    /// `c2pc` + `pcap`.
+    AllPetiteCaps,
+    /// `unic` — lowercase-looking capitals.
+    Unicase,
+    /// `titl` — capitals cut for all-caps display sizes.
+    TitlingCaps,
+}
+
+impl VariantCaps {
+    /// The OpenType tags this variant turns ON, in application order.
+    pub fn feature_tags(self) -> &'static [&'static [u8; 4]] {
+        match self {
+            Self::Normal => &[],
+            Self::SmallCaps => &[b"smcp"],
+            Self::AllSmallCaps => &[b"c2sc", b"smcp"],
+            Self::PetiteCaps => &[b"pcap"],
+            Self::AllPetiteCaps => &[b"c2pc", b"pcap"],
+            Self::Unicase => &[b"unic"],
+            Self::TitlingCaps => &[b"titl"],
         }
     }
 }
@@ -111,10 +169,23 @@ impl From<TextAlign> for ParagraphStyle {
     }
 }
 
+/// Which way the paragraph reads before its content gets a say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextDirection {
+    Ltr,
+    Rtl,
+}
+
 /// Paragraph-level knobs, fixed at `build` (Flutter's ParagraphStyle).
 #[derive(Clone, Debug, Default)]
 pub struct ParagraphStyle {
     pub align: TextAlign,
+    /// The bidi base level. `None` infers it from the first strong character
+    /// (UAX #9 rules P2/P3); `Some(..)` forces it, which is what CSS
+    /// `direction` and Canvas2D's `direction` ask for. Forcing matters for
+    /// text that is entirely neutral — digits and punctuation carry no
+    /// direction of their own, so only the base level orders them.
+    pub direction: Option<TextDirection>,
     /// Include trailing whitespace in line advances. Canvas text enables this;
     /// paragraph layout defaults to trimmed line widths like SkParagraph.
     pub preserve_trailing_whitespace: bool,

@@ -63,6 +63,27 @@ impl WebImageFilter {
         }
     }
 
+    #[wasm_bindgen(js_name = dropShadow)]
+    pub fn drop_shadow(
+        offset_x: f32,
+        offset_y: f32,
+        sigma_x: f32,
+        sigma_y: f32,
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    ) -> WebImageFilter {
+        WebImageFilter {
+            inner: ImageFilter::drop_shadow(
+                Point::new(offset_x, offset_y),
+                sigma_x,
+                sigma_y,
+                Color::rgba(red, green, blue, alpha),
+            ),
+        }
+    }
+
     #[wasm_bindgen(js_name = compose)]
     pub fn compose(outer: &WebImageFilter, inner: &WebImageFilter) -> WebImageFilter {
         WebImageFilter {
@@ -146,11 +167,17 @@ impl WebShader {
     }
 
     #[wasm_bindgen(js_name = imagePattern)]
-    pub fn image_pattern(image: &WebImage, filter: u32, tile_x: u32, tile_y: u32) -> WebShader {
+    pub fn image_pattern(
+        image: &WebImage,
+        filter: u32,
+        mipmap: u32,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> WebShader {
         WebShader {
             inner: Shader::Image {
                 image: image.inner.clone(),
-                sampling: types::sampling(filter, tile_x, tile_y),
+                sampling: types::sampling(filter, mipmap, tile_x, tile_y),
                 local: Matrix::IDENTITY,
             },
         }

@@ -496,6 +496,9 @@ fn paragraph_style(style: &ValoParagraphStyle) -> ParagraphStyle {
             3 => TextAlign::Justify,
             _ => TextAlign::Left,
         },
+        // The C struct is a committed ABI; a base direction would have to be
+        // added to it, so this surface still infers from content.
+        direction: None,
         preserve_trailing_whitespace: false,
         max_lines: (style.max_lines > 0).then_some(style.max_lines),
         ellipsis: unsafe { utf8(style.ellipsis_utf8, style.ellipsis_length) }

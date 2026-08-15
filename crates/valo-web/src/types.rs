@@ -1,6 +1,6 @@
 use valo::{
-    BlendMode, BlurStyle, Cap, ClipOp, FillRule, Filter, Join, Matrix, Sampling, SpreadMode,
-    TileMode,
+    BlendMode, BlurStyle, Cap, ClipOp, FillRule, Filter, Join, Matrix, MipmapMode, Sampling,
+    SpreadMode, TileMode,
 };
 use wasm_bindgen::prelude::*;
 
@@ -85,21 +85,34 @@ pub(crate) fn spread_mode(value: u32) -> SpreadMode {
         .unwrap_or_default()
 }
 
-pub(crate) fn sampling(filter: u32, tile_x: u32, tile_y: u32) -> Sampling {
+pub(crate) fn sampling(filter: u32, mipmap: u32, tile_x: u32, tile_y: u32) -> Sampling {
     Sampling {
         filter: if filter == 1 {
             Filter::Nearest
         } else {
             Filter::Linear
         },
+        mipmap: mipmap_mode(mipmap),
         tile_x: tile_mode(tile_x),
         tile_y: tile_mode(tile_y),
     }
 }
 
-fn tile_mode(value: u32) -> TileMode {
-    [TileMode::Clamp, TileMode::Repeat, TileMode::Mirror]
+fn mipmap_mode(value: u32) -> MipmapMode {
+    [MipmapMode::None, MipmapMode::Nearest, MipmapMode::Linear]
         .get(value as usize)
         .copied()
         .unwrap_or_default()
+}
+
+fn tile_mode(value: u32) -> TileMode {
+    [
+        TileMode::Clamp,
+        TileMode::Repeat,
+        TileMode::Mirror,
+        TileMode::Decal,
+    ]
+    .get(value as usize)
+    .copied()
+    .unwrap_or_default()
 }

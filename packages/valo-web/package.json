@@ -9,9 +9,17 @@
     "directory": "packages/valo-web"
   },
   "homepage": "https://github.com/tyxu/valo#readme",
-  "keywords": ["canvas", "graphics", "webassembly", "webgpu"],
+  "keywords": [
+    "canvas",
+    "graphics",
+    "webassembly",
+    "webgpu"
+  ],
   "type": "module",
-  "files": ["dist", "wasm"],
+  "files": [
+    "dist",
+    "wasm"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -28,13 +36,15 @@
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/valo-web --target web --out-dir ../../packages/valo-web/wasm --out-name valo_web --no-pack && node -e \"require('node:fs').rmSync('wasm/.gitignore', { force: true })\"",
     "build": "npm run build:wasm && tsc -p tsconfig.json",
-    "check": "npm run build:wasm && tsc -p tsconfig.json --noEmit && tsc -p playground/tsconfig.json",
+    "check": "npm run build:wasm && tsc -p tsconfig.json --noEmit && tsc -p tests/tsconfig.json && tsc -p playground/tsconfig.json",
     "dev": "npm run build:wasm && vite playground",
     "build:playground": "npm run build && vite build playground",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test": "vitest run --config vitest.config.ts"
   },
   "devDependencies": {
     "typescript": "^5.9.2",
-    "vite": "^7.1.2"
+    "vite": "^7.1.2",
+    "vitest": "^4.0.0"
   }
 }

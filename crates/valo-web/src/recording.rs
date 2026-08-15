@@ -184,6 +184,7 @@ impl WebDisplayListBuilder {
         destination_width: f32,
         destination_height: f32,
         filter: u32,
+        mipmap: u32,
         tile_x: u32,
         tile_y: u32,
         paint: &WebPaint,
@@ -197,7 +198,7 @@ impl WebDisplayListBuilder {
                 destination_width,
                 destination_height,
             ),
-            types::sampling(filter, tile_x, tile_y),
+            types::sampling(filter, mipmap, tile_x, tile_y),
             &paint.inner,
         );
         Ok(())

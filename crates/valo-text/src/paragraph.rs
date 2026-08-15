@@ -6,7 +6,7 @@ use valo_geometry::{Color, Rect};
 
 use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::shape::{shape_runs, ShapedRun};
-use crate::style::{ParagraphStyle, TextStyle};
+use crate::style::{ParagraphStyle, TextDirection, TextStyle};
 use crate::wrap::{place_lines, wrap_lines, Wrapped};
 
 /// One positioned glyph: `x`/`y` in paragraph-local px, `y` on the baseline.
@@ -113,7 +113,7 @@ impl Paragraph {
         {
             return;
         }
-        let bidi = BidiInfo::new(&self.text, None);
+        let bidi = BidiInfo::new(&self.text, base_level(&self.style));
         let wrapped = wrap_lines(
             &self.text,
             &self.shaped,
@@ -138,7 +138,7 @@ impl Paragraph {
             }
         }
         if let Some(prior) = self.layout.take() {
-            let bidi = BidiInfo::new(&self.text, None);
+            let bidi = BidiInfo::new(&self.text, base_level(&self.style));
             self.layout = Some(self.place(&bidi, prior.wrapped, prior.max_width));
         }
     }
@@ -219,10 +219,7 @@ impl Paragraph {
         if self.faces.is_empty() {
             return None;
         }
-        let attributes = crate::font::FontAttrs {
-            weight: style.weight,
-            italic: style.italic,
-        };
+        let attributes = style.font_attrs();
         let identifier = self.faces.resolve(&style.families, attributes, ' ');
         Some((self.faces.get(identifier), style.size))
     }
@@ -294,7 +291,7 @@ impl<'a> ParagraphBuilder<'a> {
     /// answer waits on the collection as `take_unanswered`). The paragraph
     /// keeps the faces it resolved, so it is self-contained afterwards.
     pub fn build(&mut self) -> Paragraph {
-        let bidi = BidiInfo::new(&self.text, None);
+        let bidi = BidiInfo::new(&self.text, base_level(&self.style));
         let mut demand = FontDemand::default();
         let shaped = shape_runs(self.fonts, &self.text, &self.spans, &bidi, &mut demand);
         let faces = self.fonts.faces().clone();
@@ -532,6 +529,14 @@ fn caret_x(line: &Line, offset: usize) -> f32 {
     before.map_or(line.left, |(_, x)| x)
 }
 
+/// The paragraph's bidi base level, or `None` to let the content pick it.
+fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
+    style.direction.map(|direction| match direction {
+        TextDirection::Ltr => unicode_bidi::Level::ltr(),
+        TextDirection::Rtl => unicode_bidi::Level::rtl(),
+    })
+}
+
 /// skparagraph's computeEmptyMetrics, resolved once at build: glyphless
 /// lines (blank first line, trailing newline, empty paragraph) measure as
 /// the FIRST span's style.
@@ -543,10 +548,7 @@ fn empty_line_metrics(
     if faces.is_empty() {
         return None;
     }
-    let attrs = crate::font::FontAttrs {
-        weight: style.weight,
-        italic: style.italic,
-    };
+    let attrs = style.font_attrs();
     let id = faces.resolve(&style.families, attrs, ' ');
     Some(crate::wrap::style_heights(
         faces.get(id),

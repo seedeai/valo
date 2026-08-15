@@ -219,7 +219,7 @@ function drawGeometry(): void {
   builder.drawPath(path, 0, stroke);
 
   const ring = new Path();
-  ring.roundRect(810, 175, 190, 310, new Float32Array([50, 18, 72, 24]));
+  ring.roundRect(810, 175, 190, 310, new Float32Array([50, 18, 72, 24]), false);
   const fill = gradient(810, 175, 1000, 485, [
     [0, 0.46, 0.25, 1, 0.92],
     [1, 0.95, 0.3, 0.55, 0.88],
@@ -262,12 +262,12 @@ function drawTypography(): void {
   grid(builder);
   const hero = new Paragraph(
     fonts, "Type moves at GPU speed.", "Fira Sans", 68, 600, false,
-    0.95, 0.95, 0.93, 1, -1.8, 0, 0, 0, 0, "", 820, false,
+    0.95, 0.95, 0.93, 1, 100, true, 0, -1.8, 0, 0, 0, 0, 0, "", 820, false,
   );
   const body = new Paragraph(
     fonts,
     "Paragraphs shape once, wrap cheaply, and retain the font faces they resolved. English · العربية · עברית",
-    "Fira Sans", 25, 400, false, 0.66, 0.65, 0.7, 1, 0, 1, 1.35, 0, 0, "", 760, false,
+    "Fira Sans", 25, 400, false, 0.66, 0.65, 0.7, 1, 100, true, 0, 0, 1, 1.35, 0, 0, 0, "", 760, false,
   );
   builder.drawParagraph(hero, 105, 175);
   builder.drawParagraph(body, 110, 320);

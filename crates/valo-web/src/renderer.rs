@@ -68,6 +68,38 @@ impl WebRenderStats {
 pub struct WebRenderer {
     context: Context,
     surface: Surface,
+    unrestricted_external_copies: bool,
+}
+
+/// The DOM sources `copyExternalImageToTexture` accepts, resolved from an
+/// untyped JS value. `VideoFrame` is deliberately absent: wgpu gates that
+/// variant behind `web_sys_unstable_apis`, a cfg the wasm build would have to
+/// set through RUSTFLAGS, and a flag that silently changes what compiles is
+/// worse than an honest refusal.
+fn external_image_source(source: &JsValue) -> Result<wgpu::ExternalImageSource, JsValue> {
+    use wgpu::ExternalImageSource;
+    if let Some(bitmap) = source.dyn_ref::<web_sys::ImageBitmap>() {
+        return Ok(ExternalImageSource::ImageBitmap(bitmap.clone()));
+    }
+    if let Some(element) = source.dyn_ref::<web_sys::HtmlImageElement>() {
+        return Ok(ExternalImageSource::HTMLImageElement(element.clone()));
+    }
+    if let Some(element) = source.dyn_ref::<web_sys::HtmlCanvasElement>() {
+        return Ok(ExternalImageSource::HTMLCanvasElement(element.clone()));
+    }
+    if let Some(element) = source.dyn_ref::<web_sys::HtmlVideoElement>() {
+        return Ok(ExternalImageSource::HTMLVideoElement(element.clone()));
+    }
+    if let Some(canvas) = source.dyn_ref::<web_sys::OffscreenCanvas>() {
+        return Ok(ExternalImageSource::OffscreenCanvas(canvas.clone()));
+    }
+    if let Some(data) = source.dyn_ref::<web_sys::ImageData>() {
+        return Ok(ExternalImageSource::ImageData(data.clone()));
+    }
+    Err(JsValue::from_str(
+        "not a supported image source: expected HTMLImageElement, HTMLCanvasElement, \
+         HTMLVideoElement, ImageBitmap, OffscreenCanvas or ImageData",
+    ))
 }
 
 #[wasm_bindgen(js_name = createRenderer)]
@@ -101,6 +133,10 @@ pub async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<WebRe
     Ok(WebRenderer {
         context: Context::new(device, queue),
         surface,
+        unrestricted_external_copies: adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::UNRESTRICTED_EXTERNAL_TEXTURE_COPIES),
     })
 }
 
@@ -181,9 +217,101 @@ impl WebRenderer {
         })
     }
 
+    /// Whether `OffscreenCanvas` is a legal copy source on this adapter.
+    /// Without it the caller has to route through an `ImageBitmap`, so this
+    /// is a capability question rather than an error to discover mid-frame.
+    #[wasm_bindgen(getter, js_name = supportsOffscreenCanvasSource)]
+    pub fn supports_offscreen_canvas_source(&self) -> bool {
+        self.unrestricted_external_copies
+    }
+
+    /// A DOM image source copied straight into a texture. `width`/`height`
+    /// are the source's PIXEL dimensions; the browser throws if they do not
+    /// match, so the caller reads them from the source it passes.
+    #[wasm_bindgen(js_name = uploadExternalImage)]
+    pub fn upload_external_image(
+        &mut self,
+        source: &JsValue,
+        width: u32,
+        height: u32,
+        mipmaps: bool,
+    ) -> Result<WebImage, JsValue> {
+        let source = self.checked_source(source)?;
+        if width == 0 || height == 0 {
+            return Err(JsValue::from_str("an image source needs a non-zero size"));
+        }
+        Ok(WebImage {
+            inner: self
+                .context
+                .upload_external_image(source, [width, height], mipmaps),
+        })
+    }
+
+    /// A rectangle of a DOM source, copied into an image of exactly that
+    /// size. `putImageData` uses it so a dirty rectangle costs its own area
+    /// rather than the whole `ImageData`.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = uploadExternalImageRegion)]
+    pub fn upload_external_image_region(
+        &mut self,
+        source: &JsValue,
+        source_x: u32,
+        source_y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<WebImage, JsValue> {
+        let source = self.checked_source(source)?;
+        if width == 0 || height == 0 {
+            return Err(JsValue::from_str("an image region needs a non-zero size"));
+        }
+        Ok(WebImage {
+            inner: self.context.upload_external_image_region(
+                source,
+                [source_x, source_y],
+                [width, height],
+                false,
+            ),
+        })
+    }
+
+    /// Re-copy a source whose pixels changed into the SAME image, keeping
+    /// its texture and cached bind groups. `false` = the size changed and
+    /// the caller must upload again.
+    #[wasm_bindgen(js_name = refreshExternalImage)]
+    pub fn refresh_external_image(
+        &mut self,
+        image: &WebImage,
+        source: &JsValue,
+        width: u32,
+        height: u32,
+    ) -> Result<bool, JsValue> {
+        let source = self.checked_source(source)?;
+        Ok(self
+            .context
+            .refresh_external_image(&image.inner, source, [width, height]))
+    }
+
     #[wasm_bindgen(js_name = setGestureHold)]
     pub fn set_gesture_hold(&mut self, held: bool) {
         self.context.set_text_raster_hold(held);
         self.context.set_raster_hold(held);
+    }
+}
+
+impl WebRenderer {
+    /// Reject an `OffscreenCanvas` up front on an adapter that cannot copy
+    /// one, rather than letting the browser raise an opaque exception from
+    /// inside the queue submission.
+    fn checked_source(&self, source: &JsValue) -> Result<wgpu::ExternalImageSource, JsValue> {
+        let source = external_image_source(source)?;
+        if matches!(source, wgpu::ExternalImageSource::OffscreenCanvas(_))
+            && !self.unrestricted_external_copies
+        {
+            return Err(JsValue::from_str(
+                "this adapter cannot copy from an OffscreenCanvas \
+                 (no UNRESTRICTED_EXTERNAL_TEXTURE_COPIES); transfer it to an ImageBitmap first",
+            ));
+        }
+        Ok(source)
     }
 }

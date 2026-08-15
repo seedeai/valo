@@ -3,7 +3,7 @@ use std::ops::Range;
 use unicode_bidi::BidiInfo;
 use valo_geometry::Color;
 
-use crate::font::{FaceSet, FontAttrs, FontCollection, FontDemand, FontId};
+use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::style::{Decoration, Shadow, TextStyle};
 
 /// One shaped glyph, unpositioned: advances/offsets in px, `cluster` a byte
@@ -98,10 +98,7 @@ fn segment_span(
                 last.font
             }
             _ => {
-                let attrs = FontAttrs {
-                    weight: style.weight,
-                    italic: style.italic,
-                };
+                let attrs = style.font_attrs();
                 // Uncovered ink pulls a face from the sources; a char no
                 // source can render is skipped (its miss is recorded on
                 // the collection for the host's async loader).
@@ -142,8 +139,9 @@ fn shape_segment(
     let _ = bidi;
     let font = collection.get(segment.font);
     let scale = style.size / font.units_per_em();
+    let features = shaping_features(style);
     let mut glyphs: Vec<ShapedGlyph> =
-        harf_shape(font, &text[segment.range.clone()], segment.level)
+        harf_shape(font, &text[segment.range.clone()], segment.level, &features)
             .into_iter()
             .map(|(id, cluster, adv, dx, dy)| ShapedGlyph {
                 id,
@@ -198,7 +196,7 @@ pub(crate) fn shape_isolated(
 ) -> ShapedRun {
     let font = collection.get(font_id);
     let scale = size / font.units_per_em();
-    let glyphs = harf_shape(font, text, 0)
+    let glyphs = harf_shape(font, text, 0, &[])
         .into_iter()
         .map(|(id, _, adv, dx, dy)| ShapedGlyph {
             id,
@@ -220,11 +218,30 @@ pub(crate) fn shape_isolated(
     }
 }
 
+/// The style's OpenType feature overrides. Only DEVIATIONS from the shaper's
+/// defaults appear: `kern` is on by default, so it is listed solely to turn
+/// it off, and an untouched `VariantCaps::Normal` contributes nothing.
+fn shaping_features(style: &TextStyle) -> Vec<harfrust::Feature> {
+    let mut features = Vec::new();
+    if !style.kerning {
+        features.push(harfrust::Feature::new(harfrust::Tag::new(b"kern"), 0, ..));
+    }
+    for tag in style.variant_caps.feature_tags() {
+        features.push(harfrust::Feature::new(harfrust::Tag::new(tag), 1, ..));
+    }
+    features
+}
+
 /// The harfrust boundary: text in, (glyph id, cluster byte, advance/offsets
 /// in FONT UNITS) out. RTL levels shape right-to-left — glyphs come back in
 /// visual order within the run. The expensive `ShaperData` is cached on the
 /// font; only the cheap `FontRef` reconstructs per call.
-fn harf_shape(font: &crate::font::Font, text: &str, level: u8) -> Vec<(u32, usize, f32, f32, f32)> {
+fn harf_shape(
+    font: &crate::font::Font,
+    text: &str,
+    level: u8,
+    features: &[harfrust::Feature],
+) -> Vec<(u32, usize, f32, f32, f32)> {
     let Ok(font_ref) = harfrust::FontRef::from_index(font.data(), font.face_index()) else {
         return Vec::new();
     };
@@ -241,7 +258,7 @@ fn harf_shape(font: &crate::font::Font, text: &str, level: u8) -> Vec<(u32, usiz
         harfrust::Direction::LeftToRight
     });
     buffer.guess_segment_properties();
-    let output = shaper.shape(buffer, &[]);
+    let output = shaper.shape(buffer, features);
     output
         .glyph_infos()
         .iter()

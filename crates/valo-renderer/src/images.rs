@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Weak;
 
-use valo_dl::{BlendMode, ColorFilter, Filter, Image, ImageInner, Sampling, TileMode};
+use valo_dl::{BlendMode, ColorFilter, Filter, Image, ImageInner, MipmapMode, Sampling, TileMode};
 
 /// How pixels arrive at `upload`.
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +126,20 @@ impl ImageStore {
         Image::from_texture(texture, size, mip_levels)
     }
 
+    /// Rebuild the mip chain after level 0 was rewritten in place — what a
+    /// per-frame external source (a `<video>`) needs after each copy.
+    pub fn regenerate_mips(&mut self, image: &Image) {
+        if image.mip_levels() > 1 {
+            self.mips.generate(
+                &self.device,
+                &self.queue,
+                image.texture(),
+                image.size(),
+                image.mip_levels(),
+            );
+        }
+    }
+
     pub fn create_image_texture(&self, size: [u32; 2], mip_levels: u32) -> wgpu::Texture {
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("valo.image"),
@@ -179,9 +193,20 @@ impl ImageStore {
 
     fn sampler(&mut self, sampling: Sampling) -> &wgpu::Sampler {
         self.samplers.entry(sampling).or_insert_with(|| {
-            let (filter, mip_filter) = match sampling.filter {
-                Filter::Linear => (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
-                Filter::Nearest => (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest),
+            let filter = match sampling.filter {
+                Filter::Linear => wgpu::FilterMode::Linear,
+                Filter::Nearest => wgpu::FilterMode::Nearest,
+            };
+            let mip_filter = match sampling.mipmap {
+                MipmapMode::Linear => wgpu::MipmapFilterMode::Linear,
+                MipmapMode::None | MipmapMode::Nearest => wgpu::MipmapFilterMode::Nearest,
+            };
+            // `None` is a LOD clamp rather than a filter mode: WebGPU has no
+            // "ignore the chain" switch, so pinning the max LOD to level 0 is
+            // how a sampler is told to stay sharp.
+            let max_lod = match sampling.mipmap {
+                MipmapMode::None => 0.0,
+                _ => 32.0,
             };
             self.device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("valo.image"),
@@ -190,6 +215,7 @@ impl ImageStore {
                 mag_filter: filter,
                 min_filter: filter,
                 mipmap_filter: mip_filter,
+                lod_max_clamp: max_lod,
                 ..Default::default()
             })
         })
@@ -257,7 +283,11 @@ impl From<ColorFilter> for ColorFilterKey {
 
 fn address_mode(tile: TileMode) -> wgpu::AddressMode {
     match tile {
-        TileMode::Clamp => wgpu::AddressMode::ClampToEdge,
+        // Decal clamps at the sampler and cuts off in the shader: WebGPU has
+        // no transparent border colour (`ADDRESS_MODE_CLAMP_TO_BORDER` is not
+        // in the baseline), so the alternative would be a feature the web
+        // target cannot have.
+        TileMode::Clamp | TileMode::Decal => wgpu::AddressMode::ClampToEdge,
         TileMode::Repeat => wgpu::AddressMode::Repeat,
         TileMode::Mirror => wgpu::AddressMode::MirrorRepeat,
     }

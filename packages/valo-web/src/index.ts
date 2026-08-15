@@ -9,6 +9,9 @@ export * from "./canvas.js";
 export * from "./color.js";
 export * from "./matrix.js";
 export * from "./resources.js";
+export * from "./images.js";
+export * from "./path2d.js";
+export * from "./css.js";
 export * from "./raw.js";
 
 /** Initialize WebAssembly and attach a Canvas-shaped Valo recorder. */

@@ -36,12 +36,13 @@ pub use surface::{Offscreen, Surface, SurfaceFrame};
 
 pub use valo_dl::{
     BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, DisplayListBuilder,
-    Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind, Op, Paint,
-    PaintStyle, Sampling, Shader, SpreadMode, TileMode,
+    Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind, MipmapMode, Op,
+    Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
 };
 pub use valo_geometry::{
-    constrain_radii, constrain_radii_elliptical, Cap, Color, ContourMeasure, Dash, FillRule, Join,
-    Matrix, Path, PathBuilder, PathSample, Point, Rect, Size, Stroke,
+    constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,
+    Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathSample, Point,
+    Rect, Size, Stroke, Winding,
 };
 pub use valo_renderer::{
     AtlasReport, ImageDesc, MemoryReport, PoolReport, RenderStats, RenderTarget, TextTiers,
@@ -50,7 +51,7 @@ pub use valo_renderer::{
 pub use valo_text::{
     Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
     FontId, FontSource, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
-    PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextStyle,
+    PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
 };
 
 mod text;

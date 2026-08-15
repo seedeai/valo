@@ -1,4 +1,5 @@
 import { Shader, type Image } from "./raw.js";
+import type { ValoImageSource } from "./images.js";
 import { parseColor, type Rgba } from "./color.js";
 import { identity, type Affine } from "./matrix.js";
 
@@ -54,18 +55,44 @@ export class ValoCanvasGradient {
   }
 }
 
+/** TileMode ids across the wasm boundary. */
+const REPEAT = 1;
+const DECAL = 3;
+
+/**
+ * The four Canvas repetition values as per-axis tile modes. The non-repeating
+ * axis is DECAL — nothing outside the image — rather than clamp-to-edge,
+ * which would smear the border pixels across the rest of the shape.
+ */
+const REPETITIONS: Record<string, readonly [number, number]> = {
+  repeat: [REPEAT, REPEAT],
+  "repeat-x": [REPEAT, DECAL],
+  "repeat-y": [DECAL, REPEAT],
+  "no-repeat": [DECAL, DECAL],
+};
+
 export class ValoCanvasPattern {
-  readonly #image: Image;
+  readonly #source: ValoImageSource;
+  readonly #tileX: number;
+  readonly #tileY: number;
   #transform: Affine = identity;
 
-  constructor(image: Image, repetition: string | null) {
-    if (repetition !== null && repetition !== "repeat") {
+  constructor(source: ValoImageSource, repetition: string | null) {
+    // The spec treats null and the empty string as "repeat".
+    const tiling = REPETITIONS[repetition ? repetition : "repeat"];
+    if (!tiling) {
       throw new DOMException(
-        "Valo currently supports repeating patterns; use drawImage for non-repeating images",
-        "NotSupportedError",
+        `'${repetition}' is not a valid pattern repetition`,
+        "SyntaxError",
       );
     }
-    this.#image = image;
+    this.#source = source;
+    [this.#tileX, this.#tileY] = tiling;
+  }
+
+  /** The source this pattern samples, re-read per frame if it is live. */
+  get source(): ValoImageSource {
+    return this.#source;
   }
 
   setTransform(transform: DOMMatrix2DInit): void {
@@ -73,8 +100,14 @@ export class ValoCanvasPattern {
     this.#transform = [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f];
   }
 
-  toRaw(imageSmoothingEnabled: boolean): Shader {
-    const shader = Shader.imagePattern(this.#image, imageSmoothingEnabled ? 0 : 1, 1, 1);
+  toRaw(image: Image, imageSmoothingEnabled: boolean, mipmap: number): Shader {
+    const shader = Shader.imagePattern(
+      image,
+      imageSmoothingEnabled ? 0 : 1,
+      mipmap,
+      this.#tileX,
+      this.#tileY,
+    );
     shader.setTransform(new Float32Array(this.#transform));
     return shader;
   }

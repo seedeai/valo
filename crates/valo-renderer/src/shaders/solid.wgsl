@@ -60,13 +60,28 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
 @group(1) @binding(0) var t_tex: texture_2d<f32>;
 @group(1) @binding(1) var t_samp: sampler;
 
+/// Decal coverage for a sampled uv: 0 outside the image on any axis flagged
+/// in payload[3].xy, 1 everywhere else.
+///
+/// Repeat and mirror ride the sampler's address modes and cost nothing here.
+/// Decal cannot: WebGPU has no transparent border colour
+/// (`ADDRESS_MODE_CLAMP_TO_BORDER` is outside the baseline), so the sampler
+/// clamps and the cutoff happens in the shader. Leaving it out would smear
+/// the border texels outwards forever, which is exactly the difference
+/// between Canvas2D's `no-repeat` and `repeat`.
+fn decal_coverage(uv: vec2<f32>) -> f32 {
+    let decal = u.payload[3].xy;
+    let outside = decal * vec2(f32(uv.x < 0.0 || uv.x > 1.0), f32(uv.y < 0.0 || uv.y > 1.0));
+    return 1.0 - min(max(outside.x, outside.y), 1.0);
+}
+
 @fragment
 fn fs_image(in: VsOut) -> @location(0) vec4<f32> {
     // uv = local × scale + offset (src→dst mapping precomputed CPU-side);
     // tiling comes from the sampler's address modes on out-of-range uv.
     let m = u.payload[1];
     let uv = in.local * m.xy + m.zw;
-    return textureSample(t_tex, t_samp, uv) * u.color;
+    return textureSample(t_tex, t_samp, uv) * u.color * decal_coverage(uv);
 }
 
 // ── gradients (uniform stops, ≤8) ───────────────────────────────────────────
@@ -404,13 +419,13 @@ fn fs_blend_texture(in: VsOut) -> @location(0) vec4<f32> {
 // ── patterns ────────────────────────────────────────────────────────────────
 // An image tiled across the shape. `gradient_point` already carries the local
 // position through the paint's inverse local matrix, so all that remains is
-// pattern pixels → uv. Tiling and filtering ride the sampler's address modes,
-// exactly as an image DRAW's do, so a repeat costs nothing in the shader.
+// pattern pixels → uv. Tiling rides the sampler's address modes and
+// `decal_coverage`, exactly as an image DRAW's does.
 
 @fragment
 fn fs_pattern(in: VsOut) -> @location(0) vec4<f32> {
     let uv = gradient_point(in.local) * u.payload[1].xy;
-    return textureSample(t_tex, t_samp, uv) * u.color;
+    return textureSample(t_tex, t_samp, uv) * u.color * decal_coverage(uv);
 }
 
 // ── colour filters (filter passes only) ─────────────────────────────────────
@@ -493,15 +508,17 @@ fn apply_color_blend(dst: vec4<f32>) -> vec4<f32> {
 @fragment
 fn fs_image_matrix(in: VsOut) -> @location(0) vec4<f32> {
     let m = u.payload[1];
-    let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
-    return apply_color_matrix(texel) * u.color;
+    let uv = in.local * m.xy + m.zw;
+    let texel = textureSample(t_tex, t_samp, uv);
+    return apply_color_matrix(texel) * u.color * decal_coverage(uv);
 }
 
 @fragment
 fn fs_image_blend(in: VsOut) -> @location(0) vec4<f32> {
     let m = u.payload[1];
-    let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
-    return apply_color_blend(texel) * u.color;
+    let uv = in.local * m.xy + m.zw;
+    let texel = textureSample(t_tex, t_samp, uv);
+    return apply_color_blend(texel) * u.color * decal_coverage(uv);
 }
 
 // ── gaussian blur, one direction ────────────────────────────────────────────
@@ -637,6 +654,27 @@ fn fs_mask_combine(in: VsOut) -> @location(0) vec4<f32> {
         case 2u: { return b * m.a; }
         default: { return b * (1.0 - m.a); }
     }
+}
+
+// ── drop-shadow combine ─────────────────────────────────────────────────────
+// The last pass of a DropShadow image filter: the sharp layer S (t_src) over
+// its recoloured, blurred copy B (t_tex) displaced by the device offset.
+// payload[1] = (B uv scale, S uv scale); payload[2] = (offset, 1/layer size).
+//
+// The offset samples B outside the layer wherever the shadow moved off it, and
+// a pooled filter target holds whatever the previous tenant left there — so
+// out-of-range taps are forced transparent rather than trusted to clamp.
+
+@fragment
+fn fs_drop_shadow(in: VsOut) -> @location(0) vec4<f32> {
+    let scales = u.payload[1];
+    let misc = u.payload[2];
+    let shifted = in.local - misc.xy;
+    let unit = shifted * misc.zw;
+    let inside = f32(all(unit >= vec2(0.0)) && all(unit <= vec2(1.0)));
+    let b = textureSample(t_tex, t_samp, shifted * scales.xy) * inside;
+    let s = textureSample(t_src, t_samp, in.local * scales.zw);
+    return s + b * (1.0 - s.a);
 }
 
 // ── text: atlas-masked glyph quads ──────────────────────────────────────────

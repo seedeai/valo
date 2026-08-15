@@ -181,6 +181,7 @@ fn fallback_chain_picks_nearest_attrs_among_covering() {
     let bold_attrs = FontAttrs {
         weight: 700,
         italic: false,
+        ..Default::default()
     };
     let mut c = FaceSet::default();
     let regular = c
@@ -248,6 +249,7 @@ fn grown_by_answers_codepoints_with_the_demanding_attrs() {
     let bold_attrs = FontAttrs {
         weight: 700,
         italic: false,
+        ..Default::default()
     };
     let mut source = ScriptedSource {
         family_bytes: None,

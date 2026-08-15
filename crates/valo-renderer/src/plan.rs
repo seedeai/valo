@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use valo_dl::{
     BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, FocalCircle, GlyphPos, Image,
-    ImageFilter, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode,
+    ImageFilter, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
     MAX_GRADIENT_STOPS,
 };
 use valo_text::{Font, GlyphStroke};
@@ -106,6 +106,7 @@ const PAYLOAD_GEOM: usize = 1;
 const PAYLOAD_MISC: usize = 2;
 const PAYLOAD_OFFSETS: usize = 3; // ..5: 8 stop offsets
 const PAYLOAD_RADII: usize = 3; // rrect-blur corner radii (no gradient there)
+const PAYLOAD_DECAL: usize = 3; // per-axis image decal flags (no gradient there)
 const PAYLOAD_COLORS: usize = 5; // ..13: 8 premultiplied stop colors
 const PAYLOAD_LOCAL: usize = 13; // ..15: inverse gradient local matrix
 const PAYLOAD_CONICAL: usize = 15; // two-point conical case + constants
@@ -1431,6 +1432,7 @@ impl<'a> Planner<'a> {
         let mut record = UniformRecord::new(self.ortho(&model, z), tint);
         record.set_local_rect(dst);
         record.set_payload(PAYLOAD_GEOM, uv_mapping(image, src, dst));
+        record.set_payload(PAYLOAD_DECAL, decal_flags(sampling));
         let fragment = match paint.color_filter {
             None => Frag::Image,
             Some(filter) => match encode_color_filter(&mut record, filter) {
@@ -2149,7 +2151,10 @@ impl<'a> Planner<'a> {
         let mut copies = pre_copies;
         let mut src = source.clone();
         let mut src_px = [source_size[0] as f32, source_size[1] as f32];
-        let mut src_uv = source_region_uv(region, source_size, work);
+        // `None` while the source is still the caller's texture, where the
+        // content is a sub-rect; `Some(uv_max)` once it is a pooled target
+        // whose content starts at the origin.
+        let mut src_uv_max: Option<[f32; 2]> = None;
         // Downsample passes (σ=0 blur = plain bilinear resample), halving at
         // most 2× each so bilinear reads every texel — one big jump would
         // alias exactly what the blur is meant to average.
@@ -2159,20 +2164,22 @@ impl<'a> Planner<'a> {
                 (cur[0] * 0.5).max(work[0]).round().max(1.0),
                 (cur[1] * 0.5).max(work[1]).round().max(1.0),
             ];
-            let (view, bucket) = self.push_filter_pass(
-                &src,
-                src_uv,
-                next,
-                0.0,
-                [0.0, 0.0],
-                std::mem::take(&mut copies),
-            );
+            let uv = match src_uv_max {
+                None => source_region_uv(region, source_size, next),
+                Some(uv_max) => resample_uv(uv_max, next),
+            };
+            let (view, bucket) =
+                self.push_filter_pass(&src, uv, next, 0.0, [0.0, 0.0], std::mem::take(&mut copies));
             src = view;
             src_px = bucket;
-            src_uv = corner_uv(bucket);
+            src_uv_max = Some([next[0] / bucket[0], next[1] / bucket[1]]);
             cur = next;
         }
         let work_sigma = sigma * scale;
+        let src_uv = match src_uv_max {
+            None => source_region_uv(region, source_size, work),
+            Some(uv_max) => resample_uv(uv_max, work),
+        };
         let (h_view, h_bucket) = self.push_filter_pass(
             &src,
             src_uv,
@@ -2214,23 +2221,29 @@ impl<'a> Planner<'a> {
         ];
         let mut source_view = source.view.clone();
         let mut source_pixels = [source.size[0] as f32, source.size[1] as f32];
-        let mut source_uv = region_uv(whole, source.uv_max);
+        let mut source_uv_max = source.uv_max;
         let mut current = [whole.width, whole.height];
         while current[0] > work[0] || current[1] > work[1] {
             let next = [
                 (current[0] * 0.5).max(work[0]).round().max(1.0),
                 (current[1] * 0.5).max(work[1]).round().max(1.0),
             ];
-            let (view, bucket) =
-                self.push_filter_pass(&source_view, source_uv, next, 0.0, [0.0, 0.0], Vec::new());
+            let (view, bucket) = self.push_filter_pass(
+                &source_view,
+                resample_uv(source_uv_max, next),
+                next,
+                0.0,
+                [0.0, 0.0],
+                Vec::new(),
+            );
             source_view = view;
             source_pixels = bucket;
-            source_uv = corner_uv(bucket);
+            source_uv_max = [next[0] / bucket[0], next[1] / bucket[1]];
             current = next;
         }
         let (horizontal, horizontal_bucket) = self.push_filter_pass(
             &source_view,
-            source_uv,
+            resample_uv(source_uv_max, work),
             work,
             sigma_x * scale_x,
             [1.0 / source_pixels[0], 0.0],
@@ -2290,6 +2303,22 @@ impl<'a> Planner<'a> {
                         continue;
                     }
                     output = self.plan_blur_input(&output, whole, sigma_x, sigma_y);
+                }
+                ImageFilter::DropShadow {
+                    offset,
+                    sigma_x,
+                    sigma_y,
+                    color,
+                } => {
+                    output = self.plan_drop_shadow(
+                        &output,
+                        whole,
+                        *offset,
+                        [*sigma_x, *sigma_y],
+                        *color,
+                        basis,
+                    );
+                    index += 1;
                 }
                 ImageFilter::Compose { .. } => unreachable!("composition was flattened"),
             }
@@ -2432,6 +2461,72 @@ impl<'a> Planner<'a> {
         };
         let bind = self.texture_bind(source);
         self.push_filter_with_format(target.view, target.format, frag, record, bind, Vec::new());
+    }
+
+    /// Skia's `SkImageFilters::DropShadow` lowering: tint the input's alpha
+    /// with the shadow colour, blur it, displace it, and put the untouched
+    /// input back on top. The blur runs on the tinted copy rather than the
+    /// input so a translucent shadow colour spreads at its own alpha.
+    fn plan_drop_shadow(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+        offset: Point,
+        sigma: [f32; 2],
+        color: Color,
+        basis: [f32; 4],
+    ) -> FilteredTexture {
+        let tint = ColorFilter::Blend(color, BlendMode::SrcIn);
+        let tinted = self.push_color_filter_input(source, whole, tint);
+        let [device_x, device_y] = skia_sigma(basis, sigma[0], sigma[1]);
+        let shadow = if device_x > 0.0 || device_y > 0.0 {
+            self.plan_blur_input(&tinted, whole, device_x, device_y)
+        } else {
+            tinted
+        };
+        self.push_drop_shadow_combine(&shadow, source, whole, device_offset(basis, offset))
+    }
+
+    /// Merge the offset shadow B with the sharp layer S into one texture
+    /// (fs_drop_shadow), so the result composites like any other layer.
+    fn push_drop_shadow_combine(
+        &mut self,
+        shadow: &FilteredTexture,
+        sharp: &FilteredTexture,
+        whole: &Rect,
+        offset: [f32; 2],
+    ) -> FilteredTexture {
+        let work = [whole.width, whole.height];
+        let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
+        let target = self.pool.take_filter(bucket, self.format);
+        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(whole), bucket, 0.0), [0.0; 4]);
+        record.set_local_rect(whole);
+        record.set_payload(
+            PAYLOAD_GEOM,
+            [
+                shadow.uv_max[0] / work[0],
+                shadow.uv_max[1] / work[1],
+                sharp.uv_max[0] / work[0],
+                sharp.uv_max[1] / work[1],
+            ],
+        );
+        record.set_payload(
+            PAYLOAD_MISC,
+            [offset[0], offset[1], 1.0 / work[0], 1.0 / work[1]],
+        );
+        let bind = self.blend_bind(&shadow.view, &sharp.view);
+        self.push_filter(
+            target.view.clone(),
+            Frag::DropShadow,
+            record,
+            bind,
+            Vec::new(),
+        );
+        FilteredTexture {
+            view: target.view,
+            uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
+            size: bucket,
+        }
     }
 
     /// Merge blur B with the SHARP layer M into one texture (fs_mask_combine)
@@ -2601,7 +2696,7 @@ impl<'a> Planner<'a> {
                 sampling,
                 local,
             } => {
-                fill_pattern_payload(record, image, local);
+                fill_pattern_payload(record, image, *sampling, local);
                 Some(
                     self.images
                         .bind_group(self.pipelines.texture_bind_layout(), image, *sampling),
@@ -3047,12 +3142,18 @@ fn scale_after(matrix: Matrix, x: f32, y: f32) -> Matrix {
 /// A pattern evaluates in its own space like a gradient does, but its
 /// payload is only that mapping: `local⁻¹` into pattern pixels, then the
 /// reciprocal image size to reach uv. Tiling and filtering ride the sampler.
-fn fill_pattern_payload(record: &mut UniformRecord, image: &Image, local: &Matrix) {
+fn fill_pattern_payload(
+    record: &mut UniformRecord,
+    image: &Image,
+    sampling: Sampling,
+    local: &Matrix,
+) {
     let size = image.size();
     record.set_payload(
         PAYLOAD_GEOM,
         [1.0 / size[0] as f32, 1.0 / size[1] as f32, 0.0, 0.0],
     );
+    record.set_payload(PAYLOAD_DECAL, decal_flags(sampling));
     let inverse = local
         .invert()
         .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
@@ -3372,8 +3473,38 @@ fn source_region_uv(region: &Rect, source_size: [u32; 2], work: [f32; 2]) -> [f3
 
 /// local (0..work px) → uv in a bucketed intermediate whose used corner
 /// starts at the origin.
+/// Per-axis decal flags: 1 where the fragment must cut off outside the image,
+/// 0 where the sampler's own address mode already produces the right pixels.
+/// Every image-sampling fragment reads these from `PAYLOAD_DECAL`, so a
+/// pattern and a direct `drawImage` honour `TileMode::Decal` identically.
+fn decal_flags(sampling: Sampling) -> [f32; 4] {
+    [
+        f32::from(sampling.tile_x == TileMode::Decal),
+        f32::from(sampling.tile_y == TileMode::Decal),
+        0.0,
+        0.0,
+    ]
+}
+
 fn corner_uv(bucket: [f32; 2]) -> [f32; 4] {
     [1.0 / bucket[0], 1.0 / bucket[1], 0.0, 0.0]
+}
+
+/// Map a filter pass's local quad (0..`work`) onto the whole used corner of
+/// its source, whose content ends at `source_uv_max`.
+///
+/// The TARGET size belongs in this mapping, not just the source's: a
+/// downsample pass draws a smaller quad and still has to cover the entire
+/// source. Dividing by the source's own extent instead reads only the
+/// top-left `work/source` fraction of it, which is why a blur whose σ crosses
+/// the downsample threshold used to lose its left and top spread.
+fn resample_uv(source_uv_max: [f32; 2], work: [f32; 2]) -> [f32; 4] {
+    [
+        source_uv_max[0] / work[0],
+        source_uv_max[1] / work[1],
+        0.0,
+        0.0,
+    ]
 }
 
 fn image_filter_stages<'a>(filter: &'a ImageFilter, stages: &mut Vec<&'a ImageFilter>) {
@@ -3402,6 +3533,31 @@ fn device_sigma(basis: [f32; 4], sigma_x: f32, sigma_y: f32) -> [f32; 2] {
         (sigma_x * a + sigma_y * c).abs(),
         (sigma_x * b + sigma_y * d).abs(),
     ]
+}
+
+/// The same mapping as Skia's, for the filters whose reference is Skia rather
+/// than Impeller. `SkImageFilters::Blur` carries σ as an `SkSize` and maps
+/// each axis BASIS separately, taking its length
+/// (`SkImageFilterTypes.cpp`'s `mapSize` for non-scale/translate matrices).
+///
+/// The two rules disagree exactly where it is visible: under a 45° rotation
+/// Impeller's vector rule sends an isotropic σ of (10, 10) to (0, 14.14) —
+/// an anisotropic blur that no longer looks round — while Skia's leaves it
+/// at (10, 10). Drop shadow follows Skia because
+/// `SkImageFilters::DropShadow` is what CSS `drop-shadow()` lowers to; plain
+/// [`ImageFilter::Blur`] keeps Impeller's rule, which is what its own
+/// documentation and goldens are written against.
+fn skia_sigma(basis: [f32; 4], sigma_x: f32, sigma_y: f32) -> [f32; 2] {
+    let [a, b, c, d] = basis;
+    [sigma_x * a.hypot(b), sigma_y * c.hypot(d)]
+}
+
+/// A local-space filter offset mapped onto the device axes. Sign-preserving,
+/// unlike [`device_sigma`] — a shadow that leans right has to keep leaning
+/// right after the basis mirrors or rotates it.
+fn device_offset(basis: [f32; 4], offset: Point) -> [f32; 2] {
+    let [a, b, c, d] = basis;
+    [offset.x * a + offset.y * c, offset.x * b + offset.y * d]
 }
 
 /// local (absolute px) → uv into a blurred texture holding `region`, whose
@@ -3634,7 +3790,7 @@ pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 
 #[cfg(test)]
 mod tests {
-    use super::{device_sigma, is_uniform_axis_aligned, stroke_alpha_coverage};
+    use super::{device_sigma, is_uniform_axis_aligned, skia_sigma, stroke_alpha_coverage};
     use valo_geometry::Matrix;
 
     fn basis_of(matrix: &Matrix) -> [f32; 4] {
@@ -3647,6 +3803,22 @@ mod tests {
             (actual[0] - expected[0]).abs() < 1e-4 && (actual[1] - expected[1]).abs() < 1e-4,
             "sigma {actual:?} != {expected:?}"
         );
+    }
+
+    /// Drop shadow follows `SkImageFilters::Blur`'s `SkSize` mapping, so a
+    /// rotation must leave an isotropic σ isotropic. Impeller's vector rule
+    /// turns the same input into a directional smear.
+    #[test]
+    fn skia_sigma_keeps_a_rotated_blur_round() {
+        let basis = basis_of(&Matrix::rotation(std::f32::consts::FRAC_PI_4));
+        assert_sigma(skia_sigma(basis, 10.0, 10.0), [10.0, 10.0]);
+        assert_sigma(device_sigma(basis, 10.0, 10.0), [0.0, 14.142136]);
+    }
+
+    #[test]
+    fn skia_sigma_still_scales_each_axis() {
+        let basis = basis_of(&Matrix::scale(2.0, 3.0));
+        assert_sigma(skia_sigma(basis, 4.0, 5.0), [8.0, 15.0]);
     }
 
     #[test]
