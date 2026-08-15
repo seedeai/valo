@@ -9,7 +9,7 @@ use valo_dl::{
     ImageFilter, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode,
     MAX_GRADIENT_STOPS,
 };
-use valo_text::Font;
+use valo_text::{Font, GlyphStroke};
 
 use valo_geometry::{
     dash_contours, local_tolerance, stroke_strip, Color, FillRule, Matrix, Path, Point, Rect,
@@ -17,7 +17,7 @@ use valo_geometry::{
 };
 
 use crate::contours::ContourCache;
-use crate::glyphs::{GlyphStore, PageRef};
+use crate::glyphs::{Coverage, GlyphStore, PageRef, TextTiers};
 use crate::host_buffer::{DrawSlot, HostBuffer, VertexSlot, UNIFORM_SIZE};
 use crate::images::{ImageStore, IMAGE_FORMAT};
 use crate::pipelines::{
@@ -1754,39 +1754,65 @@ impl<'a> Planner<'a> {
         current: &Matrix,
         z: f32,
     ) {
-        let tiers = self.glyphs.tiers;
         let device_px = size * current.max_scale();
-        // Atlas rasters are FILL coverage, so a stroked run has no tier to
-        // sit in — it goes to outlines at every size. Skia can cache stroked
-        // masks because its scaler applies the stroke while rasterizing;
-        // valo's rasterizer only makes fill masks.
-        if device_px >= tiers.path_min || matches!(paint.style, PaintStyle::Stroke(_)) {
-            self.stats.text_tiers[2] += 1;
-            self.plan_glyph_outlines(font, size, paint, glyphs, current, z);
-            return;
+        let scale = quantize_scale(current.max_scale());
+        match glyph_tier(self.glyphs.tiers, paint, scale, device_px) {
+            GlyphTier::Outline => {
+                self.stats.text_tiers[2] += 1;
+                self.plan_glyph_outlines(font, size, paint, glyphs, current, z);
+            }
+            GlyphTier::Sdf => {
+                self.stats.text_tiers[1] += 1;
+                self.plan_glyph_quads(
+                    font,
+                    sdf_bucket(device_px),
+                    Coverage::Sdf,
+                    size,
+                    paint,
+                    glyphs,
+                    current,
+                    z,
+                );
+            }
+            GlyphTier::Mask { coverage, alpha } => {
+                self.stats.text_tiers[0] += 1;
+                let paint = Paint {
+                    color: paint.color.with_alpha(paint.color.a * alpha),
+                    ..paint.clone()
+                };
+                self.plan_glyph_masks(font, size, scale, coverage, &paint, glyphs, current, z);
+            }
         }
-        if device_px >= tiers.sdf_min {
-            self.stats.text_tiers[1] += 1;
+    }
+
+    /// The mask tier's two shapes: device-snapped quads when the transform
+    /// allows it, transformed quads over upright rasters otherwise
+    /// (Impeller's shape).
+    #[allow(clippy::too_many_arguments)] // mirrors plan_glyph_tiers
+    fn plan_glyph_masks(
+        &mut self,
+        font: &Arc<Font>,
+        size: f32,
+        scale: f32,
+        coverage: Coverage,
+        paint: &Paint,
+        glyphs: &[GlyphPos],
+        current: &Matrix,
+        z: f32,
+    ) {
+        if is_uniform_axis_aligned(current) {
+            self.plan_glyph_quads_snapped(font, scale, size, coverage, paint, glyphs, current, z);
+        } else {
             self.plan_glyph_quads(
                 font,
-                sdf_bucket(device_px),
-                true,
+                size * scale,
+                coverage,
                 size,
                 paint,
                 glyphs,
                 current,
                 z,
             );
-            return;
-        }
-        self.stats.text_tiers[0] += 1;
-        let scale = quantize_scale(current.max_scale());
-        if is_uniform_axis_aligned(current) {
-            self.plan_glyph_quads_snapped(font, scale, size, paint, glyphs, current, z);
-        } else {
-            // Rotated/skewed: raster at device scale, quads carry the
-            // rotation (Impeller's shape — upright rasters, transformed quads).
-            self.plan_glyph_quads(font, size * scale, false, size, paint, glyphs, current, z);
         }
     }
 
@@ -1798,7 +1824,7 @@ impl<'a> Planner<'a> {
         &mut self,
         font: &Arc<Font>,
         px: f32,
-        sdf: bool,
+        coverage: Coverage,
         size: f32,
         paint: &Paint,
         glyphs: &[GlyphPos],
@@ -1815,20 +1841,24 @@ impl<'a> Planner<'a> {
             .filter(|g| g.id != 0 || !hide_notdef)
             .map(|g| (g.id, 0))
             .collect();
-        self.glyphs.ensure_run(font, px, sdf, &keys);
+        self.glyphs.ensure_run(font, px, coverage, &keys);
         let mut batches: Vec<((TextMode, PageRef), Vec<f32>)> = Vec::new();
         for g in glyphs.iter().filter(|g| g.id != 0 || !hide_notdef) {
             // Under a text-raster hold, a missing size draws through the
             // glyph's nearest resident size, scaled — the
             // per-glyph raster→quad scale makes the mixed-size batch free.
-            let (got_px, page, entry) = match self.glyphs.entry(font.uid().0, g.id, px, sdf, 0) {
+            let (got_px, page, entry) = match self.glyphs.entry(font.uid().0, g.id, px, coverage, 0)
+            {
                 Some((page, entry)) => (px, page, entry),
-                None => match self.glyphs.resident_stand_in(font.uid().0, g.id, sdf, px) {
+                None => match self
+                    .glyphs
+                    .resident_stand_in(font.uid().0, g.id, coverage, px)
+                {
                     Some(hit) => hit,
                     None => continue,
                 },
             };
-            let batch = batch_for(&mut batches, text_mode(page, sdf), page);
+            let batch = batch_for(&mut batches, text_mode(page, coverage), page);
             push_glyph_quad(batch, g.x, g.y, &entry, size / got_px);
         }
         self.push_text_batches(batches, paint, current, z);
@@ -1844,6 +1874,7 @@ impl<'a> Planner<'a> {
         font: &Arc<Font>,
         scale: f32,
         size: f32,
+        coverage: Coverage,
         paint: &Paint,
         glyphs: &[GlyphPos],
         current: &Matrix,
@@ -1866,20 +1897,24 @@ impl<'a> Planner<'a> {
             .iter()
             .map(|&(_, _, phase, id)| (id, phase))
             .collect();
-        self.glyphs.ensure_run(font, px, false, &keys);
+        self.glyphs.ensure_run(font, px, coverage, &keys);
         let mut batches: Vec<((TextMode, PageRef), Vec<f32>)> = Vec::new();
         for (x, y, phase, id) in placed {
             // Texels 1:1 when the exact scale is resident; under a hold, a
             // stand-in from another scale stretches (bitmaps
             // re-raster per quantize step, the very churn the hold skips).
-            let (scale, page, entry) = match self.glyphs.entry(font.uid().0, id, px, false, phase) {
-                Some((page, entry)) => (1.0, page, entry),
-                None => match self.glyphs.resident_stand_in(font.uid().0, id, false, px) {
-                    Some((got_px, page, entry)) => (px / got_px, page, entry),
-                    None => continue,
-                },
-            };
-            let batch = batch_for(&mut batches, text_mode(page, false), page);
+            let (scale, page, entry) =
+                match self.glyphs.entry(font.uid().0, id, px, coverage, phase) {
+                    Some((page, entry)) => (1.0, page, entry),
+                    None => match self
+                        .glyphs
+                        .resident_stand_in(font.uid().0, id, coverage, px)
+                    {
+                        Some((got_px, page, entry)) => (px / got_px, page, entry),
+                        None => continue,
+                    },
+                };
+            let batch = batch_for(&mut batches, text_mode(page, coverage), page);
             push_glyph_quad(batch, x, y, &entry, scale);
         }
         self.push_text_batches(batches, paint, &Matrix::IDENTITY, z);
@@ -1957,7 +1992,7 @@ impl<'a> Planner<'a> {
             self.plan_glyph_quads(
                 font,
                 px,
-                false,
+                Coverage::Fill,
                 size,
                 &bitmap_paint,
                 &no_outline,
@@ -2827,7 +2862,12 @@ fn encode_color_filter(record: &mut UniformRecord, filter: ColorFilter) -> Encod
 /// device pixel is widened, so positive-width strokes compensate in alpha.
 /// Width zero deliberately means a fully covered one-pixel hairline.
 fn stroke_alpha_coverage(transform: &Matrix, width: f32) -> f32 {
-    let device_width = transform.max_scale() * width;
+    subpixel_stroke_alpha(transform.max_scale() * width)
+}
+
+/// The same compensation for a width already in device pixels — the mask
+/// tier floors its raster width instead of its geometry.
+fn subpixel_stroke_alpha(device_width: f32) -> f32 {
     if device_width == 0.0 || device_width >= 1.0 {
         1.0
     } else {
@@ -3174,11 +3214,11 @@ fn is_uniform_axis_aligned(transform: &Matrix) -> bool {
     (scale_x - scale_y).abs() <= 1e-6 * scale_x.max(scale_y).max(1.0)
 }
 
-fn text_mode(page: PageRef, sdf: bool) -> TextMode {
-    match (page.color, sdf) {
+fn text_mode(page: PageRef, coverage: Coverage) -> TextMode {
+    match (page.color, coverage) {
         (true, _) => TextMode::Color,
-        (false, true) => TextMode::Sdf,
-        (false, false) => TextMode::Mask,
+        (false, Coverage::Sdf) => TextMode::Sdf,
+        (false, _) => TextMode::Mask,
     }
 }
 
@@ -3195,6 +3235,75 @@ fn batch_for(
     }
     batches.push((key, Vec::new()));
     &mut batches.last_mut().expect("just pushed").1
+}
+
+/// A stroked mask still has to fit an atlas cell, and the miter reach is
+/// unbounded in the paint. Past this the run keeps taking the outline path,
+/// where geometry has no size ceiling — the same escape the huge-text tier
+/// already is.
+const MAX_STROKED_MASK_PX: f32 = 1024.0;
+
+/// Which tier a run lands in. The mask tier carries what its entries are
+/// keyed on, plus the alpha a floored hairline gives back.
+enum GlyphTier {
+    Mask { coverage: Coverage, alpha: f32 },
+    Sdf,
+    Outline,
+}
+
+/// Skia's tier dispatch (SubRunControl.cpp), plus the stroke. A stroked run
+/// is an ordinary mask-tier run because the rasterizer strokes the outline
+/// before rasterizing it — but it never reaches the SDF tier, whose field
+/// measures distance from a FILL boundary, and Impeller's stroked glyphs go
+/// to the regular atlas for exactly that reason.
+fn glyph_tier(tiers: TextTiers, paint: &Paint, scale: f32, device_px: f32) -> GlyphTier {
+    if device_px >= tiers.path_min {
+        return GlyphTier::Outline;
+    }
+    let stroke = match &paint.style {
+        PaintStyle::Fill if device_px >= tiers.sdf_min => return GlyphTier::Sdf,
+        PaintStyle::Fill => {
+            return GlyphTier::Mask {
+                coverage: Coverage::Fill,
+                alpha: 1.0,
+            }
+        }
+        PaintStyle::Stroke(stroke) => stroke,
+    };
+    match atlas_stroke(stroke, scale, device_px) {
+        Some((stroke, alpha)) => GlyphTier::Mask {
+            coverage: Coverage::Stroke(stroke),
+            alpha,
+        },
+        None => GlyphTier::Outline,
+    }
+}
+
+/// The mask tier's form of a stroke, in the raster's own pixels, with the
+/// alpha its floored width owes back. `None` keeps the run on the outline
+/// path: a dash is a variable-length pattern that a fixed-size atlas key
+/// cannot hold, and a stroke whose miter can reach further than a cell has
+/// nowhere to be packed.
+fn atlas_stroke(stroke: &Stroke, scale: f32, device_px: f32) -> Option<(GlyphStroke, f32)> {
+    if stroke.dash.is_some() {
+        return None;
+    }
+    let device_width = stroke.width * scale;
+    let width = device_width.max(1.0);
+    // Worst case a join can reach past the glyph's own box, on every side.
+    let reach = width * 0.5 * stroke.miter_limit.max(1.0);
+    if 2.0 * (device_px + reach) > MAX_STROKED_MASK_PX {
+        return None;
+    }
+    Some((
+        GlyphStroke {
+            width,
+            cap: stroke.cap,
+            join: stroke.join,
+            miter_limit: stroke.miter_limit,
+        },
+        subpixel_stroke_alpha(device_width),
+    ))
 }
 
 /// Skia's SDF strike buckets (SubRunControl::getSDFFont): raster at the

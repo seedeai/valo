@@ -8,7 +8,7 @@
 //! of a solid-color fallback.
 
 use skrifa::color::{Brush, ColorGlyph, ColorPainter, ColorStop, CompositeMode};
-use skrifa::outline::{DrawSettings, OutlineGlyphCollection, OutlinePen};
+use skrifa::outline::{DrawSettings, OutlineGlyphCollection};
 use skrifa::prelude::{LocationRef, Size};
 use skrifa::raw::types::BoundingBox;
 use skrifa::raw::TableProvider;
@@ -16,7 +16,7 @@ use skrifa::{GlyphId, MetadataProvider};
 use tiny_skia as ts;
 
 use crate::font::Font;
-use crate::raster::GlyphImage;
+use crate::raster::{GlyphImage, TsPathPen};
 
 /// Rasterize `glyph` at `px` if the font carries a COLR form for it.
 /// (The caller tries swash's CBDT/COLRv0 fast paths first.)
@@ -142,9 +142,7 @@ impl<'a> Painter<'a> {
     /// applied where the path is consumed).
     fn glyph_path(&self, glyph_id: GlyphId) -> Option<ts::Path> {
         let outline = self.outlines.get(glyph_id)?;
-        let mut pen = TsPathPen {
-            builder: ts::PathBuilder::new(),
-        };
+        let mut pen = TsPathPen::default();
         outline
             .draw(
                 DrawSettings::unhinted(Size::unscaled(), self.location),
@@ -574,33 +572,5 @@ fn blend_mode(mode: CompositeMode) -> ts::BlendMode {
         C::HslColor => B::Color,
         C::HslLuminosity => B::Luminosity,
         _ => B::SourceOver,
-    }
-}
-
-/// skrifa outline pen → tiny-skia path, in raw font units (y-up; the
-/// consumer's transform does scaling and the flip).
-struct TsPathPen {
-    builder: ts::PathBuilder,
-}
-
-impl OutlinePen for TsPathPen {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.builder.move_to(x, y);
-    }
-
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.builder.line_to(x, y);
-    }
-
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.builder.quad_to(cx, cy, x, y);
-    }
-
-    fn curve_to(&mut self, c0x: f32, c0y: f32, c1x: f32, c1y: f32, x: f32, y: f32) {
-        self.builder.cubic_to(c0x, c0y, c1x, c1y, x, y);
-    }
-
-    fn close(&mut self) {
-        self.builder.close();
     }
 }

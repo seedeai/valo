@@ -1,8 +1,8 @@
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-use valo_geometry::Path;
-use valo_text::{Font, GlyphImage, Rasterizer};
+use valo_geometry::{Cap, Join, Path};
+use valo_text::{Font, GlyphImage, GlyphStroke, Rasterizer};
 
 /// Skia's kMaxMultitexturePages: open pages up to this, then GC.
 const MAX_PAGES: usize = 4;
@@ -65,6 +65,91 @@ struct PathEntry {
 /// placeholder) survives before the sweep — same policy as ContourCache.
 const IDLE_FRAMES: u64 = 3;
 
+/// What an atlas entry holds. The stroke rides along because a stroked
+/// glyph is nothing more than another cached image — Impeller hashes the
+/// same parameters into `SubpixelGlyph`, Skia into `SkScalerContextRec`.
+/// A stroked SDF is deliberately not expressible: an SDF encodes distance
+/// from a FILL boundary, so it would be a different field, and Impeller's
+/// stroked glyphs go to the regular atlas for the same reason.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Coverage {
+    Fill,
+    Sdf,
+    Stroke(GlyphStroke),
+}
+
+/// [`Coverage`] made hashable. Stroke parameters quantize to 1/16 px —
+/// finer than an antialiased edge resolves, and coarse enough that a
+/// wobbling animated width does not mint an entry per frame. The raster
+/// reads its parameters back out of this, so the image an entry holds is
+/// always exactly what its key says.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CoverageKey {
+    Fill,
+    Sdf,
+    Stroke {
+        width_16: u32,
+        miter_16: u32,
+        cap: u8,
+        join: u8,
+    },
+}
+
+/// Sixteenths, saturating — a negative or NaN parameter can only ever have
+/// come from a caller, never from the tier policy.
+fn sixteenths(value: f32) -> u32 {
+    (value * 16.0).round().clamp(0.0, u32::MAX as f32) as u32
+}
+
+impl CoverageKey {
+    fn of(coverage: Coverage) -> Self {
+        match coverage {
+            Coverage::Fill => Self::Fill,
+            Coverage::Sdf => Self::Sdf,
+            Coverage::Stroke(stroke) => Self::Stroke {
+                width_16: sixteenths(stroke.width),
+                miter_16: sixteenths(stroke.miter_limit),
+                cap: match stroke.cap {
+                    Cap::Butt => 0,
+                    Cap::Round => 1,
+                    Cap::Square => 2,
+                },
+                join: match stroke.join {
+                    Join::Miter => 0,
+                    Join::Round => 1,
+                    Join::Bevel => 2,
+                },
+            },
+        }
+    }
+
+    fn coverage(self) -> Coverage {
+        match self {
+            Self::Fill => Coverage::Fill,
+            Self::Sdf => Coverage::Sdf,
+            Self::Stroke {
+                width_16,
+                miter_16,
+                cap,
+                join,
+            } => Coverage::Stroke(GlyphStroke {
+                width: width_16 as f32 / 16.0,
+                miter_limit: miter_16 as f32 / 16.0,
+                cap: match cap {
+                    1 => Cap::Round,
+                    2 => Cap::Square,
+                    _ => Cap::Butt,
+                },
+                join: match join {
+                    1 => Join::Round,
+                    2 => Join::Bevel,
+                    _ => Join::Miter,
+                },
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     /// The font INSTANCE's stable raster identity ([`Font::uid`]).
@@ -75,10 +160,20 @@ struct GlyphKey {
     /// Quarter-pixel x phase (0..4), mask tier only — Skia/Impeller's
     /// subpixel positioning.
     phase: u8,
-    sdf: bool,
+    coverage: CoverageKey,
 }
 
 impl GlyphKey {
+    fn new(font: u64, glyph: u32, px: f32, coverage: Coverage, phase: u8) -> Self {
+        Self {
+            font,
+            glyph,
+            px_bits: px.to_bits(),
+            phase,
+            coverage: CoverageKey::of(coverage),
+        }
+    }
+
     fn px(&self) -> f32 {
         f32::from_bits(self.px_bits)
     }
@@ -156,10 +251,13 @@ pub struct GlyphStore {
     /// blank instead of tofu boxes. Pair with [`FontDemand`] reporting —
     /// hiding the box without watching the demand silently loses text.
     hide_missing_glyphs: bool,
-    /// Resident (px, phase) per (font, glyph, sdf) — the stand-in lookup.
-    /// Bitmap scales are continuous (size × 1/200-quantized zoom), so
-    /// "nearest resident size" needs an index; SDF rides the same one.
-    sizes: FxHashMap<(u64, u32, bool), Vec<(f32, u8)>>,
+    /// Resident (px, phase) per (font, glyph, coverage) — the stand-in
+    /// lookup. Bitmap scales are continuous (size × 1/200-quantized zoom),
+    /// so "nearest resident size" needs an index; SDF rides the same one.
+    /// A stroked entry's width is in raster pixels and so scales with `px`,
+    /// which puts every size in its own coverage bucket: stroked runs
+    /// simply find no stand-in and raster through a text-raster hold.
+    sizes: FxHashMap<(u64, u32, CoverageKey), Vec<(f32, u8)>>,
 }
 
 impl GlyphStore {
@@ -219,11 +317,11 @@ impl GlyphStore {
     /// build, scoped to the run); a run too large to EVER fit (an emoji
     /// wall) stops retrying and drops its overflow glyphs for the frame —
     /// resident entries always point at live pages either way.
-    pub fn ensure_run(&mut self, font: &Font, px: f32, sdf: bool, keys: &[(u32, u8)]) {
+    pub fn ensure_run(&mut self, font: &Font, px: f32, coverage: Coverage, keys: &[(u32, u8)]) {
         for _ in 0..2 {
             let generation = self.generation;
             for &(glyph, phase) in keys {
-                self.ensure(font, glyph, px, sdf, phase);
+                self.ensure(font, glyph, px, coverage, phase);
             }
             if self.generation == generation {
                 return;
@@ -238,31 +336,20 @@ impl GlyphStore {
         font: u64,
         glyph: u32,
         px: f32,
-        sdf: bool,
+        coverage: Coverage,
         phase: u8,
     ) -> Option<(PageRef, AtlasGlyph)> {
-        let key = GlyphKey {
-            font,
-            glyph,
-            px_bits: px.to_bits(),
-            phase,
-            sdf,
-        };
-        let (slot, _) = self.entries.get(&key)?;
+        let (slot, _) = self
+            .entries
+            .get(&GlyphKey::new(font, glyph, px, coverage, phase))?;
         slot.map(|r| (r.page, r.glyph))
     }
 
-    /// The atlas slot for (font, glyph, px, mode) — rasterizing, packing,
-    /// and uploading on first sight. Color glyphs (emoji) win over the
-    /// requested mode and land on the RGBA family.
-    fn ensure(&mut self, font: &Font, glyph: u32, px: f32, sdf: bool, phase: u8) {
-        let key = GlyphKey {
-            font: font.uid().0,
-            glyph,
-            px_bits: px.to_bits(),
-            phase,
-            sdf,
-        };
+    /// The atlas slot for (font, glyph, px, coverage) — rasterizing,
+    /// packing, and uploading on first sight. Color glyphs (emoji) win over
+    /// the requested coverage and land on the RGBA family.
+    fn ensure(&mut self, font: &Font, glyph: u32, px: f32, coverage: Coverage, phase: u8) {
+        let key = GlyphKey::new(font.uid().0, glyph, px, coverage, phase);
         if let Some((_, last_used)) = self.entries.get_mut(&key) {
             *last_used = self.frame;
             return;
@@ -271,7 +358,7 @@ impl GlyphStore {
         // the key stays a miss and rasters on the first un-held frame.
         if self.hold
             && self
-                .find_stand_in(key.font, key.glyph, key.sdf, key.px())
+                .find_stand_in(key.font, key.glyph, key.coverage, key.px())
                 .is_some()
         {
             self.held += 1;
@@ -280,7 +367,7 @@ impl GlyphStore {
         let entry = self.rasterize_and_pack(key, font);
         if entry.is_some() {
             self.sizes
-                .entry((key.font, key.glyph, key.sdf))
+                .entry((key.font, key.glyph, key.coverage))
                 .or_default()
                 .push((key.px(), key.phase));
         }
@@ -295,10 +382,11 @@ impl GlyphStore {
         &mut self,
         font: u64,
         glyph: u32,
-        sdf: bool,
+        coverage: Coverage,
         wanted_px: f32,
     ) -> Option<(f32, PageRef, AtlasGlyph)> {
-        let (key, resident) = self.find_stand_in(font, glyph, sdf, wanted_px)?;
+        let (key, resident) =
+            self.find_stand_in(font, glyph, CoverageKey::of(coverage), wanted_px)?;
         if let Some((_, last_used)) = self.entries.get_mut(&key) {
             *last_used = self.frame;
         }
@@ -310,11 +398,11 @@ impl GlyphStore {
         &self,
         font: u64,
         glyph: u32,
-        sdf: bool,
+        coverage: CoverageKey,
         wanted_px: f32,
     ) -> Option<(GlyphKey, Resident)> {
         let mut best: Option<(GlyphKey, Resident, f32)> = None;
-        for &(px, phase) in self.sizes.get(&(font, glyph, sdf))? {
+        for &(px, phase) in self.sizes.get(&(font, glyph, coverage))? {
             if px == wanted_px {
                 continue;
             }
@@ -327,7 +415,7 @@ impl GlyphStore {
                 glyph,
                 px_bits: px.to_bits(),
                 phase,
-                sdf,
+                coverage,
             };
             if let Some((Some(resident), _)) = self.entries.get(&key) {
                 best = Some((key, *resident, distance));
@@ -338,15 +426,15 @@ impl GlyphStore {
 
     fn rasterize_and_pack(&mut self, key: GlyphKey, font: &Font) -> Option<Resident> {
         self.rasters += 1;
-        let px = f32::from_bits(key.px_bits);
+        let px = key.px();
         if let Some(image) = self.raster.color(font, key.glyph, px) {
             return self.pack(true, &image);
         }
-        let image = if key.sdf {
-            self.raster.sdf(font, key.glyph, px)
-        } else {
-            let dx = key.phase as f32 * 0.25;
-            self.raster.alpha(font, key.glyph, px, dx)
+        let dx = key.phase as f32 * 0.25;
+        let image = match key.coverage.coverage() {
+            Coverage::Sdf => self.raster.sdf(font, key.glyph, px),
+            Coverage::Fill => self.raster.alpha(font, key.glyph, px, dx),
+            Coverage::Stroke(stroke) => self.raster.stroked(font, key.glyph, px, dx, &stroke),
         }?;
         self.pack(false, &image)
     }
@@ -399,7 +487,7 @@ impl GlyphStore {
             self.pages_mut(color)[r.page.index]
                 .allocator
                 .deallocate(r.slot);
-            if let Some(list) = self.sizes.get_mut(&(key.font, key.glyph, key.sdf)) {
+            if let Some(list) = self.sizes.get_mut(&(key.font, key.glyph, key.coverage)) {
                 list.retain(|&(px, phase)| px.to_bits() != key.px_bits || phase != key.phase);
             }
         }
@@ -471,7 +559,7 @@ impl GlyphStore {
         for (key, (slot, _)) in &self.entries {
             if slot.is_some() {
                 self.sizes
-                    .entry((key.font, key.glyph, key.sdf))
+                    .entry((key.font, key.glyph, key.coverage))
                     .or_default()
                     .push((key.px(), key.phase));
             }
@@ -722,9 +810,9 @@ mod tests {
             let Some(glyph) = fonts.get(font).glyph_for(ch) else {
                 continue;
             };
-            store.ensure(fonts.get(font), glyph, 30.0, false, 0);
+            store.ensure(fonts.get(font), glyph, 30.0, Coverage::Fill, 0);
             if store
-                .entry(fonts.get(font).uid().0, glyph, 30.0, false, 0)
+                .entry(fonts.get(font).uid().0, glyph, 30.0, Coverage::Fill, 0)
                 .is_some()
             {
                 packed += 1;
@@ -743,9 +831,9 @@ mod tests {
 
         // Post-GC, an early (purged) glyph re-ensures fine.
         let a = fonts.get(font).glyph_for('A').unwrap();
-        store.ensure(fonts.get(font), a, 30.0, false, 0);
+        store.ensure(fonts.get(font), a, 30.0, Coverage::Fill, 0);
         assert!(store
-            .entry(fonts.get(font).uid().0, a, 30.0, false, 0)
+            .entry(fonts.get(font).uid().0, a, 30.0, Coverage::Fill, 0)
             .is_some());
     }
 
@@ -766,7 +854,7 @@ mod tests {
         // Frame 0: fill most of the budget, without overflowing it.
         let old: Vec<char> = ('a'..='r').collect();
         for &ch in &old {
-            store.ensure(fonts.get(font), glyph(ch), 30.0, false, 0);
+            store.ensure(fonts.get(font), glyph(ch), 30.0, Coverage::Fill, 0);
         }
         let generation_before = store.generation;
         store.end_frame();
@@ -774,7 +862,7 @@ mod tests {
         // Frame 1: a same-sized new set overflows — idle frame-0 rects go.
         let new: Vec<char> = ('A'..='R').collect();
         for &ch in &new {
-            store.ensure(fonts.get(font), glyph(ch), 30.0, false, 0);
+            store.ensure(fonts.get(font), glyph(ch), 30.0, Coverage::Fill, 0);
         }
         assert_eq!(
             store.generation, generation_before,
@@ -783,7 +871,7 @@ mod tests {
         for &ch in &new {
             assert!(
                 store
-                    .entry(fonts.get(font).uid().0, glyph(ch), 30.0, false, 0)
+                    .entry(fonts.get(font).uid().0, glyph(ch), 30.0, Coverage::Fill, 0)
                     .is_some(),
                 "'{ch}' of the hot set is resident"
             );
@@ -792,7 +880,7 @@ mod tests {
             .iter()
             .filter(|&&ch| {
                 store
-                    .entry(fonts.get(font).uid().0, glyph(ch), 30.0, false, 0)
+                    .entry(fonts.get(font).uid().0, glyph(ch), 30.0, Coverage::Fill, 0)
                     .is_none()
             })
             .count();
@@ -800,9 +888,9 @@ mod tests {
 
         // An evicted glyph re-ensures on demand (and may evict in turn).
         store.end_frame();
-        store.ensure(fonts.get(font), glyph('a'), 30.0, false, 0);
+        store.ensure(fonts.get(font), glyph('a'), 30.0, Coverage::Fill, 0);
         assert!(store
-            .entry(fonts.get(font).uid().0, glyph('a'), 30.0, false, 0)
+            .entry(fonts.get(font).uid().0, glyph('a'), 30.0, Coverage::Fill, 0)
             .is_some());
     }
 
@@ -822,36 +910,36 @@ mod tests {
         let glyph = fonts.get(font).glyph_for('H').unwrap();
 
         // Warm bucket 32, then zoom crosses to 72 under a hold.
-        store.ensure(fonts.get(font), glyph, 32.0, true, 0);
+        store.ensure(fonts.get(font), glyph, 32.0, Coverage::Sdf, 0);
         store.end_frame();
         store.set_text_raster_hold(true);
 
-        store.ensure(fonts.get(font), glyph, 72.0, true, 0);
+        store.ensure(fonts.get(font), glyph, 72.0, Coverage::Sdf, 0);
         assert!(
             store
-                .entry(fonts.get(font).uid().0, glyph, 72.0, true, 0)
+                .entry(fonts.get(font).uid().0, glyph, 72.0, Coverage::Sdf, 0)
                 .is_none(),
             "held: the wanted bucket was not rasterized"
         );
         let (px, ..) = store
-            .resident_stand_in(fonts.get(font).uid().0, glyph, true, 72.0)
+            .resident_stand_in(fonts.get(font).uid().0, glyph, Coverage::Sdf, 72.0)
             .expect("the warm bucket stands in");
         assert_eq!(px, 32.0);
         assert_eq!(store.frame_counters().2, 1, "one held raster counted");
 
         // First sight of a glyph with no stand-in rasters even while held.
         let fresh = fonts.get(font).glyph_for('Q').unwrap();
-        store.ensure(fonts.get(font), fresh, 72.0, true, 0);
+        store.ensure(fonts.get(font), fresh, 72.0, Coverage::Sdf, 0);
         assert!(store
-            .entry(fonts.get(font).uid().0, fresh, 72.0, true, 0)
+            .entry(fonts.get(font).uid().0, fresh, 72.0, Coverage::Sdf, 0)
             .is_some());
 
         // Release: the wanted bucket rasters on the next sighting.
         store.end_frame();
         store.set_text_raster_hold(false);
-        store.ensure(fonts.get(font), glyph, 72.0, true, 0);
+        store.ensure(fonts.get(font), glyph, 72.0, Coverage::Sdf, 0);
         assert!(store
-            .entry(fonts.get(font).uid().0, glyph, 72.0, true, 0)
+            .entry(fonts.get(font).uid().0, glyph, 72.0, Coverage::Sdf, 0)
             .is_some());
     }
 
@@ -871,28 +959,28 @@ mod tests {
         let glyph = fonts.get(font).glyph_for('H').unwrap();
 
         // Warm one quantized scale, then crawl one step under a hold.
-        store.ensure(fonts.get(font), glyph, 11.83, false, 0);
+        store.ensure(fonts.get(font), glyph, 11.83, Coverage::Fill, 0);
         store.end_frame();
         store.set_text_raster_hold(true);
 
-        store.ensure(fonts.get(font), glyph, 11.96, false, 0);
+        store.ensure(fonts.get(font), glyph, 11.96, Coverage::Fill, 0);
         assert!(
             store
-                .entry(fonts.get(font).uid().0, glyph, 11.96, false, 0)
+                .entry(fonts.get(font).uid().0, glyph, 11.96, Coverage::Fill, 0)
                 .is_none(),
             "held: the fresh scale was not rasterized"
         );
         let (px, ..) = store
-            .resident_stand_in(fonts.get(font).uid().0, glyph, false, 11.96)
+            .resident_stand_in(fonts.get(font).uid().0, glyph, Coverage::Fill, 11.96)
             .expect("the previous scale stands in");
         assert_eq!(px, 11.83);
         assert_eq!(store.frame_counters().2, 1);
 
         store.end_frame();
         store.set_text_raster_hold(false);
-        store.ensure(fonts.get(font), glyph, 11.96, false, 0);
+        store.ensure(fonts.get(font), glyph, 11.96, Coverage::Fill, 0);
         assert!(store
-            .entry(fonts.get(font).uid().0, glyph, 11.96, false, 0)
+            .entry(fonts.get(font).uid().0, glyph, 11.96, Coverage::Fill, 0)
             .is_some());
     }
 
@@ -913,7 +1001,7 @@ mod tests {
         // guaranteed, wherever exactly the collections land.
         let glyph = |ch: char| fonts.get(font).glyph_for(ch).unwrap();
         for ch in 'a'..='z' {
-            store.ensure(fonts.get(font), glyph(ch), 52.0, false, 0);
+            store.ensure(fonts.get(font), glyph(ch), 52.0, Coverage::Fill, 0);
         }
         assert!(store.generation >= 1, "junk fill forced GCs");
 
@@ -921,14 +1009,67 @@ mod tests {
         // of a run that fits the atlas is resident simultaneously, on live
         // pages — regardless of how many GCs the run itself triggered.
         let keys: Vec<(u32, u8)> = ['M', 'N', 'H'].map(|ch| (glyph(ch), 0)).into();
-        store.ensure_run(fonts.get(font), 26.0, false, &keys);
+        store.ensure_run(fonts.get(font), 26.0, Coverage::Fill, &keys);
         let pages = store.pages(false).len();
         for &(g, phase) in &keys {
             let (page, _) = store
-                .entry(fonts.get(font).uid().0, g, 26.0, false, phase)
+                .entry(fonts.get(font).uid().0, g, 26.0, Coverage::Fill, phase)
                 .expect("resident after ensure_run");
             assert!(page.index < pages, "page reference is live");
         }
+    }
+
+    /// The stroke is part of the address. Same font, glyph and size, three
+    /// different coverages — three entries, three distinct rasters. Without
+    /// the stroke in the key a stroked run would silently draw the filled
+    /// mask that got there first.
+    #[test]
+    fn the_stroke_is_part_of_the_atlas_key() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("SKIP the_stroke_is_part_of_the_atlas_key: no GPU adapter");
+            return;
+        };
+        let fonts = fira();
+        let mut store = GlyphStore::new(&device, &queue);
+        let font = fonts.family("Fira Sans").unwrap();
+        let glyph = fonts.get(font).glyph_for('M').unwrap();
+        let stroke = |width: f32| {
+            Coverage::Stroke(GlyphStroke {
+                width,
+                cap: Cap::Butt,
+                join: Join::Miter,
+                miter_limit: 4.0,
+            })
+        };
+
+        let coverages = [Coverage::Fill, stroke(2.0), stroke(6.0)];
+        for coverage in coverages {
+            store.ensure(fonts.get(font), glyph, 48.0, coverage, 0);
+        }
+        assert_eq!(store.frame_counters().0, 3, "one raster per coverage");
+
+        let cells: Vec<[f32; 4]> = coverages
+            .iter()
+            .map(|&coverage| {
+                let (_, entry) = store
+                    .entry(fonts.get(font).uid().0, glyph, 48.0, coverage, 0)
+                    .expect("resident");
+                [entry.left, entry.top, entry.width, entry.height]
+            })
+            .collect();
+        for (wider, narrower) in [(cells[1], cells[0]), (cells[2], cells[1])] {
+            assert!(
+                wider[2] > narrower[2] && wider[3] > narrower[3],
+                "a wider stroke needs a bigger cell: {wider:?} vs {narrower:?}"
+            );
+        }
+
+        // Re-ensuring the same coverages hits the cache — no fresh rasters.
+        store.end_frame();
+        for coverage in coverages {
+            store.ensure(fonts.get(font), glyph, 48.0, coverage, 0);
+        }
+        assert_eq!(store.frame_counters().0, 0, "all three were cache hits");
     }
 
     /// The pathological case: a run larger than the WHOLE atlas degrades to
@@ -949,12 +1090,14 @@ mod tests {
             .filter_map(|ch| fonts.get(font).glyph_for(ch))
             .map(|g| (g, 0))
             .collect();
-        store.ensure_run(fonts.get(font), 30.0, false, &keys);
+        store.ensure_run(fonts.get(font), 30.0, Coverage::Fill, &keys);
 
         let pages = store.pages(false).len();
         let resident = keys
             .iter()
-            .filter_map(|&(g, phase)| store.entry(fonts.get(font).uid().0, g, 30.0, false, phase))
+            .filter_map(|&(g, phase)| {
+                store.entry(fonts.get(font).uid().0, g, 30.0, Coverage::Fill, phase)
+            })
             .inspect(|(page, _)| assert!(page.index < pages, "live page"))
             .count();
         assert!(resident > 0, "the surviving subset still renders");

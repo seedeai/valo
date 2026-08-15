@@ -669,8 +669,9 @@ fn conical_gradients_golden() {
 /// Arcs and stroked text — the path primitives Canvas2D leans on. The pie
 /// slice and ring come from `arc`, the tab's shoulders from `arc_to`, the
 /// tilted oval from `ellipse`; the word below is drawn twice, once filled
-/// and once stroked, and stroking forces the outline tier because atlas
-/// rasters only ever carry fill coverage.
+/// and once stroked, and both take the mask tier — the rasterizer strokes
+/// the outline before rasterizing it, so a stroked glyph is just another
+/// cached atlas entry.
 #[test]
 fn arcs_and_stroked_text_golden() {
     use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -775,13 +776,12 @@ fn arcs_and_stroked_text_golden() {
     let stats = ctx.render(&b.build(), &offscreen.target(Some(background)));
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
 
-    // Same font, same 72px, same transform — the ONLY difference is the
-    // paint style, and it alone moves the stroked word off the atlas: one
-    // mask-tier run, no SDF, one outline run.
+    // Same font, same 72px, same transform, and the paint style no longer
+    // changes the tier: both words are cached, batched mask-tier runs.
     assert_eq!(
         stats.text_tiers,
-        [1, 0, 1],
-        "the stroked word should be the only one on the outline tier"
+        [2, 0, 0],
+        "a stroked run belongs on the atlas, like the filled one"
     );
 
     // Outlined glyphs are HOLLOW, and that is what a scanline sees: crossing
@@ -817,6 +817,240 @@ fn arcs_and_stroked_text_golden() {
     );
 
     valo_harness::assert_golden(goldens_dir(), "arcs_and_stroked_text", size, &rgba);
+}
+
+/// Miter spikes on sharp-vertex glyphs. `A`, `V` and `W` meet at angles
+/// sharp enough that a miter join reaches many times the half-width past
+/// the glyph's own outline, so an atlas cell sized by inflating the fill
+/// bounds by a flat half-width clips the spikes — silently, since nothing
+/// else in the suite looks at a stroked glyph's extremities.
+///
+/// The pixel assertions are what survive a re-bless: the stroked ink must
+/// reach measurably beyond the filled ink (the scene really does spike),
+/// and the tier that caches must agree with the outline tier on where the
+/// ink ends (the cell really does hold the spike).
+#[test]
+fn stroked_glyph_miters_golden() {
+    use valo::{DrawGlyphRunExt, DrawParagraphExt, ParagraphBuilder, TextStyle};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP stroked_glyph_miters_golden: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let mut fonts = text_fonts();
+    let size = [420u32, 200u32];
+    let background = Color::rgb(0.06, 0.06, 0.09);
+
+    const STROKE_WIDTH: f32 = 5.0;
+    let origin = (30.0, 30.0);
+
+    let mut scene = |stroked: bool| {
+        let mut paragraph = ParagraphBuilder::new(&mut fonts);
+        paragraph.add_text(
+            // `M`'s inner apex spikes 8.6px up and `W`'s 6.7px down at this
+            // size — both several half-widths past the fill.
+            "AMWV",
+            &TextStyle::new("Fira Sans", 72.0, Color::rgb(0.95, 0.96, 1.0)),
+        );
+        let mut paragraph = paragraph.build();
+        paragraph.layout(f32::INFINITY);
+        let mut b = DisplayListBuilder::new();
+        if stroked {
+            b.draw_paragraph_with(
+                &paragraph,
+                origin,
+                &Paint {
+                    color: Color::rgb(0.95, 0.96, 1.0),
+                    // A limit high enough that every one of these joins
+                    // spikes instead of bevelling.
+                    style: valo::PaintStyle::Stroke(valo::Stroke {
+                        width: STROKE_WIDTH,
+                        cap: valo::Cap::Butt,
+                        join: valo::Join::Miter,
+                        miter_limit: 16.0,
+                        dash: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+        } else {
+            b.draw_paragraph(&paragraph, origin);
+        }
+        b.build()
+    };
+    let filled = scene(false);
+    let stroked = scene(true);
+
+    let mut ink_bounds = |dl: &valo::DisplayList, tiers: valo::TextTiers| {
+        ctx.set_text_tiers(tiers);
+        let offscreen = Offscreen::new(&device, size);
+        let stats = ctx.render(dl, &offscreen.target(Some(background)));
+        let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
+        (ink_box(&rgba, size), rgba, stats)
+    };
+
+    // The tier under test, and the outline tier as the reference: it builds
+    // real stroke geometry, so it can never clip at an atlas boundary.
+    let (cached_box, cached_rgba, cached_stats) = ink_bounds(&stroked, valo::TextTiers::default());
+    let (outline_box, ..) = ink_bounds(
+        &stroked,
+        valo::TextTiers {
+            sdf_min: 0.0,
+            path_min: 0.0,
+        },
+    );
+    let (filled_box, ..) = ink_bounds(&filled, valo::TextTiers::default());
+    ctx.set_text_tiers(valo::TextTiers::default());
+
+    // The `A` apex spikes up and the `V`/`W` vertices spike down, both well
+    // past a half-width — proof the scene exercises miters at all.
+    let half = STROKE_WIDTH * 0.5;
+    for (edge, reach) in [
+        ("top", filled_box[1] as f32 - outline_box[1] as f32),
+        ("bottom", outline_box[3] as f32 - filled_box[3] as f32),
+    ] {
+        assert!(
+            reach > half * 1.5,
+            "the {edge} miter should reach more than a half-width past the \
+             filled glyph, reached {reach}px"
+        );
+    }
+
+    // The whole point: the cached tier's ink ends where the outline tier's
+    // does. A cell short by a spike shows up here as a clipped edge.
+    for (edge, cached, reference) in [
+        ("left", cached_box[0], outline_box[0]),
+        ("top", cached_box[1], outline_box[1]),
+        ("right", cached_box[2], outline_box[2]),
+        ("bottom", cached_box[3], outline_box[3]),
+    ] {
+        assert!(
+            cached.abs_diff(reference) <= 2,
+            "{edge} edge of the stroked ink: cached tier {cached}, \
+             outline tier {reference} — a miter spike was clipped"
+        );
+    }
+
+    assert_eq!(
+        cached_stats.text_tiers[1], 0,
+        "an SDF encodes distance from a FILL boundary; stroked runs never \
+         belong in that tier"
+    );
+
+    valo_harness::assert_golden(goldens_dir(), "stroked_glyph_miters", size, &cached_rgba);
+}
+
+/// The payoff. A stroked run used to re-tessellate every glyph and emit a
+/// draw call per glyph, every frame, because it was pinned to the outline
+/// tier. It is now an ordinary mask-tier run: the second frame rasterizes
+/// nothing at all, and the whole run collapses into the same single batched
+/// draw the identical filled run gets.
+#[test]
+fn stroked_text_caches_and_batches() {
+    use valo::{DrawGlyphRunExt, DrawParagraphExt, ParagraphBuilder, TextStyle};
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP stroked_text_caches_and_batches: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    let mut fonts = text_fonts();
+    let size = [700u32, 120u32];
+    let offscreen = Offscreen::new(&device, size);
+
+    const TEXT: &str = "Stroked headline caching";
+    let mut scene = |stroked: bool| {
+        let mut paragraph = ParagraphBuilder::new(&mut fonts);
+        paragraph.add_text(TEXT, &TextStyle::new("Fira Sans", 28.0, Color::WHITE));
+        let mut paragraph = paragraph.build();
+        paragraph.layout(f32::INFINITY);
+        let mut b = DisplayListBuilder::new();
+        if stroked {
+            b.draw_paragraph_with(
+                &paragraph,
+                (20.0, 30.0),
+                &Paint {
+                    color: Color::WHITE,
+                    style: valo::PaintStyle::Stroke(valo::Stroke::new(2.0)),
+                    ..Default::default()
+                },
+            );
+        } else {
+            b.draw_paragraph(&paragraph, (20.0, 30.0));
+        }
+        b.build()
+    };
+    let stroked = scene(true);
+    let filled = scene(false);
+
+    let mut frame = |dl: &valo::DisplayList, tiers: valo::TextTiers| {
+        ctx.set_text_tiers(tiers);
+        ctx.render(dl, &offscreen.target(Some(Color::rgb(0.07, 0.07, 0.09))))
+    };
+
+    // Cold, then warm. The run is a single mask-tier run either way.
+    let cold = frame(&stroked, valo::TextTiers::default());
+    let warm = frame(&stroked, valo::TextTiers::default());
+    assert_eq!(cold.text_tiers, [1, 0, 0], "a stroked run is a mask run");
+    assert!(
+        cold.glyph_rasters > 0,
+        "the cold frame should have rastered the stroked glyphs"
+    );
+    assert_eq!(
+        warm.glyph_rasters, 0,
+        "the warm frame re-used every stroked glyph from the atlas"
+    );
+
+    // One batched draw for the whole run, exactly as if it were filled.
+    let filled_warm = {
+        frame(&filled, valo::TextTiers::default());
+        frame(&filled, valo::TextTiers::default())
+    };
+    assert_eq!(
+        warm.draw_calls, filled_warm.draw_calls,
+        "a stroked run should batch like a filled one"
+    );
+
+    // What it used to cost: the outline tier tessellates and draws every
+    // glyph separately, every frame.
+    let outlined = frame(
+        &stroked,
+        valo::TextTiers {
+            sdf_min: 0.0,
+            path_min: 0.0,
+        },
+    );
+    ctx.set_text_tiers(valo::TextTiers::default());
+    assert_eq!(outlined.text_tiers, [0, 0, 1]);
+    let inked_glyphs = TEXT.replace(' ', "").len() as u32;
+    assert_eq!(warm.draw_calls, 1, "the whole run is one batched draw");
+    assert!(
+        outlined.draw_calls >= inked_glyphs,
+        "the outline tier draws per glyph, and there are {inked_glyphs} of \
+         them: {} calls",
+        outlined.draw_calls
+    );
+}
+
+/// The bounding box [x0, y0, x1, y1) of pixels brighter than the dark
+/// background, half-open — the shape of the ink, independent of the tier
+/// that drew it.
+fn ink_box(rgba: &[u8], size: [u32; 2]) -> [u32; 4] {
+    let (mut x0, mut y0, mut x1, mut y1) = (size[0], size[1], 0, 0);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let i = ((y * size[0] + x) * 4) as usize;
+            if rgba[i] < 128 {
+                continue;
+            }
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x + 1);
+            y1 = y1.max(y + 1);
+        }
+    }
+    [x0, y0, x1, y1]
 }
 
 /// Colour filters — Flutter's `ColorFilter`, both constructors. Each card
