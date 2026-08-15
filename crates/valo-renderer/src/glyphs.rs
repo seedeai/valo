@@ -78,18 +78,26 @@ pub enum Coverage {
     Stroke(GlyphStroke),
 }
 
-/// [`Coverage`] made hashable. Stroke parameters quantize to 1/16 px —
-/// finer than an antialiased edge resolves, and coarse enough that a
-/// wobbling animated width does not mint an entry per frame. The raster
-/// reads its parameters back out of this, so the image an entry holds is
-/// always exactly what its key says.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+/// [`Coverage`] made hashable. The raster reads its parameters back out of
+/// this, so the image an entry holds is always exactly what its key says.
+///
+/// Width quantizes to 1/16 px: it moves the stroke's edge CONTINUOUSLY, so a
+/// sixteenth is finer than an antialiased edge resolves, and coarse enough
+/// that an animated width does not mint an entry per frame.
+///
+/// The miter limit does not quantize. It is a THRESHOLD, not a distance —
+/// crossing it flips a join between a bevel and a full spike, so two limits a
+/// sixteenth apart can produce visibly different glyphs and must never share
+/// a cell. Impeller compares the stroke floats exactly for the same reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum CoverageKey {
     Fill,
     Sdf,
     Stroke {
         width_16: u32,
-        miter_16: u32,
+        /// `f32::to_bits` of a normalized miter limit — exact, and `Eq + Hash`
+        /// because the normalization rules out NaN.
+        miter_bits: u32,
         cap: u8,
         join: u8,
     },
@@ -101,6 +109,16 @@ fn sixteenths(value: f32) -> u32 {
     (value * 16.0).round().clamp(0.0, u32::MAX as f32) as u32
 }
 
+/// A miter limit that is safe to hash: NaN and negatives collapse onto the
+/// SVG default, and -0.0 onto 0.0, so bit equality matches value equality.
+fn normalized_miter_limit(limit: f32) -> f32 {
+    if limit.is_nan() || limit < 0.0 {
+        4.0
+    } else {
+        limit + 0.0
+    }
+}
+
 impl CoverageKey {
     fn of(coverage: Coverage) -> Self {
         match coverage {
@@ -108,7 +126,7 @@ impl CoverageKey {
             Coverage::Sdf => Self::Sdf,
             Coverage::Stroke(stroke) => Self::Stroke {
                 width_16: sixteenths(stroke.width),
-                miter_16: sixteenths(stroke.miter_limit),
+                miter_bits: normalized_miter_limit(stroke.miter_limit).to_bits(),
                 cap: match stroke.cap {
                     Cap::Butt => 0,
                     Cap::Round => 1,
@@ -129,12 +147,12 @@ impl CoverageKey {
             Self::Sdf => Coverage::Sdf,
             Self::Stroke {
                 width_16,
-                miter_16,
+                miter_bits,
                 cap,
                 join,
             } => Coverage::Stroke(GlyphStroke {
                 width: width_16 as f32 / 16.0,
-                miter_limit: miter_16 as f32 / 16.0,
+                miter_limit: f32::from_bits(miter_bits),
                 cap: match cap {
                     1 => Cap::Round,
                     2 => Cap::Square,
@@ -1101,5 +1119,46 @@ mod tests {
             .inspect(|(page, _)| assert!(page.index < pages, "live page"))
             .count();
         assert!(resident > 0, "the surviving subset still renders");
+    }
+
+    /// The miter limit is a THRESHOLD: a corner needing ratio 15.015 bevels
+    /// at limit 15.00 and spikes at 15.03. Quantizing the limit to 1/16 px
+    /// would key both to 15.0 and serve one glyph's image for the other, so
+    /// the key stores it exactly.
+    #[test]
+    fn near_identical_miter_limits_do_not_share_a_cell() {
+        let stroke_at = |miter_limit: f32| {
+            CoverageKey::of(Coverage::Stroke(GlyphStroke {
+                width: 4.0,
+                cap: Cap::Butt,
+                join: Join::Miter,
+                miter_limit,
+            }))
+        };
+        assert_ne!(stroke_at(15.00), stroke_at(15.03));
+        assert_eq!(stroke_at(15.00), stroke_at(15.00));
+
+        // The parameters still survive the round trip they are read back for.
+        let Coverage::Stroke(recovered) = stroke_at(15.03).coverage() else {
+            panic!("a stroke key must decode to a stroke");
+        };
+        assert_eq!(recovered.miter_limit, 15.03);
+
+        // NaN and negatives collapse onto the SVG default rather than
+        // poisoning Eq — a key that never equals itself would never hit.
+        assert_eq!(stroke_at(f32::NAN), stroke_at(4.0));
+        assert_eq!(stroke_at(-1.0), stroke_at(4.0));
+        assert_eq!(stroke_at(f32::NAN), stroke_at(f32::NAN));
+
+        // Width, being a continuous edge offset, still quantizes.
+        let width_at = |width: f32| {
+            CoverageKey::of(Coverage::Stroke(GlyphStroke {
+                width,
+                cap: Cap::Butt,
+                join: Join::Miter,
+                miter_limit: 4.0,
+            }))
+        };
+        assert_eq!(width_at(4.0), width_at(4.001));
     }
 }

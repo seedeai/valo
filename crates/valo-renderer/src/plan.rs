@@ -2269,17 +2269,23 @@ impl<'a> Planner<'a> {
                     index += 1;
                 }
                 ImageFilter::Blur { .. } => {
-                    // Consecutive blurs combine in quadrature in LOCAL space;
-                    // the basis maps the combined σ to device axes once.
+                    // The basis has to reach every stage BEFORE they combine.
+                    // Impeller transforms each blur's σ on its own —
+                    // `CalculateBlurInfo` runs per filter — and a rotation
+                    // MIXES the axes, so combining in local space first and
+                    // rotating the total afterwards blurs along the wrong
+                    // ones. Successive gaussians still compose in quadrature
+                    // once they are on the same axes, so the merged device σ
+                    // collapses back to a single pass.
                     let mut sigma_x_squared = 0.0;
                     let mut sigma_y_squared = 0.0;
                     while let Some(ImageFilter::Blur { sigma_x, sigma_y }) = stages.get(index) {
-                        sigma_x_squared += sigma_x * sigma_x;
-                        sigma_y_squared += sigma_y * sigma_y;
+                        let [device_x, device_y] = device_sigma(basis, *sigma_x, *sigma_y);
+                        sigma_x_squared += device_x * device_x;
+                        sigma_y_squared += device_y * device_y;
                         index += 1;
                     }
-                    let [sigma_x, sigma_y] =
-                        device_sigma(basis, sigma_x_squared.sqrt(), sigma_y_squared.sqrt());
+                    let (sigma_x, sigma_y) = (sigma_x_squared.sqrt(), sigma_y_squared.sqrt());
                     if sigma_x <= 0.0 && sigma_y <= 0.0 {
                         continue;
                     }
@@ -3664,6 +3670,52 @@ mod tests {
     fn device_sigma_is_sign_agnostic() {
         let basis = basis_of(&Matrix::rotation(std::f32::consts::PI));
         assert_sigma(device_sigma(basis, 7.0, 2.0), [7.0, 2.0]);
+    }
+
+    /// Rotation composed with non-uniform scale: each device axis takes a
+    /// contribution from BOTH local sigmas, which is the case an axis-length
+    /// reduction cannot express at any angle.
+    #[test]
+    fn device_sigma_mixes_axes_under_rotation_and_scale() {
+        let matrix = Matrix::scale(2.0, 3.0).then(&Matrix::rotation(std::f32::consts::FRAC_PI_4));
+        let [a, b, c, d, ..] = matrix.to_affine();
+        let expected = [(6.0 * a + 4.0 * c).abs(), (6.0 * b + 4.0 * d).abs()];
+        assert_sigma(device_sigma(basis_of(&matrix), 6.0, 4.0), expected);
+        // Both axes genuinely mix — a degenerate basis would pass vacuously.
+        assert!(expected[0] > 1.0 && expected[1] > 1.0);
+    }
+
+    /// A mirror has a negative determinant; `.Abs()` makes it equivalent to
+    /// its unmirrored twin.
+    #[test]
+    fn device_sigma_ignores_a_mirror() {
+        let mirrored = basis_of(&Matrix::scale(-2.0, 3.0));
+        assert_sigma(device_sigma(mirrored, 4.0, 5.0), [8.0, 15.0]);
+    }
+
+    /// Two blurs under a 45° rotation. Transforming each stage and THEN
+    /// combining leaves both device axes equal; combining in local space
+    /// first and rotating the total collapses σx to zero and piles
+    /// everything onto y — the divergence from Impeller's per-filter
+    /// `CalculateBlurInfo` that this ordering exists to avoid.
+    #[test]
+    fn composed_blurs_transform_before_they_combine() {
+        let basis = basis_of(&Matrix::rotation(std::f32::consts::FRAC_PI_4));
+        let stages = [(10.0f32, 0.0f32), (0.0f32, 10.0f32)];
+
+        let (mut x_squared, mut y_squared) = (0.0, 0.0);
+        for (sigma_x, sigma_y) in stages {
+            let [x, y] = device_sigma(basis, sigma_x, sigma_y);
+            x_squared += x * x;
+            y_squared += y * y;
+        }
+        assert_sigma([x_squared.sqrt(), y_squared.sqrt()], [10.0, 10.0]);
+
+        let combined = device_sigma(basis, 10.0, 10.0);
+        assert!(
+            combined[0] < 0.001 && combined[1] > 14.0,
+            "combining first must be the WRONG answer, got {combined:?}"
+        );
     }
 
     #[test]

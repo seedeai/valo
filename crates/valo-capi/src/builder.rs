@@ -246,9 +246,12 @@ pub unsafe extern "C" fn valo_builder_draw_paragraph(
 }
 
 /// Draw a laid-out paragraph with `paint` overriding every run's own fill —
-/// the entry point for stroked, gradient-filled or blended text. `paint`'s
-/// style, stroke, shader and blend mode all apply; shadows and decorations
-/// still come from the paragraph's styles.
+/// the entry point for stroked or blended text. `paint`'s colour, style,
+/// stroke, blend mode, mask blur and colour filter all apply; shadows and
+/// decorations still come from the paragraph's styles.
+///
+/// `ValoPaint` carries no shader, so gradient-filled text is not reachable
+/// from C. Use the Rust `DrawGlyphRunExt::draw_paragraph_with` for that.
 ///
 /// A stroke width of 0 is a hairline (one device pixel), matching
 /// `SkStrokeRec`; only a negative width draws nothing.

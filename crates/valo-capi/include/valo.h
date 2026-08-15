@@ -237,11 +237,12 @@ void valo_builder_draw_display_list(ValoDisplayListBuilder *builder,
 void valo_builder_draw_paragraph(ValoDisplayListBuilder *builder,
                                  const ValoParagraph *paragraph, float x,
                                  float y);
-/* Draw a paragraph with `paint` overriding every run's own fill — stroked,
- * gradient-filled or blended text. Style, stroke, shader and blend mode all
- * apply; shadows and decorations still come from the paragraph's styles.
- * A stroke width of 0 is a hairline (one device pixel); only a negative
- * width draws nothing. */
+/* Draw a paragraph with `paint` overriding every run's own fill — stroked or
+ * blended text. Colour, style, stroke, blend mode, mask blur and colour
+ * filter all apply; shadows and decorations still come from the paragraph's
+ * styles. ValoPaint carries no shader, so gradient-filled text is not
+ * reachable from C. A stroke width of 0 is a hairline (one device pixel);
+ * only a negative width draws nothing. */
 void valo_builder_draw_paragraph_with(ValoDisplayListBuilder *builder,
                                       const ValoParagraph *paragraph, float x,
                                       float y, ValoPaint paint);
