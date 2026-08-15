@@ -3,7 +3,7 @@ use std::sync::Arc;
 use skrifa::instance::Size;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::MetadataProvider;
-use valo_geometry::{Path, PathBuilder};
+use valo_geometry::{Path, PathBuilder, Rect};
 
 use crate::font::Font;
 
@@ -115,6 +115,37 @@ impl Rasterizer {
             left: image.placement.left,
             top: image.placement.top,
             data,
+        })
+    }
+
+    /// Tight non-transparent pixel bounds for a bitmap/color glyph, relative
+    /// to its baseline origin in Valo's y-down coordinates. Metrics query this
+    /// before a monochrome outline because rendering also prefers COLR/CBDT.
+    pub(crate) fn color_bounds(&mut self, font: &Font, glyph: u32, px: f32) -> Option<Rect> {
+        let image = self.color(font, glyph, px)?;
+        let mut left = image.width;
+        let mut top = image.height;
+        let mut right = 0;
+        let mut bottom = 0;
+        for y in 0..image.height {
+            for x in 0..image.width {
+                let alpha = image.data[((y * image.width + x) * 4 + 3) as usize];
+                if alpha == 0 {
+                    continue;
+                }
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+        (left < right && top < bottom).then(|| {
+            Rect::new(
+                image.left as f32 + left as f32,
+                -image.top as f32 + top as f32,
+                (right - left) as f32,
+                (bottom - top) as f32,
+            )
         })
     }
 

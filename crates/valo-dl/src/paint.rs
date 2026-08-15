@@ -1,4 +1,6 @@
-use valo_geometry::{Color, Stroke};
+use std::sync::Arc;
+
+use valo_geometry::{Color, Rect, Stroke};
 
 /// Porter–Duff + advanced blend modes — the full Skia/Flutter vocabulary, declared
 /// up front so the recorded format never changes. The renderer implements the
@@ -43,7 +45,7 @@ pub enum BlendMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Paint, PaintStyle};
+    use super::{ColorFilter, ImageFilter, Paint, PaintStyle};
     use valo_geometry::Stroke;
 
     #[test]
@@ -55,6 +57,18 @@ mod tests {
         let scale = 0.1;
         let device_padding = paint.stroke_padding_at_scale(scale) * scale;
         assert!(device_padding >= 0.5);
+    }
+
+    #[test]
+    fn composed_image_filters_accumulate_blur_coverage() {
+        let filter = ImageFilter::compose(
+            ImageFilter::blur(3.0, 4.0),
+            ImageFilter::compose(
+                ImageFilter::color(ColorFilter::Matrix([0.0; 20])),
+                ImageFilter::blur(2.0, 1.0),
+            ),
+        );
+        assert_eq!(filter.padding(), [15.0, 15.0]);
     }
 }
 
@@ -193,6 +207,80 @@ impl ColorFilter {
     }
 }
 
+/// A post-raster image filter. Composition follows Flutter/Impeller naming:
+/// the inner filter runs first and its result becomes the outer filter's
+/// input.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum ImageFilter {
+    /// Gaussian blur in local x/y units.
+    Blur { sigma_x: f32, sigma_y: f32 },
+    /// Run a color filter as a texture-stage image filter.
+    Color(ColorFilter),
+    /// `outer(inner(input))`.
+    Compose {
+        outer: Arc<ImageFilter>,
+        inner: Arc<ImageFilter>,
+    },
+}
+
+impl ImageFilter {
+    pub fn blur(sigma_x: f32, sigma_y: f32) -> Self {
+        Self::Blur {
+            sigma_x: sigma_x.max(0.0),
+            sigma_y: sigma_y.max(0.0),
+        }
+    }
+
+    pub fn color(filter: ColorFilter) -> Self {
+        Self::Color(filter)
+    }
+
+    pub fn compose(outer: ImageFilter, inner: ImageFilter) -> Self {
+        Self::Compose {
+            outer: Arc::new(outer),
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// Whether the chain leaves every pixel exactly as it found it. A
+    /// zero-sigma blur is the case that matters: Flutter rejects one outright,
+    /// and letting it through here would buy a layer and two full-size
+    /// resamples to reproduce the input.
+    ///
+    /// A colour filter is never a no-op — even an identity matrix clamps.
+    pub fn is_nop(&self) -> bool {
+        match self {
+            Self::Blur { sigma_x, sigma_y } => *sigma_x <= 0.0 && *sigma_y <= 0.0,
+            Self::Color(_) => false,
+            Self::Compose { outer, inner } => outer.is_nop() && inner.is_nop(),
+        }
+    }
+
+    /// Conservative local-space x/y expansion required by the complete chain.
+    pub fn padding(&self) -> [f32; 2] {
+        match self {
+            Self::Blur { sigma_x, sigma_y } => [(sigma_x * 3.0).ceil(), (sigma_y * 3.0).ceil()],
+            Self::Color(_) => [0.0; 2],
+            Self::Compose { outer, inner } => {
+                let outer = outer.padding();
+                let inner = inner.padding();
+                [outer[0] + inner[0], outer[1] + inner[1]]
+            }
+        }
+    }
+
+    pub fn modifies_transparent_black(&self) -> bool {
+        match self {
+            Self::Blur { .. } => false,
+            Self::Color(filter) => filter.modifies_transparent_black(),
+            Self::Compose { outer, inner } => {
+                outer.modifies_transparent_black() || inner.modifies_transparent_black()
+            }
+        }
+    }
+}
+
 /// Fill the shape's interior, or stroke its outline.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -216,6 +304,8 @@ pub struct Paint {
     pub mask_blur: Option<MaskBlur>,
     /// Recolour what this paint produced, before any blur spreads it.
     pub color_filter: Option<ColorFilter>,
+    /// Texture-stage filter over the rasterized draw or save-layer result.
+    pub image_filter: Option<ImageFilter>,
     pub style: PaintStyle,
 }
 
@@ -227,6 +317,7 @@ impl Default for Paint {
             shader: None,
             mask_blur: None,
             color_filter: None,
+            image_filter: None,
             style: PaintStyle::Fill,
         }
     }
@@ -253,7 +344,11 @@ impl Paint {
     pub fn is_nop(&self) -> bool {
         let filter_keeps_transparent = self
             .color_filter
-            .is_none_or(|filter| !filter.modifies_transparent_black());
+            .is_none_or(|filter| !filter.modifies_transparent_black())
+            && self
+                .image_filter
+                .as_ref()
+                .is_none_or(|filter| !filter.modifies_transparent_black());
         let invisible = self.color.a <= 0.0
             && self.blend_mode == BlendMode::SrcOver
             && filter_keeps_transparent;
@@ -271,12 +366,47 @@ impl Paint {
             && self.shader.is_none()
             && self.mask_blur.is_none()
             && self.color_filter.is_none()
+            && self.effective_image_filter().is_none()
+    }
+
+    /// The image filter only when it would actually change pixels. Every
+    /// decision about whether this paint needs a layer goes through here, so a
+    /// no-op filter never costs a target.
+    pub fn effective_image_filter(&self) -> Option<&ImageFilter> {
+        self.image_filter.as_ref().filter(|f| !f.is_nop())
     }
 
     /// Record-time bounds padding: ±3σ holds >99.7% of a gaussian's spread.
     /// (Inner style never spreads, but padding is conservative-correct.)
     pub fn mask_padding(&self) -> f32 {
         self.mask_blur.map_or(0.0, |blur| (blur.sigma * 3.0).ceil())
+    }
+
+    /// Padding for every raster-stage effect applied to this paint.
+    pub fn effect_padding(&self) -> f32 {
+        let image = self
+            .image_filter
+            .as_ref()
+            .map_or([0.0; 2], ImageFilter::padding);
+        self.mask_padding() + image[0].max(image[1])
+    }
+
+    /// Local bounds needed to evaluate this paint's post-raster effects.
+    /// Filters that create pixels from transparent black cover the eventual
+    /// clip rather than only the source ink.
+    pub fn effect_bounds(&self, bounds: Rect) -> Rect {
+        let floods = self
+            .color_filter
+            .is_some_and(|filter| filter.modifies_transparent_black())
+            || self
+                .image_filter
+                .as_ref()
+                .is_some_and(|filter| filter.modifies_transparent_black());
+        if floods {
+            Rect::EVERYTHING
+        } else {
+            bounds.expand(self.effect_padding())
+        }
     }
 
     /// Half the stroke width, times the miter's worst-case spike (and √2

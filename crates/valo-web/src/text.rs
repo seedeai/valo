@@ -68,6 +68,7 @@ impl WebParagraph {
         max_lines: u32,
         ellipsis: &str,
         max_width: f32,
+        preserve_trailing_whitespace: bool,
     ) -> Result<WebParagraph, JsValue> {
         if fonts.inner.is_empty() {
             return Err(JsValue::from_str(
@@ -91,6 +92,7 @@ impl WebParagraph {
         };
         let paragraph_style = ParagraphStyle {
             align: text_align(align),
+            preserve_trailing_whitespace,
             max_lines: (max_lines > 0).then_some(max_lines),
             ellipsis: (!ellipsis.is_empty()).then(|| ellipsis.to_owned()),
         };
@@ -242,14 +244,14 @@ impl WebParagraph {
     fn outline_bounds(&mut self) -> Option<valo::Rect> {
         *self
             .outline_bounds
-            .get_or_insert_with(|| self.inner.outline_bounds())
+            .get_or_insert_with(|| self.inner.ink_bounds())
     }
 }
 
 fn primary_metrics(paragraph: &Paragraph) -> Option<(f32, &valo::Font, f32)> {
     let line = paragraph.lines().first()?;
-    let run = line.runs.first()?;
-    Some((line.baseline, paragraph.faces().get(run.font), run.size))
+    let (font, size) = paragraph.primary_font()?;
+    Some((line.baseline, font, size))
 }
 
 fn em_metrics(font: &valo::Font, size: f32) -> (f32, f32) {

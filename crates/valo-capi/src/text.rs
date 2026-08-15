@@ -496,6 +496,7 @@ fn paragraph_style(style: &ValoParagraphStyle) -> ParagraphStyle {
             3 => TextAlign::Justify,
             _ => TextAlign::Left,
         },
+        preserve_trailing_whitespace: false,
         max_lines: (style.max_lines > 0).then_some(style.max_lines),
         ellipsis: unsafe { utf8(style.ellipsis_utf8, style.ellipsis_length) }
             .filter(|e| !e.is_empty())

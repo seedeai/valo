@@ -6,7 +6,7 @@ export interface DiffMetrics {
   passed: boolean;
   badPixels: number;
   badPixelRatio: number;
-  boundsDelta: number;
+  boundsDelta: number | null;
   width: number;
   height: number;
 }
@@ -42,7 +42,7 @@ export function comparePngs(
   return {
     passed: badPixelRatio <= thresholds.maximumBadPixelRatio
       && (thresholds.maximumBoundsDelta === null
-        || boundsDelta <= thresholds.maximumBoundsDelta),
+        || (boundsDelta !== null && boundsDelta <= thresholds.maximumBoundsDelta)),
     badPixels,
     badPixelRatio,
     boundsDelta,
@@ -56,24 +56,19 @@ function compareInkBounds(
   nativeImage: PNG,
   valoImage: PNG,
   background: readonly [number, number, number, number],
-): number {
+): number | null {
   const nativeBounds = inkBounds(nativeImage, background);
   const valoBounds = inkBounds(valoImage, background);
   if (!nativeBounds && !valoBounds) return 0;
-  if (!nativeBounds || !valoBounds) return Number.POSITIVE_INFINITY;
-  if (touchesEdge(nativeBounds, nativeImage.width, nativeImage.height)
-    || touchesEdge(valoBounds, valoImage.width, valoImage.height)) {
-    return 0;
-  }
-  return Math.max(...nativeBounds.map((value, index) => Math.abs(value - valoBounds[index]!)));
-}
-
-function touchesEdge(
-  [left, top, right, bottom]: readonly [number, number, number, number],
-  width: number,
-  height: number,
-): boolean {
-  return left === 0 || top === 0 || right === width - 1 || bottom === height - 1;
+  if (!nativeBounds || !valoBounds) return null;
+  const edges = [0, 0, nativeImage.width - 1, nativeImage.height - 1] as const;
+  const comparableDeltas = nativeBounds.flatMap((value, index) => {
+    const valoValue = valoBounds[index]!;
+    return value === edges[index] || valoValue === edges[index]
+      ? []
+      : [Math.abs(value - valoValue)];
+  });
+  return comparableDeltas.length === 0 ? 0 : Math.max(...comparableDeltas);
 }
 
 function inkBounds(

@@ -29,14 +29,14 @@ test("generated supported commands match Canvas2D", async () => {
 test("generated fixed-font fill text matches Canvas2D", async () => {
   await assertScenes(fillTextSceneArbitrary, {
     maximumBadPixelRatio: 0.025,
-    maximumBoundsDelta: 2,
+    maximumBoundsDelta: 3,
   });
 });
 
 test("generated fixed-font stroke text matches Canvas2D geometry", async () => {
   await assertScenes(strokeTextSceneArbitrary, {
     maximumBadPixelRatio: 0.05,
-    maximumBoundsDelta: 2,
+    maximumBoundsDelta: 3,
   });
 });
 

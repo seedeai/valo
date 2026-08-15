@@ -2,6 +2,7 @@ import {
   ColorFilter,
   DisplayListBuilder,
   FontCollection,
+  ImageFilter,
   Paint,
   Paragraph,
   Path,
@@ -59,6 +60,8 @@ interface State {
   letterSpacing: string;
   wordSpacing: string;
   textRendering: CanvasTextRendering;
+  filter: string;
+  imageFilter: ImageFilter | undefined;
   colorMatrix: number[] | undefined;
 }
 
@@ -87,6 +90,8 @@ const defaultState = (): State => ({
   letterSpacing: "0px",
   wordSpacing: "0px",
   textRendering: "auto",
+  filter: "none",
+  imageFilter: undefined,
   colorMatrix: undefined,
 });
 
@@ -286,6 +291,18 @@ export class ValoCanvasRenderingContext2D {
     ) {
       this.#state.textRendering = value;
     }
+  }
+
+  get filter(): string {
+    return this.#state.filter;
+  }
+  set filter(value: string) {
+    const stages = parseFilter(value);
+    if (!stages) return;
+    const filter = stages.length > 0 ? buildImageFilter(stages) : undefined;
+    this.#state.imageFilter?.free();
+    this.#state.filter = value;
+    this.#state.imageFilter = filter;
   }
 
   save(): void {
@@ -723,11 +740,16 @@ export class ValoCanvasRenderingContext2D {
     return true;
   }
 
-  #drawShape(draw: (paint: Paint) => void, stroke: boolean): void {
+  #drawShape(
+    draw: (paint: Paint) => void,
+    stroke: boolean,
+    transform: Affine = this.#state.transform,
+  ): void {
     this.#drawStyled(
       draw,
       stroke,
       stroke ? this.#state.strokeStyle : this.#state.fillStyle,
+      transform,
     );
   }
 
@@ -735,21 +757,58 @@ export class ValoCanvasRenderingContext2D {
     draw: (paint: Paint) => void,
     stroke: boolean,
     style: ValoCanvasStyle,
+    transform: Affine = this.#state.transform,
   ): void {
-    const composite = canvasDestructiveBlendModes.has(this.#state.blendMode);
-    if (composite) {
-      const layerPaint = new Paint(1, 1, 1, 1);
-      layerPaint.setBlendMode(this.#state.blendMode);
-      this.#builder.saveLayer(layerPaint);
-      layerPaint.free();
+    const shadowColor = this.#activeShadowColor();
+    if (shadowColor) {
+      this.#drawCanvasSource(
+        (blendMode) => this.#drawShadow(draw, stroke, style, shadowColor, blendMode, transform),
+        transform,
+        false,
+      );
     }
-    const sourceBlendMode = composite ? blendModes["source-over"]! : this.#state.blendMode;
-    this.#drawShadow(draw, stroke, style, sourceBlendMode);
-    const paint = this.#paint(style, stroke, true, sourceBlendMode);
-    draw(paint);
-    paint.free();
-    if (composite) this.#builder.restore();
+    this.#drawCanvasSource(
+      (blendMode) => {
+        const paint = this.#paint(style, stroke, true, blendMode);
+        draw(paint);
+        paint.free();
+      },
+      transform,
+      true,
+    );
     this.#markDirty();
+  }
+
+  // Each logical Canvas source (shadow, then shape) owns its compositing
+  // layer. CSS filters run on that source in device space; destructive modes
+  // also need the layer's transparent pixels across the active clip.
+  #drawCanvasSource(
+    draw: (blendMode: number) => void,
+    transform: Affine,
+    applyFilter: boolean,
+  ): void {
+    const imageFilter = applyFilter ? this.#state.imageFilter : undefined;
+    const destructive = canvasDestructiveBlendModes.has(this.#state.blendMode);
+    if (!destructive && !imageFilter) {
+      draw(this.#state.blendMode);
+      return;
+    }
+
+    const inverseTransform = imageFilter ? inverse(transform) : undefined;
+    if (imageFilter && !inverseTransform) return;
+    if (inverseTransform) {
+      this.#builder.save();
+      this.#builder.transform(new Float32Array(inverseTransform));
+    }
+    const layerPaint = new Paint(1, 1, 1, 1);
+    layerPaint.setBlendMode(this.#state.blendMode);
+    if (imageFilter) layerPaint.setImageFilter(imageFilter);
+    this.#builder.saveLayer(layerPaint);
+    layerPaint.free();
+    if (imageFilter) this.#builder.transform(new Float32Array(transform));
+    draw(blendModes["source-over"]!);
+    this.#builder.restore();
+    if (inverseTransform) this.#builder.restore();
   }
 
   #drawText(text: string, x: number, y: number, maxWidth: number, stroke: boolean): void {
@@ -760,9 +819,15 @@ export class ValoCanvasRenderingContext2D {
     this.#builder.save();
     this.#builder.translate(x, y);
     if (horizontalScale !== 1) this.#builder.scale(horizontalScale, 1);
+    const translated = multiply(this.#state.transform, [1, 0, 0, 1, x, y]);
+    const transform =
+      horizontalScale === 1
+        ? translated
+        : multiply(translated, [horizontalScale, 0, 0, 1, 0, 0]);
     this.#drawShape(
       (paint) => this.#builder.drawParagraphWith(paragraph, left, top, paint),
       stroke,
+      transform,
     );
     this.#builder.restore();
     paragraph.free();
@@ -772,20 +837,48 @@ export class ValoCanvasRenderingContext2D {
     draw: (paint: Paint) => void,
     stroke: boolean,
     style: ValoCanvasStyle,
+    color: Rgba,
     blendMode: number,
+    transform: Affine,
   ): void {
-    const color = parseColor(this.#state.shadowColor);
-    if (color[3] === 0) return;
-    const paint = this.#paint(style, stroke, false, blendMode);
+    const inverseTransform = inverse(transform);
+    if (!inverseTransform) return;
+
+    const layerPaint = new Paint(1, 1, 1, 1);
+    layerPaint.setBlendMode(blendMode);
     const filter = ColorFilter.matrix(shadowColorMatrix(color));
-    paint.setColorFilter(filter);
+    layerPaint.setColorFilter(filter);
     filter.free();
-    if (this.#state.shadowBlur > 0) paint.setMaskBlur(this.#state.shadowBlur / 2, 0);
+    if (this.#state.shadowBlur > 0) layerPaint.setMaskBlur(this.#state.shadowBlur / 2, 0);
+
+    // Canvas shadows live in device space. Cancel the complete draw transform
+    // before opening the effect layer, then place the original geometry below
+    // a device-space translation. The layer's blur therefore also sees the
+    // identity transform, matching Impeller's `respect_ctm = false` path.
     this.#builder.save();
+    this.#builder.transform(new Float32Array(inverseTransform));
+    this.#builder.saveLayer(layerPaint);
+    layerPaint.free();
     this.#builder.translate(this.#state.shadowOffsetX, this.#state.shadowOffsetY);
-    draw(paint);
+    this.#builder.transform(new Float32Array(transform));
+    const sourcePaint = this.#paint(style, stroke, false, blendModes["source-over"]!);
+    draw(sourcePaint);
+    sourcePaint.free();
     this.#builder.restore();
-    paint.free();
+    this.#builder.restore();
+  }
+
+  #activeShadowColor(): Rgba | undefined {
+    const color = parseColor(this.#state.shadowColor);
+    if (
+      color[3] === 0 ||
+      (this.#state.shadowBlur === 0 &&
+        this.#state.shadowOffsetX === 0 &&
+        this.#state.shadowOffsetY === 0)
+    ) {
+      return undefined;
+    }
+    return color;
   }
 
   #paint(
@@ -829,9 +922,10 @@ export class ValoCanvasRenderingContext2D {
     const color = parseColor(
       typeof this.#state.fillStyle === "string" ? this.#state.fillStyle : "#000000",
     );
+    const preparedText = text.replace(/[\u0009-\u000d]/g, " ");
     return new Paragraph(
       this.fonts,
-      text,
+      preparedText,
       font.families.join("\n"),
       font.size,
       font.weight,
@@ -847,6 +941,7 @@ export class ValoCanvasRenderingContext2D {
       0,
       "",
       maxWidth,
+      true,
     );
   }
 
@@ -958,6 +1053,7 @@ function cloneState(state: State): State {
       transform: [...clip.transform] as Affine,
     })),
     lineDash: [...state.lineDash],
+    imageFilter: state.imageFilter?.clone(),
     colorMatrix: state.colorMatrix ? [...state.colorMatrix] : undefined,
   };
 }
@@ -965,6 +1061,8 @@ function cloneState(state: State): State {
 function disposeState(state: State): void {
   for (const clip of state.clips) clip.path.free();
   state.clips = [];
+  state.imageFilter?.free();
+  state.imageFilter = undefined;
 }
 
 function sweep(start: number, end: number, counterclockwise: boolean): number {
@@ -1054,6 +1152,182 @@ function parsePixels(value: string): number {
   const match = /^(-?[0-9.]+)px$/.exec(value.trim());
   if (!match) throw new TypeError(`Expected a pixel length, received '${value}'`);
   return Number.parseFloat(match[1]!);
+}
+
+type FilterStage =
+  | { type: "blur"; sigma: number }
+  | { type: "color"; matrix: number[] };
+
+function parseFilter(value: string): FilterStage[] | undefined {
+  const source = value.trim();
+  if (source.toLowerCase() === "none") return [];
+  if (source.length === 0) return undefined;
+  const stages: FilterStage[] = [];
+  const call = /([a-z-]+)\(([^()]*)\)/iy;
+  let offset = 0;
+  while (offset < source.length) {
+    while (/\s/.test(source[offset] ?? "")) offset += 1;
+    call.lastIndex = offset;
+    const match = call.exec(source);
+    if (!match) return undefined;
+    const stage = parseFilterFunction(match[1]!.toLowerCase(), match[2]!.trim().toLowerCase());
+    if (stage === undefined) return undefined;
+    if (stage) stages.push(stage);
+    offset = call.lastIndex;
+  }
+  return stages;
+}
+
+function parseFilterFunction(name: string, argument: string): FilterStage | null | undefined {
+  if (name === "blur") {
+    const match = /^([+]?(?:\d+(?:\.\d*)?|\.\d+))(px)?$/.exec(argument || "0");
+    if (match?.[2] === undefined && Number(match?.[1]) !== 0) return undefined;
+    const radius = match ? Number(match[1]) : Number.NaN;
+    if (!Number.isFinite(radius)) return undefined;
+    return radius === 0 ? null : { type: "blur", sigma: radius };
+  }
+  if (name === "hue-rotate") {
+    const radians = parseAngle(argument || "0deg");
+    if (radians === undefined) return undefined;
+    return Math.abs(radians % (Math.PI * 2)) < 1e-12
+      ? null
+      : { type: "color", matrix: hueRotate(radians) };
+  }
+  const amount = parseFilterAmount(argument || "100%");
+  if (amount === undefined) return undefined;
+  switch (name) {
+    case "brightness": return amount === 1 ? null : { type: "color", matrix: brightness(amount) };
+    case "contrast": return amount === 1 ? null : { type: "color", matrix: contrast(amount) };
+    case "grayscale": return amount === 0 ? null : { type: "color", matrix: grayscale(Math.min(amount, 1)) };
+    case "invert": return amount === 0 ? null : { type: "color", matrix: invert(Math.min(amount, 1)) };
+    case "opacity": return amount === 1 ? null : { type: "color", matrix: opacity(Math.min(amount, 1)) };
+    case "saturate": return amount === 1 ? null : { type: "color", matrix: saturate(amount) };
+    case "sepia": return amount === 0 ? null : { type: "color", matrix: sepia(Math.min(amount, 1)) };
+    default: return undefined;
+  }
+}
+
+function parseFilterAmount(value: string): number | undefined {
+  const match = /^([+]?(?:\d+(?:\.\d*)?|\.\d+))(%)?$/.exec(value);
+  if (!match) return undefined;
+  const amount = Number(match[1]) / (match[2] ? 100 : 1);
+  return Number.isFinite(amount) ? amount : undefined;
+}
+
+function parseAngle(value: string): number | undefined {
+  const match = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad|turn)$/.exec(value);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  const radians = match[2] === "deg"
+    ? amount * Math.PI / 180
+    : match[2] === "grad"
+      ? amount * Math.PI / 200
+      : match[2] === "turn"
+        ? amount * Math.PI * 2
+        : amount;
+  return Number.isFinite(radians) ? radians : undefined;
+}
+
+function buildImageFilter(stages: readonly FilterStage[]): ImageFilter {
+  let chain: ImageFilter | undefined;
+  for (const stage of stages) {
+    const next = stage.type === "blur"
+      ? ImageFilter.blur(stage.sigma, stage.sigma)
+      : imageColorFilter(stage.matrix);
+    if (!chain) {
+      chain = next;
+      continue;
+    }
+    const composed = ImageFilter.compose(next, chain);
+    next.free();
+    chain.free();
+    chain = composed;
+  }
+  if (!chain) throw new Error("an image-filter chain needs at least one stage");
+  return chain;
+}
+
+function imageColorFilter(matrix: readonly number[]): ImageFilter {
+  const color = ColorFilter.matrix(new Float32Array(matrix));
+  const image = ImageFilter.color(color);
+  color.free();
+  return image;
+}
+
+function diagonal(red: number, green: number, blue: number, alpha = 1): number[] {
+  return [
+    red, 0, 0, 0, 0,
+    0, green, 0, 0, 0,
+    0, 0, blue, 0, 0,
+    0, 0, 0, alpha, 0,
+  ];
+}
+
+function brightness(amount: number): number[] {
+  return diagonal(amount, amount, amount);
+}
+
+function contrast(amount: number): number[] {
+  const offset = 0.5 * (1 - amount);
+  return [
+    amount, 0, 0, 0, offset,
+    0, amount, 0, 0, offset,
+    0, 0, amount, 0, offset,
+    0, 0, 0, 1, 0,
+  ];
+}
+
+function opacity(amount: number): number[] {
+  return diagonal(1, 1, 1, amount);
+}
+
+function invert(amount: number): number[] {
+  const scale = 1 - 2 * amount;
+  return [
+    scale, 0, 0, 0, amount,
+    0, scale, 0, 0, amount,
+    0, 0, scale, 0, amount,
+    0, 0, 0, 1, 0,
+  ];
+}
+
+function saturate(amount: number): number[] {
+  return [
+    0.213 + 0.787 * amount, 0.715 - 0.715 * amount, 0.072 - 0.072 * amount, 0, 0,
+    0.213 - 0.213 * amount, 0.715 + 0.285 * amount, 0.072 - 0.072 * amount, 0, 0,
+    0.213 - 0.213 * amount, 0.715 - 0.715 * amount, 0.072 + 0.928 * amount, 0, 0,
+    0, 0, 0, 1, 0,
+  ];
+}
+
+function grayscale(amount: number): number[] {
+  return saturate(1 - amount);
+}
+
+function sepia(amount: number): number[] {
+  return [
+    1 - 0.607 * amount, 0.769 * amount, 0.189 * amount, 0, 0,
+    0.349 * amount, 1 - 0.314 * amount, 0.168 * amount, 0, 0,
+    0.272 * amount, 0.534 * amount, 1 - 0.869 * amount, 0, 0,
+    0, 0, 0, 1, 0,
+  ];
+}
+
+function hueRotate(angle: number): number[] {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  return [
+    0.213 + 0.787 * cosine - 0.213 * sine,
+    0.715 - 0.715 * cosine - 0.715 * sine,
+    0.072 - 0.072 * cosine + 0.928 * sine, 0, 0,
+    0.213 - 0.213 * cosine + 0.143 * sine,
+    0.715 + 0.285 * cosine + 0.140 * sine,
+    0.072 - 0.072 * cosine - 0.283 * sine, 0, 0,
+    0.213 - 0.213 * cosine - 0.787 * sine,
+    0.715 - 0.715 * cosine + 0.715 * sine,
+    0.072 + 0.928 * cosine + 0.072 * sine, 0, 0,
+    0, 0, 0, 1, 0,
+  ];
 }
 
 const blendModes: Partial<Record<GlobalCompositeOperation, number>> = {

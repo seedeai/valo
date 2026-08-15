@@ -115,6 +115,9 @@ impl From<TextAlign> for ParagraphStyle {
 #[derive(Clone, Debug, Default)]
 pub struct ParagraphStyle {
     pub align: TextAlign,
+    /// Include trailing whitespace in line advances. Canvas text enables this;
+    /// paragraph layout defaults to trimmed line widths like SkParagraph.
+    pub preserve_trailing_whitespace: bool,
     /// Stop wrapping after this many lines; content past them is dropped
     /// (see `ellipsis`).
     pub max_lines: Option<u32>,

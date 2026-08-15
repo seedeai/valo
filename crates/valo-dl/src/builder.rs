@@ -138,6 +138,10 @@ impl DisplayListBuilder {
         let floods_scope = paint.blend_mode.is_destructive()
             || paint
                 .color_filter
+                .is_some_and(|filter| filter.modifies_transparent_black())
+            || paint
+                .image_filter
+                .as_ref()
                 .is_some_and(|filter| filter.modifies_transparent_black());
         let flooded_bounds = floods_scope.then(|| scope.clip.unwrap_or(Rect::EVERYTHING));
         self.scopes.push(scope);
@@ -149,7 +153,7 @@ impl DisplayListBuilder {
             compatible: true,
             // Blurred layers spread ink past their children:
             // pad the recorded bounds so the texture holds the falloff.
-            blur_pad: paint.mask_padding() * self.top().transform.max_scale(),
+            blur_pad: paint.effect_padding() * self.top().transform.max_scale(),
         });
         // Children keep counting on the SAME depth line (Impeller's global
         // numbering) — the layer's pass rebases against base_slot.
@@ -271,7 +275,7 @@ impl DisplayListBuilder {
             self.record_rrect_blur(rect, [0.0; 4], paint);
             return;
         }
-        let Some(bounds) = self.clipped_device_bounds(&rect.expand(paint.mask_padding())) else {
+        let Some(bounds) = self.clipped_device_bounds(&paint.effect_bounds(rect)) else {
             return; // fully clipped at record time
         };
         let slot = self.take_draw_slot(bounds, supports_opacity(paint));
@@ -288,9 +292,7 @@ impl DisplayListBuilder {
             return;
         }
         let scale = self.top().transform.max_scale();
-        let local = path
-            .bounds()
-            .expand(paint.mask_padding() + paint.stroke_padding_at_scale(scale));
+        let local = paint.effect_bounds(path.bounds().expand(paint.stroke_padding_at_scale(scale)));
         let Some(bounds) = self.clipped_device_bounds(&local) else {
             return;
         };
@@ -391,7 +393,7 @@ impl DisplayListBuilder {
         if dst.is_empty() || src.is_empty() || paint.is_nop() {
             return;
         }
-        let Some(bounds) = self.clipped_device_bounds(&dst.expand(paint.mask_padding())) else {
+        let Some(bounds) = self.clipped_device_bounds(&paint.effect_bounds(dst)) else {
             return;
         };
         let slot = self.take_draw_slot(bounds, supports_opacity(paint));
@@ -422,8 +424,7 @@ impl DisplayListBuilder {
             return;
         }
         let scale = self.top().transform.max_scale();
-        let padded =
-            local_bounds.expand(paint.mask_padding() + paint.stroke_padding_at_scale(scale));
+        let padded = paint.effect_bounds(local_bounds.expand(paint.stroke_padding_at_scale(scale)));
         let Some(bounds) = self.clipped_device_bounds(&padded) else {
             return;
         };
@@ -688,6 +689,7 @@ fn supports_opacity(paint: &Paint) -> bool {
     // `matrix(c · α) != matrix(c) · α` wherever the matrix translates or
     // clamps. Filtered draws keep their own layer.
     paint.color_filter.is_none()
+        && paint.effective_image_filter().is_none()
         && matches!(
             paint.blend_mode,
             crate::BlendMode::SrcOver | crate::BlendMode::Plus
@@ -712,6 +714,7 @@ fn is_analytic_blur(paint: &Paint) -> bool {
         // filtered shape takes the general layer path instead of silently
         // rendering its unfiltered colour.
         && paint.color_filter.is_none()
+        && paint.effective_image_filter().is_none()
         && matches!(paint.style, crate::PaintStyle::Fill)
 }
 

@@ -1,6 +1,6 @@
 use valo::{
-    Color, ColorFilter, Dash, FocalCircle, GradientStop, MaskBlur, Matrix, Paint, PaintStyle,
-    Point, Shader, Stroke,
+    Color, ColorFilter, Dash, FocalCircle, GradientStop, ImageFilter, MaskBlur, Matrix, Paint,
+    PaintStyle, Point, Shader, Stroke,
 };
 use wasm_bindgen::prelude::*;
 
@@ -31,6 +31,42 @@ impl WebColorFilter {
                 Color::rgba(red, green, blue, alpha),
                 types::blend_mode(mode),
             ),
+        }
+    }
+}
+
+#[wasm_bindgen(js_name = ImageFilter)]
+pub struct WebImageFilter {
+    pub(crate) inner: ImageFilter,
+}
+
+#[wasm_bindgen(js_class = ImageFilter)]
+impl WebImageFilter {
+    #[wasm_bindgen(js_name = clone)]
+    pub fn clone_filter(&self) -> WebImageFilter {
+        WebImageFilter {
+            inner: self.inner.clone(),
+        }
+    }
+
+    #[wasm_bindgen(js_name = blur)]
+    pub fn blur(sigma_x: f32, sigma_y: f32) -> WebImageFilter {
+        WebImageFilter {
+            inner: ImageFilter::blur(sigma_x, sigma_y),
+        }
+    }
+
+    #[wasm_bindgen(js_name = color)]
+    pub fn color(filter: &WebColorFilter) -> WebImageFilter {
+        WebImageFilter {
+            inner: ImageFilter::color(filter.inner),
+        }
+    }
+
+    #[wasm_bindgen(js_name = compose)]
+    pub fn compose(outer: &WebImageFilter, inner: &WebImageFilter) -> WebImageFilter {
+        WebImageFilter {
+            inner: ImageFilter::compose(outer.inner.clone(), inner.inner.clone()),
         }
     }
 }
@@ -218,6 +254,16 @@ impl WebPaint {
     #[wasm_bindgen(js_name = clearColorFilter)]
     pub fn clear_color_filter(&mut self) {
         self.inner.color_filter = None;
+    }
+
+    #[wasm_bindgen(js_name = setImageFilter)]
+    pub fn set_image_filter(&mut self, filter: &WebImageFilter) {
+        self.inner.image_filter = Some(filter.inner.clone());
+    }
+
+    #[wasm_bindgen(js_name = clearImageFilter)]
+    pub fn clear_image_filter(&mut self) {
+        self.inner.image_filter = None;
     }
 }
 

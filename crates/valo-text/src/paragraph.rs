@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
@@ -113,7 +114,13 @@ impl Paragraph {
             return;
         }
         let bidi = BidiInfo::new(&self.text, None);
-        let wrapped = wrap_lines(&self.text, &self.shaped, max_width, self.style.max_lines);
+        let wrapped = wrap_lines(
+            &self.text,
+            &self.shaped,
+            max_width,
+            self.style.max_lines,
+            self.style.preserve_trailing_whitespace,
+        );
         self.layout = Some(self.place(&bidi, wrapped, max_width));
     }
 
@@ -169,18 +176,28 @@ impl Paragraph {
         self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 
-    /// Tight monochrome outline bounds in paragraph coordinates. This is the
-    /// deliberate, slower query path used by Canvas-style text metrics; frame
-    /// recording continues to use the precomputed conservative run bounds.
-    pub fn outline_bounds(&self) -> Option<Rect> {
+    /// Tight visible ink bounds in paragraph coordinates. Vector glyphs use
+    /// Bézier extrema; color/bitmap glyphs use their non-transparent pixels.
+    /// This deliberate slower query path is for Canvas-style text metrics;
+    /// frame recording keeps using precomputed conservative run bounds.
+    pub fn ink_bounds(&self) -> Option<Rect> {
         let mut result: Option<Rect> = None;
+        let mut rasterizer = crate::raster::Rasterizer::new();
+        let mut color_bounds = HashMap::<(FontId, u32, u32), Option<Rect>>::new();
         for run in self.lines().iter().flat_map(|line| &line.runs) {
             let font = self.faces.get(run.font);
             for glyph in &run.glyphs {
-                let Some(path) = crate::raster::glyph_path(font, glyph.id, run.size) else {
+                let key = (run.font, glyph.id, run.size.to_bits());
+                let color = *color_bounds
+                    .entry(key)
+                    .or_insert_with(|| rasterizer.color_bounds(font, glyph.id, run.size));
+                let bounds = if let Some(bounds) = color {
+                    bounds
+                } else if let Some(path) = crate::raster::glyph_path(font, glyph.id, run.size) {
+                    path.tight_bounds()
+                } else {
                     continue;
                 };
-                let bounds = path.bounds();
                 let placed = Rect::new(
                     bounds.x + glyph.x,
                     bounds.y + glyph.y,
@@ -191,6 +208,23 @@ impl Paragraph {
             }
         }
         result
+    }
+
+    /// Primary face and size even when the paragraph contains no glyphs.
+    pub fn primary_font(&self) -> Option<(&crate::font::Font, f32)> {
+        if let Some(run) = self.lines().first().and_then(|line| line.runs.first()) {
+            return Some((self.faces.get(run.font), run.size));
+        }
+        let (_, style) = self.spans.first()?;
+        if self.faces.is_empty() {
+            return None;
+        }
+        let attributes = crate::font::FontAttrs {
+            weight: style.weight,
+            italic: style.italic,
+        };
+        let identifier = self.faces.resolve(&style.families, attributes, ' ');
+        Some((self.faces.get(identifier), style.size))
     }
 
     pub fn bounds(&self) -> Rect {

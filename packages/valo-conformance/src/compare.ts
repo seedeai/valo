@@ -32,7 +32,9 @@ export async function expectCanvasParity(
     `${result.badPixels} bad pixels (${(result.badPixelRatio * 100).toFixed(3)}%)`,
     thresholds.maximumBoundsDelta === undefined && DEFAULT_THRESHOLDS.maximumBoundsDelta === null
       ? ""
-      : `${result.boundsDelta}px ink-bounds delta`,
+      : result.boundsDelta === null
+        ? "ink appears in only one renderer"
+        : `${result.boundsDelta}px ink-bounds delta`,
     result.artifactDirectory ? `artifacts: ${result.artifactDirectory}` : "",
   ].filter(Boolean).join("; ");
   expect(result.passed, diagnostics).toBe(true);

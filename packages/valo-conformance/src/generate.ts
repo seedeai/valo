@@ -24,6 +24,7 @@ const extent = fc.integer({ min: 8, max: 72 });
 const alpha = fc.integer({ min: 25, max: 100 }).map((value) => value / 100);
 const compositeOperation = fc.constantFrom<GlobalCompositeOperation>(
   "source-over",
+  "copy",
   "destination-over",
   "source-in",
   "destination-in",
@@ -443,6 +444,7 @@ const shadowedRectangle = fc
   .record({
     color,
     shadow: color,
+    operation: compositeOperation,
     blur: fc.integer({ min: 0, max: 8 }),
     offsetX: fc.integer({ min: -6, max: 8 }),
     offsetY: fc.integer({ min: -6, max: 8 }),
@@ -456,8 +458,28 @@ const shadowedRectangle = fc
       offsetX: shape.offsetX,
       offsetY: shape.offsetY,
     },
+    { type: "setComposite", operation: shape.operation },
     { type: "setFillColor", color: shape.color },
     { type: "fillRect", x: 34, y: 34, width: 52, height: 48 },
+    { type: "restore" },
+  ]);
+
+const filteredRectangle = fc
+  .record({
+    color,
+    blur: fc.integer({ min: 0, max: 5 }),
+    brightness: fc.integer({ min: 50, max: 150 }),
+    hue: fc.integer({ min: -120, max: 120 }),
+    opacity: fc.integer({ min: 40, max: 100 }),
+  })
+  .map((shape): CommandBlock => [
+    { type: "save" },
+    {
+      type: "setFilter",
+      value: `blur(${shape.blur}px) brightness(${shape.brightness}%) contrast(110%) grayscale(20%) hue-rotate(${shape.hue}deg) invert(15%) opacity(${shape.opacity}%) saturate(125%) sepia(18%)`,
+    },
+    { type: "setFillColor", color: shape.color },
+    { type: "fillRect", x: 30, y: 32, width: 62, height: 54 },
     { type: "restore" },
   ]);
 
@@ -539,10 +561,13 @@ const imagePattern = fc
 const fixedTextParameters = fc
   .record({
     color,
-    text: fc.constantFrom("Valo", "Canvas", "fuzz test", "A quick fox"),
+    text: fc.constantFrom("Valo", "Canvas", "fuzz test", "A quick fox", "Valo ", "a\tb", "a\nb"),
     size: fc.integer({ min: 12, max: 34 }),
-    x: fc.integer({ min: 4, max: 92 }),
-    y: fc.integer({ min: 24, max: 116 }),
+    // Keep the glyph body on-canvas even after alignment and the generated
+    // transform. Edge clipping is covered by dedicated scenes and otherwise
+    // turns bounds comparison into a one-pixel visibility lottery.
+    x: fc.integer({ min: 44, max: 92 }),
+    y: fc.integer({ min: 32, max: 92 }),
     align: fc.constantFrom<CanvasTextAlign>("left", "center", "right", "start", "end"),
     baseline: fc.constantFrom<CanvasTextBaseline>(
       "top",
@@ -555,11 +580,41 @@ const fixedTextParameters = fc
     maximumWidth: fc.option(fc.integer({ min: 30, max: 110 }), { nil: undefined }),
     letterSpacing: fc.integer({ min: -1, max: 2 }),
     wordSpacing: fc.integer({ min: 0, max: 3 }),
+    translationX: fc.integer({ min: -8, max: 8 }),
+    translationY: fc.integer({ min: -8, max: 8 }),
+    rotation: fc.integer({ min: -20, max: 20 }).map((value) => value / 100),
+    scaleX: fc.integer({ min: 80, max: 125 }).map((value) => value / 100),
+    scaleY: fc.integer({ min: 80, max: 125 }).map((value) => value / 100),
+    clipped: fc.boolean(),
+    shadowed: fc.boolean(),
+    composite: fc.constantFrom<GlobalCompositeOperation>(
+      "source-over",
+      "copy",
+      "destination-out",
+      "xor",
+      "multiply",
+    ),
   });
 
 function fixedText(stroke: boolean): fc.Arbitrary<CommandBlock> {
   return fixedTextParameters.map((text): CommandBlock => [
     { type: "save" },
+    { type: "translate", x: text.translationX, y: text.translationY },
+    { type: "rotate", radians: text.rotation },
+    { type: "scale", x: text.scaleX, y: text.scaleY },
+    ...(text.clipped
+      ? ([
+          { type: "beginPath" },
+          { type: "rect", x: 8, y: 8, width: 112, height: 112 },
+          { type: "clip", rule: "nonzero" },
+        ] satisfies CanvasCommand[])
+      : []),
+    ...(text.shadowed
+      ? ([
+          { type: "setShadow", color: "rgba(15,20,28,0.72)", blur: 5, offsetX: 4, offsetY: 5 },
+        ] satisfies CanvasCommand[])
+      : []),
+    { type: "setComposite", operation: text.composite },
     { type: "setFont", value: `${text.size}px '${FIXTURE_FONT_FAMILY}'` },
     { type: "setTextAlign", value: text.align },
     { type: "setTextBaseline", value: text.baseline },
@@ -616,6 +671,7 @@ const commandBlock = fc.oneof(
   clearedRectangle,
   shadowedRectangle,
   shadowedGradient,
+  filteredRectangle,
   fixedImage,
   imagePattern,
 );

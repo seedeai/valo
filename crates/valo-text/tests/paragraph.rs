@@ -65,6 +65,23 @@ fn shapes_and_places_latin() {
 }
 
 #[test]
+fn trailing_whitespace_can_contribute_to_the_line_advance() {
+    let mut collection = fonts();
+    let trimmed = laid_out(&mut collection, "Valo ", f32::INFINITY).width();
+
+    let mut builder = ParagraphBuilder::new(&mut collection);
+    builder.style(ParagraphStyle {
+        preserve_trailing_whitespace: true,
+        ..Default::default()
+    });
+    builder.add_text("Valo ", &style(20.0));
+    let mut preserved = builder.build();
+    preserved.layout(f32::INFINITY);
+
+    assert!(preserved.width() > trimmed);
+}
+
+#[test]
 fn wraps_greedily_and_respects_width() {
     let mut c = fonts();
     let p = laid_out(&mut c, "the quick brown fox jumps over the lazy dog", 180.0);
@@ -289,6 +306,27 @@ fn color_emoji_rasterizes_rgba() {
         .any(|p| p[3] > 200 && (p[0] != p[1] || p[1] != p[2])));
 }
 
+#[test]
+fn color_emoji_contributes_to_paragraph_ink_bounds() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
+    let mut fonts = FontCollection::new();
+    fonts
+        .register(
+            "Noto Color Emoji",
+            std::fs::read(format!("{dir}/noto_color_emoji_subset.ttf")).unwrap(),
+        )
+        .unwrap();
+    let mut builder = ParagraphBuilder::new(&mut fonts);
+    builder.add_text(
+        "🚀",
+        &TextStyle::new("Noto Color Emoji", 32.0, Color::WHITE),
+    );
+    let mut paragraph = builder.build();
+    paragraph.layout(f32::INFINITY);
+    let bounds = paragraph.ink_bounds().expect("color glyph has visible ink");
+    assert!(bounds.width > 10.0 && bounds.height > 10.0);
+}
+
 // ── styles, intrinsics, editor surface ──────────────────────────────────────
 
 #[test]
@@ -498,6 +536,10 @@ fn trailing_newline_opens_an_empty_line() {
 fn empty_paragraph_has_one_line() {
     let p = simple("", 24.0, f32::INFINITY);
     assert_eq!(p.lines().len(), 1);
+    assert!(
+        p.primary_font().is_some(),
+        "style face survives without glyphs"
+    );
     let caret = p.caret_for_offset(0);
     assert!(
         caret.height > 10.0,

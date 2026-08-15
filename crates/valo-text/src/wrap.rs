@@ -60,13 +60,15 @@ impl Measure {
 
 /// Greedy UAX #14 wrapping over the endless-line shaping: walk
 /// break opportunities, commit a line at the last one that still fit.
-/// Trailing whitespace rides the line but never counts toward its width.
+/// Trailing whitespace rides the line and normally does not count toward its
+/// width. Canvas-style callers can preserve its advance.
 /// Min/max intrinsic widths ride the same walk.
 pub fn wrap_lines(
     text: &str,
     runs: &[ShapedRun],
     max_width: f32,
     max_lines: Option<u32>,
+    preserve_trailing_whitespace: bool,
 ) -> Wrapped {
     let measure = Measure::new(runs);
     let cap = max_lines.map_or(usize::MAX, |n| n.max(1) as usize);
@@ -75,7 +77,14 @@ pub fn wrap_lines(
     let mut committed = 0usize; // last opportunity that fit
     let mut intrinsics = Intrinsics::default();
     for (at, kind) in unicode_linebreak::linebreaks(text) {
-        intrinsics.segment(text, &measure, committed, at, kind);
+        intrinsics.segment(
+            text,
+            &measure,
+            committed,
+            at,
+            kind,
+            preserve_trailing_whitespace,
+        );
         if ranges.len() >= cap {
             return Wrapped {
                 ranges,
@@ -84,7 +93,9 @@ pub fn wrap_lines(
                 max_intrinsic: intrinsics.max,
             };
         }
-        if measured_width(text, &measure, start..at) > max_width && committed > start {
+        if measured_width(text, &measure, start..at, preserve_trailing_whitespace) > max_width
+            && committed > start
+        {
             ranges.push(start..committed);
             start = committed;
         }
@@ -139,10 +150,21 @@ impl Intrinsics {
         from: usize,
         to: usize,
         kind: unicode_linebreak::BreakOpportunity,
+        preserve_trailing_whitespace: bool,
     ) {
-        self.min = self.min.max(measured_width(text, measure, from..to));
+        self.min = self.min.max(measured_width(
+            text,
+            measure,
+            from..to,
+            preserve_trailing_whitespace,
+        ));
         if kind == unicode_linebreak::BreakOpportunity::Mandatory {
-            self.line = measured_width(text, measure, self.line_start..to);
+            self.line = measured_width(
+                text,
+                measure,
+                self.line_start..to,
+                preserve_trailing_whitespace,
+            );
             self.max = self.max.max(self.line);
             self.line_start = to;
         }
@@ -151,9 +173,22 @@ impl Intrinsics {
 
 /// Width of a byte range, trailing whitespace excluded — the number wrapping
 /// and alignment both reason about.
-fn measured_width(text: &str, measure: &Measure, range: Range<usize>) -> f32 {
-    let content_end = trimmed_end(text, &range);
+fn measured_width(
+    text: &str,
+    measure: &Measure,
+    range: Range<usize>,
+    preserve_trailing_whitespace: bool,
+) -> f32 {
+    let content_end = content_end(text, &range, preserve_trailing_whitespace);
     measure.width(range.start, content_end)
+}
+
+fn content_end(text: &str, range: &Range<usize>, preserve_trailing_whitespace: bool) -> usize {
+    if preserve_trailing_whitespace {
+        range.end
+    } else {
+        trimmed_end(text, range)
+    }
 }
 
 fn trimmed_end(text: &str, range: &Range<usize>) -> usize {
@@ -210,6 +245,7 @@ pub fn place_lines(
             max_width,
             is_last: index + 1 == count,
             align: style.align,
+            preserve_trailing_whitespace: style.preserve_trailing_whitespace,
         };
         let placed = place_line(collection, text, bidi, &overlapping, &line, ellipsis);
         para_width = para_width.max(placed.width);
@@ -240,6 +276,7 @@ struct LineSpec {
     max_width: f32,
     is_last: bool,
     align: TextAlign,
+    preserve_trailing_whitespace: bool,
 }
 
 struct PlacedLine {
@@ -287,9 +324,10 @@ fn place_line(
             left: 0.0,
         };
     };
-    let mut end = trimmed_end(
+    let mut end = content_end(
         text,
         &(line.range.start..line.range.end.min(para.range.end)),
+        line.preserve_trailing_whitespace,
     );
     let ellipsis_width: f32 = ellipsis
         .as_ref()

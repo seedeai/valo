@@ -21,6 +21,6 @@ mod shader;
 
 pub use builder::DisplayListBuilder;
 pub use list::{BackdropGroup, ClipOp, DisplayList, GlyphPos, MaskKind, Op};
-pub use paint::{BlendMode, BlurStyle, ColorFilter, MaskBlur, Paint, PaintStyle};
+pub use paint::{BlendMode, BlurStyle, ColorFilter, ImageFilter, MaskBlur, Paint, PaintStyle};
 pub use resources::{Filter, Image, ImageInner, Sampling, TileMode};
 pub use shader::{FocalCircle, GradientStop, Shader, SpreadMode, MAX_GRADIENT_STOPS};

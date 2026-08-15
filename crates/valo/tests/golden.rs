@@ -3242,3 +3242,148 @@ fn color_filter_that_changes_transparent_black_floods_layer_scope() {
         assert_eq!(pixel, &[64, 128, 191, 128]);
     }
 }
+
+#[test]
+fn composed_image_filter_runs_inner_before_outer() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP composed_image_filter_runs_inner_before_outer");
+        return;
+    };
+    #[rustfmt::skip]
+    let add_red = [
+        1.0, 0.0, 0.0, 0.0, 0.2,
+        0.0, 1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    #[rustfmt::skip]
+    let double_red = [
+        2.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    let filter = valo::ImageFilter::compose(
+        valo::ImageFilter::color(valo::ColorFilter::Matrix(double_red)),
+        valo::ImageFilter::color(valo::ColorFilter::Matrix(add_red)),
+    );
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(0.0, 0.0, 4.0, 4.0),
+        &Paint {
+            color: Color::rgb(0.1, 0.0, 0.0),
+            image_filter: Some(filter),
+            ..Default::default()
+        },
+    );
+    builder.save_layer(
+        None,
+        &Paint {
+            color_filter: Some(valo::ColorFilter::Matrix(double_red)),
+            image_filter: Some(valo::ImageFilter::color(valo::ColorFilter::Matrix(add_red))),
+            ..Default::default()
+        },
+    );
+    builder.draw_rect(
+        Rect::new(0.0, 4.0, 4.0, 4.0),
+        &Paint::from_color(Color::rgb(0.1, 0.0, 0.0)),
+    );
+    builder.restore();
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(&builder.build(), [4, 8], Some(Color::TRANSPARENT));
+    for pixel in pixels.chunks_exact(4) {
+        assert!(pixel[0].abs_diff(153) <= 2, "unexpected pixel {pixel:?}");
+        assert_eq!(&pixel[1..], &[0, 0, 255]);
+    }
+}
+
+/// Every blend mode, evaluated twice: once folded into a solid paint on the
+/// CPU (`valo-dl`'s `color_filter` module) and once through the WGSL filter
+/// pass a layer takes. The two implementations are independent transcriptions
+/// of the same equations, and nothing else in the suite compares them — so
+/// this is the only thing standing between a typo in one of them and silently
+/// wrong pixels.
+#[test]
+fn cpu_and_shader_color_filters_agree() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP cpu_and_shader_color_filters_agree");
+        return;
+    };
+    const MODES: [BlendMode; 29] = [
+        BlendMode::Clear,
+        BlendMode::Src,
+        BlendMode::Dst,
+        BlendMode::SrcOver,
+        BlendMode::DstOver,
+        BlendMode::SrcIn,
+        BlendMode::DstIn,
+        BlendMode::SrcOut,
+        BlendMode::DstOut,
+        BlendMode::SrcAtop,
+        BlendMode::DstAtop,
+        BlendMode::Xor,
+        BlendMode::Plus,
+        BlendMode::Modulate,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::ColorBurn,
+        BlendMode::HardLight,
+        BlendMode::SoftLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Multiply,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+    // Asymmetric channels: a grey pair would agree under Hue and Saturation
+    // whatever the code did.
+    let destination = Color::rgb(0.25, 0.6, 0.85);
+    let source = Color::rgba(0.9, 0.35, 0.15, 0.75);
+    let mut context = Context::new(device, queue);
+
+    for mode in MODES {
+        let filter = valo::ColorFilter::Blend(source, mode);
+        let left = Rect::new(0.0, 0.0, 4.0, 4.0);
+        let right = Rect::new(4.0, 0.0, 4.0, 4.0);
+
+        let mut builder = DisplayListBuilder::new();
+        // CPU: a solid paint absorbs the filter in `folded_paint`.
+        builder.draw_rect(
+            left,
+            &Paint {
+                color: destination,
+                color_filter: Some(filter),
+                ..Default::default()
+            },
+        );
+        // GPU: the same filter on a bounded layer runs as a WGSL pass.
+        builder.save_layer(
+            Some(right),
+            &Paint {
+                color_filter: Some(filter),
+                ..Default::default()
+            },
+        );
+        builder.draw_rect(right, &Paint::from_color(destination));
+        builder.restore();
+
+        let pixels = context.render_to_rgba(&builder.build(), [8, 4], Some(Color::TRANSPARENT));
+        for y in 0..4usize {
+            for x in 0..4usize {
+                let folded = 4 * (y * 8 + x);
+                let shaded = 4 * (y * 8 + x + 4);
+                let (a, b) = (&pixels[folded..folded + 4], &pixels[shaded..shaded + 4]);
+                let apart = (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+                assert!(
+                    apart <= 3,
+                    "{mode:?}: CPU fold {a:?} vs shader {b:?} at ({x}, {y})"
+                );
+            }
+        }
+    }
+}

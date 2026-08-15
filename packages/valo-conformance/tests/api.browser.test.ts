@@ -21,7 +21,7 @@ describe("Canvas-shaped query behavior", () => {
       const font = `${size}px '${FIXTURE_FONT_FAMILY}'`;
       nativeContext.font = font;
       harness.valoContext.font = font;
-      for (const text of ["Valo canvas", "A quick fox", "fuzz test"]) {
+      for (const text of ["Valo canvas", "A quick fox", "fuzz test", "Valo ", " ", "a\tb", "a\nb"]) {
         const nativeWidth = nativeContext.measureText(text).width;
         const valoWidth = harness.valoContext.measureText(text).width;
         expect(Math.abs(nativeWidth - valoWidth)).toBeLessThanOrEqual(0.5);
@@ -92,6 +92,11 @@ describe("Canvas-shaped query behavior", () => {
     expect(valoMetrics.actualBoundingBoxRight).toBe(0);
     expect(valoMetrics.actualBoundingBoxAscent).toBe(0);
     expect(valoMetrics.actualBoundingBoxDescent).toBe(0);
+    const nativeEmptyMetrics = nativeContext.measureText("");
+    expect(Math.abs(valoMetrics.fontBoundingBoxAscent - nativeEmptyMetrics.fontBoundingBoxAscent))
+      .toBeLessThanOrEqual(1);
+    expect(Math.abs(valoMetrics.fontBoundingBoxDescent - nativeEmptyMetrics.fontBoundingBoxDescent))
+      .toBeLessThanOrEqual(1);
 
     nativeContext.lineWidth = 3;
     nativeContext.lineWidth = 0;
@@ -114,6 +119,20 @@ describe("Canvas-shaped query behavior", () => {
 
     expect(harness.valoContext.imageSmoothingQuality).toBe("high");
     expect(harness.valoContext.textRendering).toBe("geometricPrecision");
+  });
+
+  test("CSS filters are validated and saved as Canvas state", () => {
+    harness.valoContext.reset();
+    expect(harness.valoContext.filter).toBe("none");
+    harness.valoContext.filter = "BLUR(0)";
+    expect(harness.valoContext.filter).toBe("BLUR(0)");
+    harness.valoContext.filter = "brightness(80%) blur(2px)";
+    harness.valoContext.save();
+    harness.valoContext.filter = "sepia(50%)";
+    harness.valoContext.filter = "drop-shadow(2px 2px black)";
+    expect(harness.valoContext.filter).toBe("sepia(50%)");
+    harness.valoContext.restore();
+    expect(harness.valoContext.filter).toBe("brightness(80%) blur(2px)");
   });
 
   test("readback-only gaps fail explicitly", () => {

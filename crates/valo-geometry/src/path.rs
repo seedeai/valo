@@ -53,6 +53,52 @@ impl Path {
         self.bounds
     }
 
+    /// Exact axis-aligned bounds of the path's lines and Bézier curves.
+    /// Recording uses the cheaper control-point bounds above; queries such as
+    /// Canvas text metrics use this slower extrema walk when tight ink bounds
+    /// are part of the API contract.
+    pub fn tight_bounds(&self) -> Rect {
+        let mut bounds = TightBounds::default();
+        let mut point_index = 0usize;
+        let mut cursor = Point::ZERO;
+        let mut contour_start = Point::ZERO;
+        for verb in &self.verbs {
+            match verb {
+                Verb::Move => {
+                    cursor = self.points[point_index];
+                    contour_start = cursor;
+                    point_index += 1;
+                    bounds.include(cursor);
+                }
+                Verb::Line => {
+                    cursor = self.points[point_index];
+                    point_index += 1;
+                    bounds.include(cursor);
+                }
+                Verb::Quad => {
+                    let control = self.points[point_index];
+                    let end = self.points[point_index + 1];
+                    point_index += 2;
+                    include_quadratic_extrema(&mut bounds, cursor, control, end);
+                    cursor = end;
+                }
+                Verb::Cubic => {
+                    let first = self.points[point_index];
+                    let second = self.points[point_index + 1];
+                    let end = self.points[point_index + 2];
+                    point_index += 3;
+                    include_cubic_extrema(&mut bounds, cursor, first, second, end);
+                    cursor = end;
+                }
+                Verb::Close => {
+                    cursor = contour_start;
+                    bounds.include(cursor);
+                }
+            }
+        }
+        bounds.rect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.verbs.is_empty()
     }
@@ -175,6 +221,104 @@ impl Path {
         }
         out.finish()
     }
+}
+
+#[derive(Default)]
+struct TightBounds(Option<(f32, f32, f32, f32)>);
+
+impl TightBounds {
+    fn include(&mut self, point: Point) {
+        self.0 = Some(match self.0 {
+            Some((left, top, right, bottom)) => (
+                left.min(point.x),
+                top.min(point.y),
+                right.max(point.x),
+                bottom.max(point.y),
+            ),
+            None => (point.x, point.y, point.x, point.y),
+        });
+    }
+
+    fn rect(self) -> Rect {
+        self.0
+            .map_or_else(Rect::default, |(left, top, right, bottom)| {
+                Rect::from_ltrb(left, top, right, bottom)
+            })
+    }
+}
+
+fn include_quadratic_extrema(bounds: &mut TightBounds, start: Point, control: Point, end: Point) {
+    bounds.include(start);
+    bounds.include(end);
+    for (start_axis, control_axis, end_axis) in
+        [(start.x, control.x, end.x), (start.y, control.y, end.y)]
+    {
+        let denominator = start_axis as f64 - 2.0 * control_axis as f64 + end_axis as f64;
+        if denominator == 0.0 {
+            continue;
+        }
+        let parameter = ((start_axis as f64 - control_axis as f64) / denominator) as f32;
+        if parameter > 0.0 && parameter < 1.0 {
+            bounds.include(eval_quad(start, control, end, parameter));
+        }
+    }
+}
+
+fn include_cubic_extrema(
+    bounds: &mut TightBounds,
+    start: Point,
+    first: Point,
+    second: Point,
+    end: Point,
+) {
+    bounds.include(start);
+    bounds.include(end);
+    for (start_axis, first_axis, second_axis, end_axis) in [
+        (start.x, first.x, second.x, end.x),
+        (start.y, first.y, second.y, end.y),
+    ] {
+        for parameter in cubic_extrema(start_axis, first_axis, second_axis, end_axis)
+            .into_iter()
+            .flatten()
+        {
+            if parameter > 0.0 && parameter < 1.0 {
+                bounds.include(eval_cubic(start, first, second, end, parameter));
+            }
+        }
+    }
+}
+
+fn cubic_extrema(start: f32, first: f32, second: f32, end: f32) -> [Option<f32>; 2] {
+    let start = start as f64;
+    let first = first as f64;
+    let second = second as f64;
+    let end = end as f64;
+    let quadratic = -start + 3.0 * first - 3.0 * second + end;
+    let linear = 2.0 * (start - 2.0 * first + second);
+    let constant = first - start;
+    if quadratic == 0.0 {
+        return [unit_root(-constant, linear), None];
+    }
+    let discriminant = linear * linear - 4.0 * quadratic * constant;
+    if discriminant < 0.0 || !discriminant.is_finite() {
+        return [None, None];
+    }
+
+    // Numerical Recipes / Skia: Q/A and C/Q avoid the cancellation in the
+    // ordinary (-B ± sqrt(D)) / 2A formula when one root is much smaller.
+    let root = discriminant.sqrt();
+    let q = -0.5 * (linear + root.copysign(linear));
+    let first_root = unit_root(q, quadratic);
+    let second_root = unit_root(constant, q).filter(|value| Some(*value) != first_root);
+    [first_root, second_root]
+}
+
+fn unit_root(numerator: f64, denominator: f64) -> Option<f32> {
+    if denominator == 0.0 {
+        return None;
+    }
+    let value = numerator / denominator;
+    (value.is_finite() && value > 0.0 && value < 1.0).then_some(value as f32)
 }
 
 /// Records verbs/points and tracks bounds; `build` freezes into an `Arc<Path>`.
@@ -690,6 +834,34 @@ pub fn local_tolerance(transform: &Matrix) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tight_bounds_use_curve_extrema_not_control_points() {
+        let mut path = PathBuilder::new();
+        path.move_to((0.0, 0.0));
+        path.quad_to((100.0, 100.0), (200.0, 0.0));
+        let path = path.build();
+        assert_eq!(path.bounds(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(path.tight_bounds(), Rect::new(0.0, 0.0, 200.0, 50.0));
+    }
+
+    #[test]
+    fn tight_bounds_keep_extrema_below_f32_epsilon() {
+        let mut path = PathBuilder::new();
+        path.move_to((0.0, 0.0));
+        path.quad_to((0.0, 1.0e-8), (0.0, 0.0));
+        let bounds = path.build().tight_bounds();
+        assert!((bounds.height - 5.0e-9).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn cubic_extrema_preserve_the_small_root() {
+        let roots = cubic_extrema(0.0, 1.0e-8, -0.5, -0.5);
+        assert!(roots
+            .into_iter()
+            .flatten()
+            .any(|root| (root - 1.0e-8).abs() < 1.0e-10));
+    }
 
     #[test]
     fn radii_constrain_together() {

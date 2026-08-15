@@ -125,6 +125,7 @@ pub(crate) unsafe fn paint_of(p: ValoPaint) -> Paint {
         shader: None,
         mask_blur: mask_blur(p.mask_blur_style, p.mask_blur_sigma),
         color_filter: unsafe { crate::color_filter_of(p.color_filter) },
+        image_filter: None,
         style: paint_style(&p),
     }
 }

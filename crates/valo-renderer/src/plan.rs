@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 use valo_dl::{
-    BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, FocalCircle, GlyphPos, Image, MaskBlur,
-    MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, MAX_GRADIENT_STOPS,
+    BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, FocalCircle, GlyphPos, Image,
+    ImageFilter, MaskBlur, MaskKind, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode,
+    MAX_GRADIENT_STOPS,
 };
 use valo_text::Font;
 
@@ -193,33 +194,41 @@ struct LayerInfo {
 ///
 /// The difference shows wherever the blur produces fractional alpha, since a
 /// matrix that translates or clamps is not commutative with it.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct LayerEffects {
     color_filter: Option<ColorFilter>,
+    image_filter: Option<ImageFilter>,
     /// σ is in DEVICE px by the time it lands here. Non-Normal styles add a
     /// combine pass merging the blur with the sharp layer.
     blur: Option<MaskBlur>,
     /// Set for a recorded `save_layer`; clear for the implicit layers a draw
     /// opens for its own effects.
     subpass: bool,
+    /// The effect transform's 2×2 basis `[a, b, c, d]`. The whole basis is
+    /// kept, not its two axis lengths: an image filter's σ is a VECTOR, and
+    /// under rotation its axes have to move with the matrix.
+    image_basis: [f32; 4],
 }
 
 impl LayerEffects {
-    /// The effects a paint asks of its layer. `scale` converts the blur's
-    /// local σ into device px.
-    fn of(paint: &Paint, scale: f32, subpass: bool) -> Self {
+    /// The effects a paint asks of its layer. The transform converts local
+    /// blur axes into device-pixel sigma, as Impeller's effect transform does.
+    fn of(paint: &Paint, mask_scale: f32, image_transform: &Matrix, subpass: bool) -> Self {
+        let [a, b, c, d, ..] = image_transform.to_affine();
         Self {
             color_filter: paint.color_filter,
+            image_filter: paint.effective_image_filter().cloned(),
             blur: paint.mask_blur.map(|mask| MaskBlur {
-                sigma: (mask.sigma * scale).max(0.05),
+                sigma: (mask.sigma * mask_scale).max(0.05),
                 style: mask.style,
             }),
             subpass,
+            image_basis: [a, b, c, d],
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.color_filter.is_none() && self.blur.is_none()
+        self.color_filter.is_none() && self.image_filter.is_none() && self.blur.is_none()
     }
 }
 
@@ -238,6 +247,7 @@ struct SharedBlur {
 
 /// A finished filter chain: sample `view` up to `uv_max` (the used corner of
 /// the bucketed, possibly downsampled target).
+#[derive(Clone)]
 struct FilteredTexture {
     view: wgpu::TextureView,
     uv_max: [f32; 2],
@@ -245,6 +255,16 @@ struct FilteredTexture {
     /// actually used. A pass that reads this texture must scale its uv by
     /// THESE, not by the layer's size.
     size: [u32; 2],
+}
+
+impl FilteredTexture {
+    fn source(view: wgpu::TextureView, size: [u32; 2], whole: &Rect) -> Self {
+        Self {
+            view,
+            uv_max: [whole.width / size[0] as f32, whole.height / size[1] as f32],
+            size,
+        }
+    }
 }
 
 struct ColorFilterTarget {
@@ -405,11 +425,14 @@ impl<'a> Planner<'a> {
                     };
                     match self.open_layer(
                         &base,
+                        stack.last().unwrap(),
                         composite,
-                        scope_bounds,
-                        *base_slot,
-                        *composite_slot,
-                        *can_elide,
+                        LayerScope {
+                            bounds: scope_bounds,
+                            base_slot: *base_slot,
+                            composite_slot: *composite_slot,
+                            can_elide: *can_elide,
+                        },
                     ) {
                         Opened::Skip => {
                             i = skip_scope(ops, i) + 1;
@@ -690,14 +713,12 @@ impl<'a> Planner<'a> {
     fn open_layer(
         &mut self,
         base: &Matrix,
+        effect_transform: &Matrix,
         composite: Composite,
-        scope_bounds: &Rect,
-        base_slot: u32,
-        composite_slot: u32,
-        can_elide: bool,
+        scope: LayerScope<'_>,
     ) -> Opened {
-        let composite_z = self.slot_z(composite_slot);
-        let Some(rect) = self.layer_rect(base, scope_bounds) else {
+        let composite_z = self.slot_z(scope.composite_slot);
+        let Some(rect) = self.layer_rect(base, scope.bounds) else {
             if composite.mask.is_some() {
                 // A culled/empty MASK isn't "nothing to draw" — it's
                 // coverage 0 everywhere: the enclosing layer goes blank.
@@ -705,7 +726,7 @@ impl<'a> Planner<'a> {
             }
             return Opened::Skip;
         };
-        if can_elide {
+        if scope.can_elide {
             self.stats.layers_elided += 1;
             self.push_elision(composite.paint.color.a);
             return Opened::Elided;
@@ -713,15 +734,15 @@ impl<'a> Planner<'a> {
         self.stats.layers_rendered += 1;
         // The layer paint's σ is local, scaled to device here — same
         // convention as plan_via_effect_layer.
-        let effects = LayerEffects::of(&composite.paint, base.max_scale(), true);
+        let effects = LayerEffects::of(&composite.paint, base.max_scale(), effect_transform, true);
         // span + 1 = the composite's distance from the scope's base.
         self.push_layer_frame_rebased(
             rect,
-            (composite_slot - base_slot) as f32,
+            (scope.composite_slot - scope.base_slot) as f32,
             composite,
             composite_z,
             effects,
-            base_slot,
+            scope.base_slot,
         );
         Opened::Layer
     }
@@ -880,13 +901,60 @@ impl<'a> Planner<'a> {
         size: [u32; 2],
         whole: &Rect,
     ) -> FilteredTexture {
+        if info.effects.image_filter.is_none() {
+            return self.recolour_then_mask_blur(info, size, whole);
+        }
+        let mut output = FilteredTexture::source(info.resolve.clone(), size, whole);
+        if let Some(filter) = info.effects.color_filter {
+            output = self.push_color_filter_input(&output, whole, filter);
+        }
+        if let Some(filter) = &info.effects.image_filter {
+            output = self.push_image_filter(&output, whole, filter, info.effects.image_basis);
+        }
+        if let Some(mask) = info.effects.blur {
+            output = self.blur_filtered_layer(&output, whole, mask);
+        }
+        output
+    }
+
+    /// A `save_layer` subpass: the blur runs first and the colour filter
+    /// recolours the blurred result, so a translating or clamping matrix acts
+    /// on the halo's fractional alpha the way Flutter's does.
+    fn blur_then_recolour(
+        &mut self,
+        info: &LayerInfo,
+        size: [u32; 2],
+        whole: &Rect,
+    ) -> FilteredTexture {
+        if info.effects.image_filter.is_none() {
+            return self.mask_blur_then_recolour(info, size, whole);
+        }
+        let mut output = FilteredTexture::source(info.resolve.clone(), size, whole);
+        if let Some(filter) = &info.effects.image_filter {
+            output = self.push_image_filter(&output, whole, filter, info.effects.image_basis);
+        }
+        if let Some(mask) = info.effects.blur {
+            output = self.blur_filtered_layer(&output, whole, mask);
+        }
+        if let Some(filter) = info.effects.color_filter {
+            output = self.push_color_filter_input(&output, whole, filter);
+        }
+        output
+    }
+
+    fn recolour_then_mask_blur(
+        &mut self,
+        info: &LayerInfo,
+        size: [u32; 2],
+        whole: &Rect,
+    ) -> FilteredTexture {
         let recoloured = info
             .effects
             .color_filter
             .map(|filter| self.push_color_filter(&info.resolve, size, whole, filter));
         let (sharp, sharp_size) = recoloured.as_ref().map_or_else(
             || (info.resolve.clone(), size),
-            |out| (out.view.clone(), out.size),
+            |output| (output.view.clone(), output.size),
         );
         match info.effects.blur {
             None => recoloured.expect("empty effects returned early"),
@@ -894,10 +962,7 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// A `save_layer` subpass: the blur runs first and the colour filter
-    /// recolours the blurred result, so a translating or clamping matrix acts
-    /// on the halo's fractional alpha the way Flutter's does.
-    fn blur_then_recolour(
+    fn mask_blur_then_recolour(
         &mut self,
         info: &LayerInfo,
         size: [u32; 2],
@@ -912,8 +977,6 @@ impl<'a> Planner<'a> {
         };
         match blurred {
             None => self.push_color_filter(&info.resolve, size, whole, filter),
-            // The blur landed in a bucketed target, so the colour pass reads
-            // it at THAT size, not the layer's.
             Some(blurred) => self.push_color_filter(&blurred.view, blurred.size, whole, filter),
         }
     }
@@ -929,6 +992,22 @@ impl<'a> Planner<'a> {
         match mask.style {
             BlurStyle::Normal => blurred,
             style => self.push_mask_combine(&blurred, source, whole, style),
+        }
+    }
+
+    fn blur_filtered_layer(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+        mask: MaskBlur,
+    ) -> FilteredTexture {
+        let blurred = self.plan_blur_input(source, whole, mask.sigma, mask.sigma);
+        match mask.style {
+            BlurStyle::Normal => blurred,
+            style => {
+                let sharp = self.materialize_filter_input(source, whole);
+                self.push_mask_combine(&blurred, &sharp.view, whole, style)
+            }
         }
     }
 
@@ -1078,7 +1157,7 @@ impl<'a> Planner<'a> {
         if needs_effect_layer(paint) {
             // Only shader paints land here blurred (solid ones recorded the
             // analytic op) — general path: sharp draw in a layer, blur it.
-            let local = rect.expand(paint.mask_padding());
+            let local = paint.effect_bounds(*rect);
             let (rect2, paint2, current2) = (*rect, plain(paint), *current);
             self.plan_via_effect_layer(&local, paint, current, z, move |p| {
                 p.plan_paint_quad(
@@ -1140,8 +1219,8 @@ impl<'a> Planner<'a> {
         self.stats.draws += 1;
         let bounds = path.bounds();
         if needs_effect_layer(paint) {
-            let local = bounds
-                .expand(paint.mask_padding() + paint.stroke_padding_at_scale(current.max_scale()));
+            let local = paint
+                .effect_bounds(bounds.expand(paint.stroke_padding_at_scale(current.max_scale())));
             let path2 = path.clone();
             let (paint2, current2) = (plain(paint), *current);
             self.plan_via_effect_layer(&local, paint, current, z, move |p| {
@@ -1267,8 +1346,8 @@ impl<'a> Planner<'a> {
         // Direct images filter the SAMPLED pixel in one draw, like Impeller's
         // ColorFilterAtlasContents. A blur still needs an effect layer so its
         // order remains sample → color filter → blur.
-        if paint.mask_blur.is_some() {
-            let local = dst.expand(paint.mask_padding());
+        if paint.mask_blur.is_some() || paint.effective_image_filter().is_some() {
+            let local = paint.effect_bounds(*dst);
             let (image2, src2, dst2, paint2, current2) =
                 (image.clone(), *src, *dst, plain(paint), *current);
             self.plan_via_effect_layer(&local, paint, current, z, move |p| {
@@ -1504,7 +1583,7 @@ impl<'a> Planner<'a> {
             blend_mode: paint.blend_mode,
             ..Default::default()
         };
-        let effects = LayerEffects::of(paint, current.max_scale(), false);
+        let effects = LayerEffects::of(paint, current.max_scale(), current, false);
         self.push_layer_frame(rect, 2.0, composite, z, effects);
         inner(self);
         self.close_layer();
@@ -2082,6 +2161,131 @@ impl<'a> Planner<'a> {
         }
     }
 
+    /// Blur a semantic full-size filter input whose used pixels may occupy
+    /// only a bucket corner. The UV mapping carries that resolution through
+    /// an ordered image-filter chain without stretching intermediate output.
+    fn plan_blur_input(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+        sigma_x: f32,
+        sigma_y: f32,
+    ) -> FilteredTexture {
+        let scale_x = blur_scale(sigma_x);
+        let scale_y = blur_scale(sigma_y);
+        let work = [
+            (whole.width * scale_x).round().max(1.0),
+            (whole.height * scale_y).round().max(1.0),
+        ];
+        let mut source_view = source.view.clone();
+        let mut source_pixels = [source.size[0] as f32, source.size[1] as f32];
+        let mut source_uv = region_uv(whole, source.uv_max);
+        let mut current = [whole.width, whole.height];
+        while current[0] > work[0] || current[1] > work[1] {
+            let next = [
+                (current[0] * 0.5).max(work[0]).round().max(1.0),
+                (current[1] * 0.5).max(work[1]).round().max(1.0),
+            ];
+            let (view, bucket) =
+                self.push_filter_pass(&source_view, source_uv, next, 0.0, [0.0, 0.0], Vec::new());
+            source_view = view;
+            source_pixels = bucket;
+            source_uv = corner_uv(bucket);
+            current = next;
+        }
+        let (horizontal, horizontal_bucket) = self.push_filter_pass(
+            &source_view,
+            source_uv,
+            work,
+            sigma_x * scale_x,
+            [1.0 / source_pixels[0], 0.0],
+            Vec::new(),
+        );
+        let (vertical, vertical_bucket) = self.push_filter_pass(
+            &horizontal,
+            corner_uv(horizontal_bucket),
+            work,
+            sigma_y * scale_y,
+            [0.0, 1.0 / horizontal_bucket[1]],
+            Vec::new(),
+        );
+        FilteredTexture {
+            view: vertical,
+            uv_max: [work[0] / vertical_bucket[0], work[1] / vertical_bucket[1]],
+            size: [vertical_bucket[0] as u32, vertical_bucket[1] as u32],
+        }
+    }
+
+    fn push_image_filter(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+        filter: &ImageFilter,
+        basis: [f32; 4],
+    ) -> FilteredTexture {
+        let mut stages = Vec::new();
+        image_filter_stages(filter, &mut stages);
+        let mut output = source.clone();
+        let mut index = 0;
+        while index < stages.len() {
+            match stages[index] {
+                ImageFilter::Color(filter) => {
+                    output = self.push_color_filter_input(&output, whole, *filter);
+                    index += 1;
+                }
+                ImageFilter::Blur { .. } => {
+                    // Consecutive blurs combine in quadrature in LOCAL space;
+                    // the basis maps the combined σ to device axes once.
+                    let mut sigma_x_squared = 0.0;
+                    let mut sigma_y_squared = 0.0;
+                    while let Some(ImageFilter::Blur { sigma_x, sigma_y }) = stages.get(index) {
+                        sigma_x_squared += sigma_x * sigma_x;
+                        sigma_y_squared += sigma_y * sigma_y;
+                        index += 1;
+                    }
+                    let [sigma_x, sigma_y] =
+                        device_sigma(basis, sigma_x_squared.sqrt(), sigma_y_squared.sqrt());
+                    if sigma_x <= 0.0 && sigma_y <= 0.0 {
+                        continue;
+                    }
+                    output = self.plan_blur_input(&output, whole, sigma_x, sigma_y);
+                }
+                ImageFilter::Compose { .. } => unreachable!("composition was flattened"),
+            }
+        }
+        output
+    }
+
+    fn materialize_filter_input(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+    ) -> FilteredTexture {
+        let expected = [
+            whole.width / source.size[0] as f32,
+            whole.height / source.size[1] as f32,
+        ];
+        if (source.uv_max[0] - expected[0]).abs() < 1e-6
+            && (source.uv_max[1] - expected[1]).abs() < 1e-6
+        {
+            return source.clone();
+        }
+        let work = [whole.width, whole.height];
+        let (view, bucket) = self.push_filter_pass(
+            &source.view,
+            region_uv(whole, source.uv_max),
+            work,
+            0.0,
+            [0.0, 0.0],
+            Vec::new(),
+        );
+        FilteredTexture {
+            view,
+            uv_max: [work[0] / bucket[0], work[1] / bucket[1]],
+            size: [bucket[0] as u32, bucket[1] as u32],
+        }
+    }
+
     /// One quad over the used corner of a pooled 1-sample target; fs_blur
     /// taps `source` along `step` (radius 0 = plain resample).
     fn push_filter_pass(
@@ -2110,9 +2314,7 @@ impl<'a> Planner<'a> {
         (target.view, [bucket[0] as f32, bucket[1] as f32])
     }
 
-    /// Recolour a layer's texture in one filter pass — Impeller's
-    /// ColorMatrixFilterContents, as a pass over the layer rather than a
-    /// stage folded into every draw shader.
+    /// Recolour a raw layer texture in one filter pass.
     fn push_color_filter(
         &mut self,
         source: &wgpu::TextureView,
@@ -2134,6 +2336,33 @@ impl<'a> Planner<'a> {
                 format: self.format,
             },
         );
+        FilteredTexture {
+            view: target.view,
+            uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
+            size: bucket,
+        }
+    }
+
+    /// Recolour a layer texture while preserving the used corner of a
+    /// bucketed or downsampled prior stage.
+    fn push_color_filter_input(
+        &mut self,
+        source: &FilteredTexture,
+        whole: &Rect,
+        filter: ColorFilter,
+    ) -> FilteredTexture {
+        let work = [whole.width, whole.height];
+        let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
+        let target = self.pool.take_filter(bucket, self.format);
+        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(whole), bucket, 0.0), [0.0; 4]);
+        record.set_local_rect(whole);
+        record.set_payload(PAYLOAD_GEOM, region_uv(whole, source.uv_max));
+        let fragment = match encode_color_filter(&mut record, filter) {
+            EncodedColorFilter::Matrix => Frag::ColorMatrix,
+            EncodedColorFilter::Blend => Frag::ColorBlend,
+        };
+        let bind = self.texture_bind(&source.view);
+        self.push_filter(target.view.clone(), fragment, record, bind, Vec::new());
         FilteredTexture {
             view: target.view,
             uv_max: [work[0] / bucket[0] as f32, work[1] / bucket[1] as f32],
@@ -2520,6 +2749,15 @@ fn skip_scope(ops: &[Op], open_index: usize) -> usize {
 struct Composite {
     paint: Paint,
     mask: Option<MaskKind>,
+}
+
+/// The record-time facts a SaveLayer carries. The oracle computed every one of
+/// these, so opening a layer reads them instead of deriving anything.
+struct LayerScope<'a> {
+    bounds: &'a Rect,
+    base_slot: u32,
+    composite_slot: u32,
+    can_elide: bool,
 }
 
 fn advanced_mode(paint: &Paint) -> Option<BlendMode> {
@@ -3023,6 +3261,34 @@ fn corner_uv(bucket: [f32; 2]) -> [f32; 4] {
     [1.0 / bucket[0], 1.0 / bucket[1], 0.0, 0.0]
 }
 
+fn image_filter_stages<'a>(filter: &'a ImageFilter, stages: &mut Vec<&'a ImageFilter>) {
+    match filter {
+        ImageFilter::Compose { outer, inner } => {
+            image_filter_stages(inner, stages);
+            image_filter_stages(outer, stages);
+        }
+        stage => stages.push(stage),
+    }
+}
+
+/// A local-space blur σ mapped onto the device axes, as Impeller's
+/// `GaussianBlurFilterContents` does it: transform σ as a VECTOR by the effect
+/// transform's basis, then take the component-wise absolute value.
+///
+/// Collapsing the basis to its two axis LENGTHS instead would lose the
+/// rotation — a quarter turn has unit-length axes, so an anisotropic σ would
+/// pass through unswapped and blur along the wrong axis.
+///
+/// The blur stays axis-aligned in device space for angles in between, which is
+/// Impeller's approximation too.
+fn device_sigma(basis: [f32; 4], sigma_x: f32, sigma_y: f32) -> [f32; 2] {
+    let [a, b, c, d] = basis;
+    [
+        (sigma_x * a + sigma_y * c).abs(),
+        (sigma_x * b + sigma_y * d).abs(),
+    ]
+}
+
 /// local (absolute px) → uv into a blurred texture holding `region`, whose
 /// used corner ends at `uv_max`.
 fn region_uv(region: &Rect, uv_max: [f32; 2]) -> [f32; 4] {
@@ -3038,6 +3304,7 @@ fn is_opaque_paint(paint: &Paint) -> bool {
     let solid_blend = matches!(paint.blend_mode, BlendMode::SrcOver | BlendMode::Src);
     solid_blend
         && paint.mask_blur.is_none()
+        && paint.effective_image_filter().is_none()
         && paint.color.a >= 1.0
         && paint.shader.as_ref().is_none_or(shader_opaque)
 }
@@ -3146,6 +3413,7 @@ fn plain(paint: &Paint) -> Paint {
         blend_mode: BlendMode::SrcOver,
         mask_blur: None,
         color_filter: None,
+        image_filter: None,
         ..paint.clone()
     }
 }
@@ -3172,7 +3440,9 @@ fn folded_paint(paint: &Paint) -> Option<Paint> {
 
 /// Does this paint need its own layer for the renderer to apply its effects?
 fn needs_effect_layer(paint: &Paint) -> bool {
-    paint.mask_blur.is_some() || paint.color_filter.is_some()
+    paint.mask_blur.is_some()
+        || paint.color_filter.is_some()
+        || paint.effective_image_filter().is_some()
 }
 
 /// The frame-local integer pixel region under `coverage` (absolute replay
@@ -3249,8 +3519,43 @@ pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_uniform_axis_aligned, stroke_alpha_coverage};
+    use super::{device_sigma, is_uniform_axis_aligned, stroke_alpha_coverage};
     use valo_geometry::Matrix;
+
+    fn basis_of(matrix: &Matrix) -> [f32; 4] {
+        let [a, b, c, d, ..] = matrix.to_affine();
+        [a, b, c, d]
+    }
+
+    fn assert_sigma(actual: [f32; 2], expected: [f32; 2]) {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-4 && (actual[1] - expected[1]).abs() < 1e-4,
+            "sigma {actual:?} != {expected:?}"
+        );
+    }
+
+    #[test]
+    fn device_sigma_scales_each_axis() {
+        let basis = basis_of(&Matrix::scale(2.0, 3.0));
+        assert_sigma(device_sigma(basis, 4.0, 5.0), [8.0, 15.0]);
+    }
+
+    /// A quarter turn maps local x onto device y. Reducing the basis to its
+    /// axis LENGTHS would give [1, 1] here and leave σ unswapped — the bug
+    /// this function exists to prevent.
+    #[test]
+    fn device_sigma_swaps_axes_under_a_quarter_turn() {
+        let basis = basis_of(&Matrix::rotation(std::f32::consts::FRAC_PI_2));
+        assert_sigma(device_sigma(basis, 12.0, 3.0), [3.0, 12.0]);
+    }
+
+    /// Impeller takes the component-wise absolute value, so a half turn is
+    /// indistinguishable from no rotation at all.
+    #[test]
+    fn device_sigma_is_sign_agnostic() {
+        let basis = basis_of(&Matrix::rotation(std::f32::consts::PI));
+        assert_sigma(device_sigma(basis, 7.0, 2.0), [7.0, 2.0]);
+    }
 
     #[test]
     fn hairline_coverage_matches_impeller() {

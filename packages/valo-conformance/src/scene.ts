@@ -25,6 +25,7 @@ export type CanvasCommand =
   | { type: "setTextAlign"; value: CanvasTextAlign }
   | { type: "setTextBaseline"; value: CanvasTextBaseline }
   | { type: "setTextSpacing"; letter: string; word: string }
+  | { type: "setFilter"; value: string }
   | { type: "translate"; x: number; y: number }
   | { type: "scale"; x: number; y: number }
   | { type: "rotate"; radians: number }
@@ -109,6 +110,7 @@ export interface ReplayContext {
   textBaseline: CanvasTextBaseline;
   letterSpacing: string;
   wordSpacing: string;
+  filter: string;
   save(): void;
   restore(): void;
   translate(x: number, y: number): void;
@@ -212,6 +214,7 @@ function replayCommand(
       context.letterSpacing = command.letter;
       context.wordSpacing = command.word;
       break;
+    case "setFilter": context.filter = command.value; break;
     case "translate": context.translate(command.x, command.y); break;
     case "scale": context.scale(command.x, command.y); break;
     case "rotate": context.rotate(command.radians); break;

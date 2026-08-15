@@ -9,5 +9,5 @@ export const DEFAULT_THRESHOLDS: DiffThresholds = {
   perceptualThreshold: 0.1,
   includeAntialiasing: false,
   maximumBadPixelRatio: 0.01,
-  maximumBoundsDelta: null,
+  maximumBoundsDelta: 2,
 };

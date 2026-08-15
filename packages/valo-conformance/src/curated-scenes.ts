@@ -198,4 +198,101 @@ export const curatedScenes: CanvasScene[] = [
       { type: "clearRect", x: 48, y: 92, width: 32, height: 28 },
     ],
   },
+  {
+    name: "shadows-stay-in-device-space-under-transform",
+    background: "#151820",
+    commands: [
+      { type: "translate", x: 60, y: 56 },
+      { type: "rotate", radians: 0.48 },
+      { type: "scale", x: 1.55, y: 0.68 },
+      { type: "setShadow", color: "rgba(0,0,0,0.76)", blur: 10, offsetX: 9, offsetY: 7 },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "beginPath" },
+      { type: "roundRect", x: -26, y: -22, width: 52, height: 44, radii: [9] },
+      { type: "fill", rule: "nonzero" },
+    ],
+  },
+  {
+    name: "copy-applies-to-shadow-and-shape-separately",
+    background: "#151820",
+    commands: [
+      { type: "setFillColor", color: "#35a7ff" },
+      { type: "fillRect", x: 8, y: 8, width: 112, height: 112 },
+      { type: "setComposite", operation: "copy" },
+      { type: "setShadow", color: "rgba(255,79,121,0.9)", blur: 6, offsetX: 12, offsetY: 10 },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: 28, y: 30, width: 54, height: 46 },
+    ],
+  },
+  {
+    name: "ordered-css-color-filter-chain",
+    background: "#151820",
+    commands: [
+      { type: "setFilter", value: "sepia(70%) hue-rotate(38deg) saturate(1.35) opacity(78%)" },
+      {
+        type: "setFillLinearGradient",
+        points: [18, 20, 108, 104],
+        stops: [
+          { offset: 0, color: "#ff4f79" },
+          { offset: 0.5, color: "#35a7ff" },
+          { offset: 1, color: "#d2ff45" },
+        ],
+      },
+      { type: "fillRect", x: 18, y: 20, width: 90, height: 84 },
+    ],
+  },
+  {
+    name: "css-blur-then-contrast",
+    background: "#151820",
+    commands: [
+      { type: "setFilter", value: "blur(4px) contrast(1.25)" },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: 30, y: 32, width: 58, height: 52 },
+    ],
+  },
+  {
+    name: "css-filter-with-canvas-shadow",
+    background: "#151820",
+    commands: [
+      { type: "setFilter", value: "blur(2px) grayscale(45%)" },
+      { type: "setShadow", color: "rgba(255,79,121,0.84)", blur: 5, offsetX: 9, offsetY: 7 },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: 30, y: 30, width: 56, height: 50 },
+    ],
+  },
+  {
+    name: "css-blur-under-nonuniform-transform",
+    background: "#151820",
+    commands: [
+      { type: "translate", x: 62, y: 62 },
+      { type: "rotate", radians: 0.42 },
+      { type: "scale", x: 1.55, y: 0.68 },
+      { type: "setFilter", value: "blur(4px)" },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: -24, y: -22, width: 48, height: 44 },
+    ],
+  },
+  {
+    name: "css-color-filter-under-transform",
+    background: "#151820",
+    commands: [
+      { type: "translate", x: 62, y: 62 },
+      { type: "rotate", radians: 0.42 },
+      { type: "scale", x: 1.55, y: 0.68 },
+      { type: "setFilter", value: "grayscale(45%)" },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: -24, y: -22, width: 48, height: 44 },
+    ],
+  },
+  {
+    name: "css-blur-under-skew",
+    background: "#151820",
+    commands: [
+      { type: "translate", x: 50, y: 42 },
+      { type: "transform", matrix: [1, 0.28, 0.46, 1, 0, 0] },
+      { type: "setFilter", value: "blur(4px)" },
+      { type: "setFillColor", color: "#d2ff45" },
+      { type: "fillRect", x: 0, y: 0, width: 48, height: 44 },
+    ],
+  },
 ];
