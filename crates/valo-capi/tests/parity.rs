@@ -388,6 +388,7 @@ fn text_queries_answer_over_the_ffi() {
     }
 
     render_matches_the_rust_route(paragraph, &bytes);
+    stroked_text_matches_the_rust_route(paragraph, &bytes);
 
     unsafe {
         valo_paragraph_dispose(paragraph);
@@ -469,6 +470,105 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
     assert_eq!(
         c_pixels, rust_pixels,
         "the two text routes must be pixel-identical"
+    );
+}
+
+/// `ValoPaint` carries stroke fields, and `valo_builder_draw_paragraph_with`
+/// is the only entry point that honours them for text — the plain
+/// `valo_builder_draw_paragraph` paints each run with its own style's fill.
+/// This proves the stroke survives the crossing rather than being silently
+/// dropped, which is what the FFI did before this function existed.
+fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8]) {
+    let size = [140u32, 80u32];
+    let stroke = ValoPaint {
+        style: 1, // stroke
+        stroke_width: 1.5,
+        stroke_join: 0, // miter
+        stroke_miter_limit: 4.0,
+        ..fill(1.0, 0.85, 0.2)
+    };
+
+    let context = valo_context_new();
+    if context.is_null() {
+        eprintln!("SKIP stroked text rendering: no GPU adapter");
+        return;
+    }
+    let mut c_pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
+    let mut filled_pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
+    unsafe {
+        let builder = valo_builder_new();
+        valo_builder_draw_paragraph_with(builder, paragraph, 4.0, 4.0, stroke);
+        let list = valo_builder_build(builder);
+        assert!(valo_context_render_to_pixels(
+            context,
+            list,
+            CLEAR,
+            size[0],
+            size[1],
+            c_pixels.as_mut_ptr(),
+        ));
+        valo_display_list_dispose(list);
+
+        // The same paragraph FILLED, to prove the stroke fields changed the
+        // output rather than the two routes agreeing on an ignored paint.
+        let builder = valo_builder_new();
+        valo_builder_draw_paragraph(builder, paragraph, 4.0, 4.0);
+        let list = valo_builder_build(builder);
+        assert!(valo_context_render_to_pixels(
+            context,
+            list,
+            CLEAR,
+            size[0],
+            size[1],
+            filled_pixels.as_mut_ptr(),
+        ));
+        valo_display_list_dispose(list);
+        valo_context_dispose(context);
+    }
+    assert_ne!(
+        c_pixels, filled_pixels,
+        "a stroked paragraph must not render identically to a filled one"
+    );
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        return;
+    };
+    let font = valo::Font::from_bytes(font_bytes.to_vec()).expect("fira sans parses");
+    let mut collection = valo::FontCollection::default();
+    let id = collection.add(font);
+    collection.add_fallback(id);
+    let mut builder = valo::ParagraphBuilder::new(&mut collection);
+    builder.style(valo::ParagraphStyle {
+        align: valo::TextAlign::Left,
+        preserve_trailing_whitespace: false,
+        max_lines: None,
+        ellipsis: None,
+    });
+    let mut style = valo::TextStyle::new("", 18.0, valo::Color::rgb(1.0, 1.0, 1.0));
+    style.families = vec!["Fira Sans".to_owned()];
+    style.weight = 400;
+    builder.add_text("hello wide world", &style);
+    let mut rust_paragraph = builder.build();
+    rust_paragraph.layout(120.0);
+
+    let mut context = valo::Context::new(device, queue);
+    let mut b = valo::DisplayListBuilder::new();
+    use valo::DrawGlyphRunExt;
+    let rust_stroke = valo::Paint {
+        color: valo::Color::rgb(1.0, 0.85, 0.2),
+        style: valo::PaintStyle::Stroke(valo::Stroke {
+            miter_limit: 4.0,
+            ..valo::Stroke::new(1.5)
+        }),
+        ..Default::default()
+    };
+    b.draw_paragraph_with(&rust_paragraph, (4.0, 4.0), &rust_stroke);
+    let rust_pixels =
+        context.render_to_rgba(&b.build(), size, Some(valo::Color::rgb(0.07, 0.07, 0.09)));
+
+    assert_eq!(
+        c_pixels, rust_pixels,
+        "the two stroked-text routes must be pixel-identical"
     );
 }
 
@@ -596,6 +696,14 @@ fn null_handles_never_crash() {
             fill(1.0, 0.0, 0.0),
         );
         valo_builder_transform_matrix(std::ptr::null_mut(), std::ptr::null());
+        valo_builder_draw_paragraph(std::ptr::null_mut(), std::ptr::null(), 0.0, 0.0);
+        valo_builder_draw_paragraph_with(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            0.0,
+            0.0,
+            fill(1.0, 0.0, 0.0),
+        );
 
         valo_color_filter_dispose(std::ptr::null_mut());
         assert!(valo_color_filter_matrix(std::ptr::null()).is_null());

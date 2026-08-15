@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use valo::{DisplayList, DisplayListBuilder, DrawParagraphExt};
+use valo::{DisplayList, DisplayListBuilder, DrawGlyphRunExt, DrawParagraphExt};
 
 use crate::{
     borrow, borrow_mut, clip_op, dispose_handle, fill_rule, into_handle, paint_of, ValoCornerRadii,
@@ -243,4 +243,32 @@ pub unsafe extern "C" fn valo_builder_draw_paragraph(
         return;
     };
     handle.builder.draw_paragraph(&paragraph.paragraph, (x, y));
+}
+
+/// Draw a laid-out paragraph with `paint` overriding every run's own fill —
+/// the entry point for stroked, gradient-filled or blended text. `paint`'s
+/// style, stroke, shader and blend mode all apply; shadows and decorations
+/// still come from the paragraph's styles.
+///
+/// A stroke width of 0 is a hairline (one device pixel), matching
+/// `SkStrokeRec`; only a negative width draws nothing.
+///
+/// # Safety
+/// `builder` and `paragraph` must be live handles (or null, a no-op).
+#[no_mangle]
+pub unsafe extern "C" fn valo_builder_draw_paragraph_with(
+    builder: *mut ValoDisplayListBuilder,
+    paragraph: *const ValoParagraph,
+    x: f32,
+    y: f32,
+    paint: ValoPaint,
+) {
+    let (Some(handle), Some(paragraph)) =
+        (unsafe { borrow_mut(builder) }, unsafe { borrow(paragraph) })
+    else {
+        return;
+    };
+    handle
+        .builder
+        .draw_paragraph_with(&paragraph.paragraph, (x, y), &unsafe { paint_of(paint) });
 }
