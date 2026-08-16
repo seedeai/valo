@@ -1,5 +1,7 @@
 export const CANVAS_SIZE = 128;
 export const FIXTURE_FONT_FAMILY = "Valo Conformance";
+/** The element holding both canvases side by side, captured in one screenshot. */
+export const CANVAS_PAIR_TEST_ID = "canvas-pair";
 
 export interface ColorStop {
   offset: number;
@@ -9,6 +11,7 @@ export interface ColorStop {
 export type CanvasCommand =
   | { type: "save" }
   | { type: "restore" }
+  | { type: "reset" }
   | { type: "setFillColor"; color: string }
   | { type: "setStrokeColor"; color: string }
   | { type: "setFillLinearGradient"; points: [number, number, number, number]; stops: ColorStop[] }
@@ -113,6 +116,7 @@ export interface ReplayContext {
   filter: string;
   save(): void;
   restore(): void;
+  reset(): void;
   translate(x: number, y: number): void;
   scale(x: number, y: number): void;
   rotate(radians: number): void;
@@ -144,7 +148,30 @@ export interface ReplayContext {
   fillText(text: string, x: number, y: number, maxWidth?: number): void;
   strokeText(text: string, x: number, y: number, maxWidth?: number): void;
   drawImage(image: unknown, ...argumentsList: number[]): void;
+  measureText(text: string): TextMetricsLike;
+  isPointInPath(x: number, y: number, rule?: CanvasFillRule): boolean;
 }
+
+/**
+ * The `TextMetrics` members Valo reports. `hangingBaseline`,
+ * `ideographicBaseline` and `alphabeticBaseline` are absent from
+ * `ValoTextMetrics`, so there is nothing on the Valo side to compare.
+ */
+export const TEXT_METRIC_KEYS = [
+  "width",
+  "actualBoundingBoxLeft",
+  "actualBoundingBoxRight",
+  "actualBoundingBoxAscent",
+  "actualBoundingBoxDescent",
+  "fontBoundingBoxAscent",
+  "fontBoundingBoxDescent",
+  "emHeightAscent",
+  "emHeightDescent",
+] as const;
+
+export type TextMetricKey = (typeof TEXT_METRIC_KEYS)[number];
+
+export type TextMetricsLike = Readonly<Record<TextMetricKey, number>>;
 
 export function replayCommands(
   context: ReplayContext,
@@ -162,6 +189,7 @@ function replayCommand(
   switch (command.type) {
     case "save": context.save(); break;
     case "restore": context.restore(); break;
+    case "reset": context.reset(); break;
     case "setFillColor": context.fillStyle = command.color; break;
     case "setStrokeColor": context.strokeStyle = command.color; break;
     case "setFillLinearGradient": {

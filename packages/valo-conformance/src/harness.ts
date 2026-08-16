@@ -4,6 +4,7 @@ import {
   ValoCanvasRenderingContext2D,
 } from "@valo/web";
 import {
+  CANVAS_PAIR_TEST_ID,
   CANVAS_SIZE,
   FIXTURE_FONT_FAMILY,
   replayCommands,
@@ -22,16 +23,10 @@ export interface ConformanceHarness {
 
 export async function createConformanceHarness(): Promise<ConformanceHarness> {
   document.body.replaceChildren();
-  Object.assign(document.body.style, {
-    margin: "0",
-    padding: "0",
-    background: "#000",
-    display: "flex",
-    gap: "0",
-  });
+  Object.assign(document.body.style, { margin: "0", padding: "0", background: "#000" });
   const nativeCanvas = makeCanvas("native-canvas");
   const valoCanvas = makeCanvas("valo-canvas");
-  document.body.append(nativeCanvas, valoCanvas);
+  document.body.append(makeCanvasPair(nativeCanvas, valoCanvas));
   await initializeValo();
   const renderer = await createRenderer(valoCanvas);
   const valoContext = new ValoCanvasRenderingContext2D(valoCanvas, renderer, {
@@ -82,6 +77,28 @@ export function renderValo(
   replayCommands(context as ReplayContext, scene.commands, assets);
   context.present();
   return performance.now() - start;
+}
+
+/**
+ * The two canvases sit flush in one shrink-wrapped row so the comparison can
+ * capture both in a single screenshot and split it down the middle. Each
+ * Playwright screenshot is a round trip that dominates the cost of a run, and
+ * two of them per scene is what decides how many scenes a time budget buys.
+ */
+function makeCanvasPair(
+  nativeCanvas: HTMLCanvasElement,
+  valoCanvas: HTMLCanvasElement,
+): HTMLElement {
+  const pair = document.createElement("div");
+  pair.dataset.testid = CANVAS_PAIR_TEST_ID;
+  Object.assign(pair.style, {
+    display: "flex",
+    gap: "0",
+    width: `${CANVAS_SIZE * 2}px`,
+    height: `${CANVAS_SIZE}px`,
+  });
+  pair.append(nativeCanvas, valoCanvas);
+  return pair;
 }
 
 function makeCanvas(testIdentifier: string): HTMLCanvasElement {

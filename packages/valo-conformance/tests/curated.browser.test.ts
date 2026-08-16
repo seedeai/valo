@@ -17,11 +17,14 @@ describe("Canvas2D parity", () => {
   for (const scene of curatedScenes) {
     test(scene.name, async () => {
       await renderBoth(harness, scene);
+      // Fixed scenes carry no sampling tail, so placement is held to a pixel.
+      // The text scene is the exception on both counts: three glyph runs at
+      // different sizes, where the two rasterizers share the least machinery.
       await expectCanvasParity(
         scene,
         scene.name === "fixed-font-fill-and-stroke-text"
-          ? { maximumBadPixelRatio: 0.04, maximumBoundsDelta: 2 }
-          : {},
+          ? { maximumBadPixelRatio: 0.04, maximumInkOffset: 3 }
+          : { maximumInkOffset: 1 },
       );
     });
   }

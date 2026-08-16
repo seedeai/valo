@@ -30,11 +30,11 @@ export async function expectCanvasParity(
   });
   const diagnostics = [
     `${result.badPixels} bad pixels (${(result.badPixelRatio * 100).toFixed(3)}%)`,
-    thresholds.maximumBoundsDelta === undefined && DEFAULT_THRESHOLDS.maximumBoundsDelta === null
+    thresholds.maximumInkOffset === undefined && DEFAULT_THRESHOLDS.maximumInkOffset === null
       ? ""
-      : result.boundsDelta === null
+      : result.inkOffset === null
         ? "ink appears in only one renderer"
-        : `${result.boundsDelta}px ink-bounds delta`,
+        : `${result.inkOffset.toFixed(2)}px ink offset`,
     result.artifactDirectory ? `artifacts: ${result.artifactDirectory}` : "",
   ].filter(Boolean).join("; ");
   expect(result.passed, diagnostics).toBe(true);
