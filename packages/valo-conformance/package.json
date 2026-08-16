@@ -11,7 +11,7 @@
     "benchmark": "vitest run --config vitest.benchmark.config.ts"
   },
   "dependencies": {
-    "valo-web": "0.1.0"
+    "valo-web": "*"
   },
   "devDependencies": {
     "@blazediff/core": "^1.9.1",

@@ -1,6 +1,6 @@
 {
   "name": "valo-web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "WebGPU-native 2D rendering with a retained API and Canvas2D adapter",
   "license": "MIT",
   "repository": {
