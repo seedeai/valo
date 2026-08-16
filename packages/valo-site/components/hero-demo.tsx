@@ -31,7 +31,7 @@ export function HeroDemo({ source }: { source: string }) {
       source={source}
       clearColor="#0e0e12"
       className="aspect-[5/4] w-full border border-valo-line"
-      label="live · valo"
+      label="live"
       animate
     />
   );
