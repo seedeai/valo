@@ -362,15 +362,21 @@ pub struct PathBuilder {
     verbs: Vec<Verb>,
     points: Vec<Point>,
     bounds: Option<Rect>,
-    /// Where the current contour began.
+    /// Where a segment recorded after a `close` resumes.
     ///
-    /// It OUTLIVES the close. A segment recorded after `close` resumes at
-    /// this point rather than starting at its own destination, which is what
-    /// keeps the diagonal in `M10,10 L30,10 Z L30,30`. WHATWG requires it of
-    /// `closePath`, `rect` and `roundRect` alike, and Skia's `ensureMove`
-    /// does exactly this — `moveTo(fPts[fLastMoveIndex])` when the last verb
-    /// was a close. Impeller inherits it by building on `SkPathBuilder`.
-    contour_start: Option<Point>,
+    /// It OUTLIVES the close — that is the whole point. Without it
+    /// `M10,10 L30,10 Z L30,30` loses its diagonal, because the line would
+    /// start at its own destination. Skia does the same in `ensureMove`
+    /// (`moveTo(fPts[fLastMoveIndex])` when the last verb was a close), and
+    /// Impeller inherits it by building on `SkPathBuilder`.
+    ///
+    /// NOT always the contour's origin, which is why it is not called that.
+    /// For `close` it is. For `rect` and `roundRect` WHATWG names the point
+    /// separately — "create a new subpath with the point (x, y)" — and for a
+    /// rounded rectangle `(x, y)` is a bounding-box corner the outline never
+    /// touches, since the walk begins at the top-left tangent. The two
+    /// coincide only at radius zero.
+    resume_point: Option<Point>,
     contour_open: bool,
 }
 
@@ -383,7 +389,7 @@ impl PathBuilder {
         let p = p.into();
         self.verbs.push(Verb::Move);
         self.push_point(p);
-        self.contour_start = Some(p);
+        self.resume_point = Some(p);
         self.contour_open = true;
         self
     }
@@ -435,7 +441,12 @@ impl PathBuilder {
             .line_to((r.right(), r.y))
             .line_to((r.right(), r.bottom()))
             .line_to((r.x, r.bottom()))
-            .close()
+            .close();
+        // WHATWG's separate closing step: "create a new subpath with the
+        // point (x, y)". Stated here rather than inherited from the traversal
+        // above, so reordering the walk cannot move it.
+        self.resume_point = Some(Point::new(r.x, r.y));
+        self
     }
 
     /// Rounded rect with one radius for all corners (clamped to half-extent).
@@ -479,7 +490,7 @@ impl PathBuilder {
         let [tl, tr, br, bl] = constrain_radii_elliptical(&r, radii);
         let (l, t, rr, b) = (r.x, r.y, r.right(), r.bottom());
         if [tl, tr, br, bl].iter().all(|[x, y]| *x == 0.0 && *y == 0.0) {
-            return match winding {
+            match winding {
                 Winding::Clockwise => self.rect(r),
                 Winding::CounterClockwise => self
                     .move_to((l, t))
@@ -488,6 +499,8 @@ impl PathBuilder {
                     .line_to((rr, t))
                     .close(),
             };
+            self.resume_point = Some(Point::new(l, t));
+            return self;
         }
         // Cubic arc approximation of a quarter ELLIPSE per corner: the
         // quarter-circle control offsets, scaled per axis.
@@ -518,7 +531,21 @@ impl PathBuilder {
                 .cubic_to((rr, t + k(tr[1])), (rr - k(tr[0]), t), (rr - tr[0], t))
                 .line_to((l + tl[0], t))
                 .close(),
-        }
+        };
+        // WHATWG step 14, SEPARATE from the outline that step 12 walks:
+        // "create a new subpath with the point (x, y)". For a rounded
+        // rectangle that corner is not on the outline at all — the walk
+        // begins at the top-left tangent — so this cannot be inherited from
+        // the traversal the way `close`'s resumption point is. Blink does the
+        // same explicitly, chaining `.MoveTo(x, y)` after its rounded-rect
+        // builder (`canvas_path.cc`).
+        //
+        // Verified against the spec text and current Blink source rather than
+        // by probing a browser. This corner of Canvas2D has already produced
+        // two places where the prose and every implementation disagree, so
+        // that distinction is worth keeping in view.
+        self.resume_point = Some(Point::new(l, t));
+        self
     }
 
     /// Circular arc — Canvas2D's `arc`, the equal-radii case of
@@ -593,7 +620,7 @@ impl PathBuilder {
         // at its origin and then runs the line, so an arc after `closePath`
         // stays connected to the seam. Only a path with no contour at all
         // starts at the arc.
-        if self.contour_open || self.contour_start.is_some() {
+        if self.contour_open || self.resume_point.is_some() {
             self.ensure_contour(first);
             self.line_to(first);
         } else {
@@ -734,7 +761,7 @@ impl PathBuilder {
             // The appended contour is this builder's contour now, origin and
             // all — leaving the receiver's own origin in place would send a
             // later `close` + segment back to the wrong seam.
-            self.contour_start = Some(contour_start);
+            self.resume_point = Some(contour_start);
             self.contour_open = true;
         }
         self
@@ -789,7 +816,7 @@ impl PathBuilder {
         if self.contour_open {
             return;
         }
-        self.move_to(self.contour_start.unwrap_or(p));
+        self.move_to(self.resume_point.unwrap_or(p));
     }
 
     fn push_point(&mut self, p: Point) {
@@ -1106,36 +1133,71 @@ mod tests {
         ));
     }
 
-    /// `rect` and `roundRect` close their contour, so the same rule applies —
-    /// and this is the route the Canvas surface actually takes.
+    /// `rect` and `roundRect` resume at `(x, y)` — the bounding box's corner,
+    /// which is a SEPARATE spec step from the outline they walk.
+    ///
+    /// For a rounded rectangle that corner is not on the outline at all: the
+    /// walk starts at the top-left tangent, `(18, 10)` here. The two points
+    /// coincide only at radius zero, which is exactly why a rect-only test
+    /// would miss this.
     #[test]
-    fn a_segment_after_a_shape_helper_resumes_at_its_origin() {
-        for corner in [0.0f32, 12.0] {
+    fn a_segment_after_a_shape_helper_resumes_at_the_box_corner() {
+        let box_corner = Point::new(10.0, 10.0);
+        for corner in [0.0f32, 8.0] {
             let mut path = PathBuilder::new();
             if corner == 0.0 {
                 path.rect(Rect::new(10.0, 10.0, 40.0, 40.0));
             } else {
                 path.rrect_radii_elliptical(Rect::new(10.0, 10.0, 40.0, 40.0), [[corner; 2]; 4]);
             }
-            let origin = *path
-                .clone()
-                .build()
-                .flatten(0.05)
-                .first()
-                .expect("the shape recorded a contour")
-                .points
-                .first()
-                .expect("a contour has points");
-
             path.line_to((90.0, 90.0));
+
             let contours = path.build().flatten(0.05);
             let resumed = contours.last().expect("the path continues after the shape");
             assert_eq!(
                 resumed.points.first().copied(),
-                Some(origin),
-                "corner radius {corner}: the trailing segment must start at the shape's origin"
+                Some(box_corner),
+                "corner radius {corner}: the trailing segment starts at (x, y)"
             );
         }
+
+        // The same thing said in ink, which is how the divergence was found:
+        // the diagonal from (10,10) is stroked and the one from the tangent
+        // (18,10) is not.
+        let mut path = PathBuilder::new();
+        path.rrect_radii_elliptical(Rect::new(10.0, 10.0, 40.0, 40.0), [[8.0; 2]; 4]);
+        path.line_to((90.0, 90.0));
+        let contours = path.build().flatten(0.05);
+        let stroke = crate::Stroke::new(4.0);
+        assert!(
+            crate::stroke_contains(&contours, &stroke, 0.05, Point::new(50.0, 50.0)),
+            "the diagonal from (10,10) must be stroked"
+        );
+        assert!(
+            !crate::stroke_contains(&contours, &stroke, 0.05, Point::new(54.0, 50.0)),
+            "the diagonal from the tangent (18,10) must not be"
+        );
+    }
+
+    /// `closePath` keeps the contour-origin rule — the shape helpers' `(x, y)`
+    /// override must not have leaked into it.
+    #[test]
+    fn close_still_resumes_at_the_contour_origin() {
+        let mut path = PathBuilder::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((30.0, 30.0));
+        path.close();
+        path.line_to((90.0, 90.0));
+        let contours = path.build().flatten(0.05);
+        assert_eq!(
+            contours
+                .last()
+                .and_then(|contour| contour.points.first())
+                .copied(),
+            Some(Point::new(10.0, 10.0)),
+            "close resumes where the contour began, not at any box corner"
+        );
     }
 
     /// A path that never opened a contour still starts where it is told —

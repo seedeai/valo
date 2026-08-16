@@ -26,7 +26,7 @@ valo = { path = "crates/valo" }
 valo-svg = { path = "crates/valo-svg" }
 valo-system-fonts = { path = "crates/valo-system-fonts" }
 # gpu — wgpu IS the HAL (no layer over it)
-wgpu = "29"
+wgpu = "30"
 # text — one crate per role in Skia's stack, each an intended swap seam:
 # shaping (HarfBuzz's role -> harfrust), font parsing (skrifa), glyph raster
 # (swash), ICU's line breaks + bidi (unicode-*), atlas packing (etagere)

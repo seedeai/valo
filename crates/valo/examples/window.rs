@@ -112,7 +112,7 @@ impl ApplicationHandler for App {
                     let stats = state
                         .ctx
                         .render(&dl, &frame.target(Some(Color::rgb(0.07, 0.07, 0.09))));
-                    frame.present();
+                    state.ctx.present(frame);
                     state.window.set_title(&format!(
                         "valo — draws {} · culled {} · {:.2}ms cpu",
                         stats.draws, stats.culled, stats.cpu_ms

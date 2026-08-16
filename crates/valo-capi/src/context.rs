@@ -253,7 +253,7 @@ pub unsafe extern "C" fn valo_context_render(
     };
     ctx.context
         .render(&list.list, &frame.target(Some(clear.into())));
-    frame.present();
+    ctx.context.present(frame);
     reclaim(ctx);
     true
 }
@@ -330,8 +330,7 @@ fn request_gpu() -> Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Q
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
+                ..Default::default()
             })
             .await
             .ok()?;

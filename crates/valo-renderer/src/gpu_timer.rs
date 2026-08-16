@@ -152,7 +152,10 @@ impl GpuTimer {
                 continue;
             }
             let ticks: Vec<u64> = {
-                let view = slot.buffer.get_mapped_range(..);
+                let view = slot
+                    .buffer
+                    .get_mapped_range(..)
+                    .expect("timer staging maps");
                 bytemuck::cast_slice(&view).to_vec()
             };
             slot.buffer.unmap();

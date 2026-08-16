@@ -99,7 +99,7 @@ fn read_back(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll export");
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("export staging maps");
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for row in 0..h {
         let start = (row * bytes_per_row) as usize;

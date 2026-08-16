@@ -314,7 +314,7 @@ fn attachment_texture(
         // strips the bit, other backends treat it as a hint. Requires
         // StoreOp::Discard, which single-segment targets already use.
         debug_assert!(!sampleable, "transient attachments cannot be sampled");
-        usage |= wgpu::TextureUsages::TRANSIENT;
+        usage |= wgpu::TextureUsages::TRANSIENT_ATTACHMENT;
     }
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("valo.pooled"),

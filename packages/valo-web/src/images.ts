@@ -4,11 +4,6 @@ import { Image, type Renderer } from "./raw.js";
  * Everything `drawImage` and `createPattern` accept: an already-uploaded Valo
  * `Image`, or any DOM source WebGPU can copy from.
  *
- * `VideoFrame` is absent. wgpu gates that `ExternalImageSource` variant behind
- * the `web_sys_unstable_apis` cfg, so supporting it would make the wasm build
- * depend on a RUSTFLAGS override — a flag that silently changes what compiles.
- * Pass `new VideoFrame(...)` through `createImageBitmap` instead.
- *
  * DIVERGENCE — cross-origin sources. Canvas2D draws a non-origin-clean image
  * and marks the destination tainted, which then makes `getImageData` throw.
  * WebGPU refuses at the copy instead (`SecurityError`, WebGPU §3.9), so a
@@ -23,7 +18,8 @@ export type ValoImageSource =
   | HTMLCanvasElement
   | HTMLVideoElement
   | ImageBitmap
-  | OffscreenCanvas;
+  | OffscreenCanvas
+  | VideoFrame;
 
 /** What a source looks like right now, and how to tell when it changes. */
 interface SourceState {
@@ -176,10 +172,16 @@ export class ImageSourceCache {
 }
 
 /**
- * Looked up on `globalThis` rather than named directly: `VideoFrame` is not
- * in every TypeScript DOM lib, and this file has to compile without it.
+ * The CONSTRUCTOR is looked up on `globalThis` rather than named directly:
+ * WebCodecs is not in every browser, so `VideoFrame` may be absent at runtime
+ * even where the type exists at compile time.
+ *
+ * The check has to come BEFORE the width/height fallback in `sourceState`. A
+ * `VideoFrame` has `displayWidth`/`displayHeight` and no `width` at all, so
+ * the fallback would read `undefined` for both and sail straight past its
+ * zero check.
  */
-function isVideoFrame(source: object): boolean {
+function isVideoFrame(source: object): source is VideoFrame {
   const constructor = (globalThis as { VideoFrame?: Function }).VideoFrame;
   return typeof constructor === "function" && source instanceof constructor;
 }
@@ -225,10 +227,21 @@ export function sourceState(source: ValoImageSource): SourceState | undefined {
     };
   }
   if (isVideoFrame(source)) {
-    throw new DOMException(
-      "VideoFrame is not a supported image source; convert it with createImageBitmap first",
-      "NotSupportedError",
-    );
+    const frame = source;
+    // DISPLAY dimensions, not coded: a frame's coded size carries the codec's
+    // macroblock padding and its own aspect correction, and Canvas2D draws
+    // what the frame displays as.
+    if (frame.displayWidth === 0 || frame.displayHeight === 0) return undefined;
+    return {
+      width: frame.displayWidth,
+      height: frame.displayHeight,
+      // Volatile even though a decoded frame's pixels never change: this is
+      // one frame of a stream, so mips would be built and thrown away. The
+      // timestamp still pins it, so the same frame object drawn repeatedly is
+      // read once rather than once per canvas frame.
+      revision: String(frame.timestamp),
+      volatile: true,
+    };
   }
   const { width, height } = source;
   if (width === 0 || height === 0) return undefined;
@@ -242,3 +255,4 @@ export function sourceState(source: ValoImageSource): SourceState | undefined {
     volatile: "getContext" in source,
   };
 }
+

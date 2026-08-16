@@ -441,19 +441,21 @@ pub fn advanced_mode_id(mode: BlendMode) -> u32 {
     }
 }
 
-const MESH_LAYOUT: [wgpu::VertexBufferLayout<'static>; 1] = [wgpu::VertexBufferLayout {
-    array_stride: 8,
-    step_mode: wgpu::VertexStepMode::Vertex,
-    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-}];
+const MESH_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] =
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: 8,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+    })];
 
-const TEXT_LAYOUT: [wgpu::VertexBufferLayout<'static>; 1] = [wgpu::VertexBufferLayout {
-    array_stride: 16,
-    step_mode: wgpu::VertexStepMode::Vertex,
-    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-}];
+const TEXT_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] =
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: 16,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+    })];
 
-fn vertex_buffers(kind: PipelineKind) -> &'static [wgpu::VertexBufferLayout<'static>] {
+fn vertex_buffers(kind: PipelineKind) -> &'static [Option<wgpu::VertexBufferLayout<'static>>] {
     match kind {
         PipelineKind::StencilFan { .. } | PipelineKind::Strip(_) => &MESH_LAYOUT,
         PipelineKind::Text { .. } => &TEXT_LAYOUT,

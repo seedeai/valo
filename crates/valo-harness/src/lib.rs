@@ -36,8 +36,7 @@ pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
+                ..Default::default()
             })
             .await
             .ok()?;
@@ -99,7 +98,7 @@ pub fn read_texture_rgba(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll");
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("readback staging maps");
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for row in 0..h {
         let start = (row * bytes_per_row) as usize;

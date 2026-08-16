@@ -54,12 +54,82 @@ function imageBitmap(): ValoImageSource {
   return { width: 32, height: 32 } as unknown as ValoImageSource;
 }
 
+/**
+ * A `VideoFrame`. Note what it does NOT have: `width`, `height`, or any of
+ * the other sources' markers. Installing a constructor is what makes
+ * `instanceof` work, since the classifier looks it up on `globalThis`.
+ */
+function videoFrame(timestamp: number, displayWidth = 32): ValoImageSource {
+  const frame = Object.create(FakeVideoFrame.prototype) as Record<string, unknown>;
+  frame.displayWidth = displayWidth;
+  frame.displayHeight = 18;
+  frame.codedWidth = 64;
+  frame.codedHeight = 34;
+  frame.timestamp = timestamp;
+  return frame as unknown as ValoImageSource;
+}
+
+class FakeVideoFrame {}
+
+function withVideoFrameConstructor<T>(body: () => T): T {
+  const global = globalThis as { VideoFrame?: unknown };
+  const original = global.VideoFrame;
+  global.VideoFrame = FakeVideoFrame;
+  try {
+    return body();
+  } finally {
+    if (original === undefined) delete global.VideoFrame;
+    else global.VideoFrame = original;
+  }
+}
+
 describe("source classification", () => {
   it("separates the mutable sources from the immutable ones", () => {
     expect(sourceState(canvasElement())?.volatile).toBe(true);
     expect(sourceState(videoElement(0))?.volatile).toBe(true);
     expect(sourceState(imageElement())?.volatile).toBe(false);
     expect(sourceState(imageBitmap())?.volatile).toBe(false);
+  });
+
+  it("classifies a VideoFrame by its display size", () => {
+    withVideoFrameConstructor(() => {
+      const state = sourceState(videoFrame(1000));
+      // Display, not coded: the coded size carries the codec's macroblock
+      // padding, and Canvas2D draws what the frame displays as.
+      expect(state).toMatchObject({ width: 32, height: 18, volatile: true });
+      // Volatile keeps mips off a per-frame source; the timestamp still pins
+      // the frame so redrawing the same one does not re-upload.
+      expect(state?.revision).toBe("1000");
+    });
+  });
+
+  it("reads a VideoFrame once however many times it is drawn", () => {
+    withVideoFrameConstructor(() => {
+      const renderer = new RecordingRenderer();
+      const cache = cacheOver(renderer);
+      const frame = videoFrame(1000);
+
+      for (let draw = 0; draw < 5; draw += 1) cache.resolve(frame, false);
+      cache.advanceFrame();
+      cache.resolve(frame, false);
+
+      expect(renderer.uploads).toBe(1);
+      expect(renderer.refreshes).toBe(0);
+      // One frame of a stream: mips would be built and thrown away.
+      expect(renderer.copied.length).toBe(1);
+    });
+  });
+
+  it("gives each VideoFrame of a stream its own upload", () => {
+    withVideoFrameConstructor(() => {
+      const renderer = new RecordingRenderer();
+      const cache = cacheOver(renderer);
+      for (const timestamp of [0, 33, 66]) {
+        cache.resolve(videoFrame(timestamp), false);
+        cache.advanceFrame();
+      }
+      expect(renderer.uploads).toBe(3);
+    });
   });
 
   it("reports nothing to read for a source that is not ready", () => {
@@ -205,6 +275,14 @@ describe("ImageSourceCache", () => {
 
     cache.resolve(offscreen, false);
     expect(renderer.copied[0]).toBe(offscreen);
+  });
+
+  it("keeps mips off a VideoFrame", () => {
+    withVideoFrameConstructor(() => {
+      const renderer = new RecordingRenderer();
+      const cache = cacheOver(renderer);
+      expect(cache.resolve(videoFrame(1000), false)).toMatchObject({ mipmaps: false });
+    });
   });
 
   it("asks for mips only where they will be reused", () => {

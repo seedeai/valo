@@ -102,6 +102,9 @@ pub unsafe fn wrap_metal_texture(
                 height: size[1],
                 depth: 1,
             },
+            // The HOST owns this texture's lifetime — we only retained it —
+            // so wgpu must not run a destructor when its handle drops.
+            None,
         )
     };
     let descriptor = wgpu::TextureDescriptor {
@@ -118,7 +121,17 @@ pub unsafe fn wrap_metal_texture(
         usage,
         view_formats: &[],
     };
-    unsafe { device.create_texture_from_hal::<wgpu::hal::api::Metal>(hal_texture, &descriptor) }
+    // wgpu 30 wants the state the texture arrives in. An imported target is
+    // one valo is about to render into, and its previous contents are the
+    // host's business, so COLOR_TARGET is the honest declaration —
+    // UNINITIALIZED would license discarding pixels the host may still want.
+    unsafe {
+        device.create_texture_from_hal::<wgpu::hal::api::Metal>(
+            hal_texture,
+            &descriptor,
+            wgpu::wgt::TextureUses::COLOR_TARGET,
+        )
+    }
 }
 
 /// A presentable surface (native window now; the web `<canvas>` constructor joins
@@ -182,6 +195,9 @@ impl Surface {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
+            // Blending happens in sRGB space (CLAUDE.md's CSS/Skia look), and
+            // the format picked below is non-sRGB to keep it there.
+            color_space: wgpu::SurfaceColorSpace::Srgb,
             // COPY_SRC: advanced blends snapshot the resolved target mid-frame.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format,
@@ -267,9 +283,11 @@ impl SurfaceFrame {
         }
     }
 
-    /// Hand the frame to the compositor, consuming it.
-    pub fn present(self) {
-        self.surface_texture.present();
+    /// Hand the frame to the compositor, consuming it. wgpu 30 moved
+    /// presentation onto the queue, so the caller passes the one it just
+    /// submitted with.
+    pub fn present(self, queue: &wgpu::Queue) {
+        queue.present(self.surface_texture);
     }
 }
 

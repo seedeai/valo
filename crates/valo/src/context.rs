@@ -80,6 +80,13 @@ impl Context {
         self.queue.clone()
     }
 
+    /// Hand a rendered frame to the compositor. Presentation moved onto the
+    /// queue in wgpu 30, and the queue is the context's business rather than
+    /// the caller's, so it lives here instead of on [`SurfaceFrame`].
+    pub fn present(&self, frame: crate::SurfaceFrame) {
+        frame.present(&self.queue);
+    }
+
     /// RGBA8 pixels → retained [`Image`]: premultiplied at the boundary,
     /// full mip chain rendered on the GPU (posters downscale constantly).
     /// Dropping the returned handle is the whole lifetime story.

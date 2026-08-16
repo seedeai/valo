@@ -72,10 +72,7 @@ pub struct WebRenderer {
 }
 
 /// The DOM sources `copyExternalImageToTexture` accepts, resolved from an
-/// untyped JS value. `VideoFrame` is deliberately absent: wgpu gates that
-/// variant behind `web_sys_unstable_apis`, a cfg the wasm build would have to
-/// set through RUSTFLAGS, and a flag that silently changes what compiles is
-/// worse than an honest refusal.
+/// untyped JS value.
 fn external_image_source(source: &JsValue) -> Result<wgpu::ExternalImageSource, JsValue> {
     use wgpu::ExternalImageSource;
     if let Some(bitmap) = source.dyn_ref::<web_sys::ImageBitmap>() {
@@ -96,9 +93,15 @@ fn external_image_source(source: &JsValue) -> Result<wgpu::ExternalImageSource, 
     if let Some(data) = source.dyn_ref::<web_sys::ImageData>() {
         return Ok(ExternalImageSource::ImageData(data.clone()));
     }
+    if let Some(frame) = source.dyn_ref::<web_sys::VideoFrame>() {
+        // `Clone::clone` explicitly: `VideoFrame` also has a JS `clone()`
+        // that allocates a second frame and returns a `Result`. Only the
+        // handle needs copying here.
+        return Ok(ExternalImageSource::VideoFrame(Clone::clone(frame)));
+    }
     Err(JsValue::from_str(
         "not a supported image source: expected HTMLImageElement, HTMLCanvasElement, \
-         HTMLVideoElement, ImageBitmap, OffscreenCanvas or ImageData",
+         HTMLVideoElement, ImageBitmap, OffscreenCanvas, ImageData or VideoFrame",
     ))
 }
 
@@ -169,7 +172,7 @@ impl WebRenderer {
         let frame = self.surface.acquire()?;
         let clear = clear.then_some(Color::rgba(red, green, blue, alpha));
         let inner = self.context.render(&list.inner, &frame.target(clear));
-        frame.present();
+        self.context.present(frame);
         Some(WebRenderStats { inner })
     }
 

@@ -6,7 +6,7 @@ fn main() {
     let transient = std::env::args().nth(1).as_deref() != Some("backed");
     let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
     if transient {
-        usage |= wgpu::TextureUsages::TRANSIENT;
+        usage |= wgpu::TextureUsages::TRANSIENT_ATTACHMENT;
     }
     let textures: Vec<wgpu::Texture> = (0..10)
         .map(|_| {

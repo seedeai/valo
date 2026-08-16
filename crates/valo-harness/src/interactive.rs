@@ -228,7 +228,7 @@ impl State {
         let stats = self
             .ctx
             .render(&b.build(), &frame.target(Some(Color::rgb(0.08, 0.08, 0.1))));
-        frame.present();
+        self.ctx.present(frame);
         self.last = stats;
         self.frames += 1;
         if self.frames.is_multiple_of(30) {
