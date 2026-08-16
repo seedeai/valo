@@ -9,7 +9,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-# wgpu 29 sets the floor; verified in CI.
+repository = "https://github.com/seedeai/valo"
+# wgpu 30 sets the floor; verified in CI.
 rust-version = "1.87"
 keywords = ["graphics", "gpu", "wgpu", "2d", "renderer"]
 categories = ["graphics", "rendering::engine"]

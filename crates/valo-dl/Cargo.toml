@@ -4,6 +4,7 @@ description = "Display-list recording for valo, with the record-time oracle the 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true

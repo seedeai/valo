@@ -6,7 +6,7 @@ import {
   Paragraph,
   Path,
   Shader,
-  createRenderer,
+  createDevice,
 } from "../src/raw.ts";
 import { initializeValo } from "../src/raw.ts";
 import { ValoCanvasRenderingContext2D } from "../src/canvas.ts";
@@ -34,7 +34,11 @@ interface Chapter {
 }
 
 await initializeValo();
-const renderer = await createRenderer(canvas);
+// One device, one canvas here — but the device is the shareable half, and a
+// page of live demos attaches every canvas to a single one of these rather
+// than paying for a GPU device per card.
+const device = await createDevice();
+const renderer = device.attach(canvas);
 const fonts = new FontCollection();
 const fontResponse = await fetch(new URL("../../../assets/fonts/fira_sans.ttf", import.meta.url));
 const fontBytes = new Uint8Array(await fontResponse.arrayBuffer());

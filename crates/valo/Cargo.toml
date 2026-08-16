@@ -4,6 +4,7 @@ description = "A 2D render engine on wgpu: display lists, planned GPU passes, an
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true

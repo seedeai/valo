@@ -4,6 +4,7 @@ description = "C ABI over valo — embed the renderer from any language that spe
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
