@@ -87,12 +87,21 @@ describe("Canvas-shaped query behavior", () => {
     nativeContext.font = font;
     harness.valoContext.font = font;
     const valoMetrics = harness.valoContext.measureText("");
-    expect(valoMetrics.width).toBe(0);
-    expect(valoMetrics.actualBoundingBoxLeft).toBe(0);
-    expect(valoMetrics.actualBoundingBoxRight).toBe(0);
-    expect(valoMetrics.actualBoundingBoxAscent).toBe(0);
-    expect(valoMetrics.actualBoundingBoxDescent).toBe(0);
     const nativeEmptyMetrics = nativeContext.measureText("");
+    expect(valoMetrics.width).toBe(0);
+    // Ink-free text still HAS an actual bounding box — an empty one on the
+    // alphabetic baseline. This asserted 0/0 until that was fixed, which
+    // placed the box at the anchor instead, so it moved with textBaseline.
+    // Chrome is the reference here, not the previous valo behaviour.
+    for (const key of [
+      "actualBoundingBoxLeft",
+      "actualBoundingBoxRight",
+      "actualBoundingBoxAscent",
+      "actualBoundingBoxDescent",
+    ] as const) {
+      expect(Math.abs(valoMetrics[key] - nativeEmptyMetrics[key]), key)
+        .toBeLessThanOrEqual(1);
+    }
     expect(Math.abs(valoMetrics.fontBoundingBoxAscent - nativeEmptyMetrics.fontBoundingBoxAscent))
       .toBeLessThanOrEqual(1);
     expect(Math.abs(valoMetrics.fontBoundingBoxDescent - nativeEmptyMetrics.fontBoundingBoxDescent))
@@ -129,24 +138,33 @@ describe("Canvas-shaped query behavior", () => {
     harness.valoContext.filter = "brightness(80%) blur(2px)";
     harness.valoContext.save();
     harness.valoContext.filter = "sepia(50%)";
+    // drop-shadow used to be rejected and leave the previous value standing.
+    // It is implemented now, so it takes effect like any other function.
     harness.valoContext.filter = "drop-shadow(2px 2px black)";
-    expect(harness.valoContext.filter).toBe("sepia(50%)");
+    expect(harness.valoContext.filter).toBe("drop-shadow(2px 2px black)");
+    harness.valoContext.filter = "sepia(50%)";
     harness.valoContext.restore();
     expect(harness.valoContext.filter).toBe("brightness(80%) blur(2px)");
   });
 
-  test("readback-only gaps fail explicitly", () => {
+  test("only synchronous readback still refuses", () => {
+    // getImageData is the one deliberate refusal left: WebGPU has no
+    // synchronous readback. putImageData became an upload and
+    // isPointInStroke a hit test against the stroke's own triangles, so
+    // both now answer instead of throwing.
     expect(() => harness.valoContext.getImageData()).toThrowError(DOMException);
-    expect(() => harness.valoContext.putImageData()).toThrowError(DOMException);
-    expect(() => harness.valoContext.isPointInStroke()).toThrowError(DOMException);
+    expect(harness.valoContext.isPointInStroke(0, 0)).toBe(false);
   });
 
-  test("unsupported pattern repetitions fail explicitly", () => {
-    for (const repetition of ["repeat-x", "repeat-y", "no-repeat"] as const) {
-      expect(() => harness.valoContext.createPattern(
+  test("every pattern repetition is accepted", () => {
+    // These threw until the per-axis tile modes the engine already carried
+    // were wired through. The assertion is inverted rather than deleted so
+    // the suite keeps a record that this was once a documented gap.
+    for (const repetition of ["repeat", "repeat-x", "repeat-y", "no-repeat"] as const) {
+      expect(harness.valoContext.createPattern(
         harness.valoAssets.image as never,
         repetition,
-      )).toThrowError(DOMException);
+      )).toBeTruthy();
     }
   });
 
