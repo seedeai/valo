@@ -172,6 +172,34 @@ impl Paragraph {
         self.layout.as_ref().map_or(0.0, |l| l.width)
     }
 
+    /// How far the pen actually travelled — the widest line's signed advance.
+    ///
+    /// This is NOT [`Paragraph::width`]. A width is a layout box, so it has a
+    /// floor at zero: wrapping, alignment and `bounds()` are all defined on a
+    /// rectangle, and one narrower than nothing means nothing. An advance has
+    /// no such floor. Letter and word spacing tighter than the glyphs are wide
+    /// walks the pen backwards, and callers that report a pen position rather
+    /// than a box — Canvas2D's `TextMetrics.width` — need the negative.
+    pub fn advance(&self) -> f32 {
+        self.lines()
+            .iter()
+            .map(|line| line.width)
+            .reduce(f32::max)
+            .unwrap_or(0.0)
+    }
+
+    /// Paragraph-local pen x of the last glyph placed, or `None` when nothing
+    /// was placed at all. Distinct from the advance whenever that last glyph
+    /// carries one of its own.
+    pub fn last_glyph_origin(&self) -> Option<f32> {
+        self.lines()
+            .iter()
+            .flat_map(|line| &line.runs)
+            .flat_map(|run| &run.glyphs)
+            .next_back()
+            .map(|glyph| glyph.x)
+    }
+
     pub fn height(&self) -> f32 {
         self.layout.as_ref().map_or(0.0, |l| l.height)
     }

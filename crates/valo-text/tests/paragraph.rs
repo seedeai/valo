@@ -347,6 +347,63 @@ fn letter_spacing_widens_and_wraps_earlier() {
     assert!((spaced.width() - plain.width() - 36.0).abs() < 0.5);
 }
 
+/// Spacing tighter than the glyphs are wide walks the pen backwards. `width`
+/// is a layout box and has to keep its floor at zero, so the signed answer
+/// needs an accessor of its own — Canvas2D's `TextMetrics.width` reports the
+/// negative and Blink's `TextMetrics::Update` never clamps it.
+#[test]
+fn tight_letter_spacing_gives_a_negative_advance() {
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
+    b.add_text(
+        "ii",
+        &TextStyle {
+            letter_spacing: -4.0,
+            ..style(8.0)
+        },
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(f32::INFINITY);
+    let advance = paragraph.advance();
+    assert!(
+        advance < -1.0,
+        "two 8px `i`s at -4px spacing must end left of where they started, got {advance}"
+    );
+    assert_eq!(
+        paragraph.width(),
+        0.0,
+        "the layout box keeps its floor at zero"
+    );
+}
+
+/// The last glyph's pen is not the advance: it sits one glyph's advance short
+/// of it. Text with no ink has nothing else to place a bounding box against.
+#[test]
+fn last_glyph_origin_trails_the_advance_by_one_glyph() {
+    let mut c = fonts();
+    let mut b = ParagraphBuilder::new(&mut c);
+    // Canvas2D measures what it was handed, trailing spaces included.
+    b.style(ParagraphStyle {
+        preserve_trailing_whitespace: true,
+        ..ParagraphStyle::default()
+    })
+    .add_text("   ", &style(24.0));
+    let mut spaces = b.build();
+    spaces.layout(f32::INFINITY);
+    let advance = spaces.advance();
+    let origin = spaces
+        .last_glyph_origin()
+        .expect("three spaces place three glyphs");
+    assert!(advance > 0.0, "three spaces advance, got {advance}");
+    assert!(
+        (origin - advance * 2.0 / 3.0).abs() < 0.01,
+        "the third of three equal glyphs starts two thirds along, got {origin} of {advance}"
+    );
+
+    let empty = laid_out(&mut c, "", f32::INFINITY);
+    assert_eq!(empty.last_glyph_origin(), None, "nothing placed, no origin");
+}
+
 #[test]
 fn height_multiplier_scales_lines() {
     let mut c = fonts();

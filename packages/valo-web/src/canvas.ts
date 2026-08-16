@@ -758,6 +758,12 @@ export class ValoCanvasRenderingContext2D {
     const [horizontal, vertical] = this.#textOffset(paragraph);
     const alphabeticDisplacement = vertical + paragraph.alphabeticBaseline;
     const hasOutline = paragraph.hasOutline;
+    // `width` is an ADVANCE, not the layout box `paragraph.width` reports.
+    // Blink assigns it straight from the accumulated pen with no floor at
+    // zero (`text_metrics.cc`, `Update`), so spacing tighter than the glyphs
+    // are wide reports the negative it genuinely measured.
+    const advance = paragraph.advance;
+    const [inkLeft, inkRight] = horizontalInkExtent(paragraph, advance);
     // Text with no ink still HAS an actual bounding box: an empty one sitting
     // on the alphabetic baseline. Reporting 0/0 instead would place it at the
     // anchor, which moves with `textBaseline` and is a different point —
@@ -765,9 +771,9 @@ export class ValoCanvasRenderingContext2D {
     // top of the em rather than a font's ascent below it.
     const emptyAscent = -alphabeticDisplacement;
     const metrics = new ValoTextMetrics(
-      paragraph.width,
-      hasOutline ? -horizontal - paragraph.outlineLeft : 0,
-      hasOutline ? horizontal + paragraph.outlineRight : 0,
+      advance,
+      -horizontal - inkLeft,
+      horizontal + inkRight,
       hasOutline ? -vertical - paragraph.outlineTop : emptyAscent,
       hasOutline ? vertical + paragraph.outlineBottom : -emptyAscent,
       paragraph.primaryFontAscent - alphabeticDisplacement,
@@ -1060,7 +1066,9 @@ export class ValoCanvasRenderingContext2D {
     if (maxWidth !== undefined && (!Number.isFinite(maxWidth) || maxWidth <= 0)) return;
     const limit = maxWidth ?? Number.POSITIVE_INFINITY;
     const paragraph = this.#paragraph(text, Number.POSITIVE_INFINITY);
-    const horizontalScale = textHorizontalScale(paragraph.width, limit);
+    // `maxWidth` is measured against the advance, the same quantity Blink
+    // compares it to before deciding to condense.
+    const horizontalScale = textHorizontalScale(paragraph.advance, limit);
     const [left, top] = this.#textOffset(paragraph);
     this.#builder.save();
     this.#builder.translate(x, y);
@@ -1240,8 +1248,11 @@ export class ValoCanvasRenderingContext2D {
       align === "right" ||
       (align === "end" && !rightToLeft) ||
       (align === "start" && rightToLeft);
-    const horizontal =
-      align === "center" ? -paragraph.width / 2 : alignsRight ? -paragraph.width : 0;
+    // The ADVANCE, not the layout width: Blink shifts by the same unfloored
+    // quantity it reports as `TextMetrics.width`, both when placing the pen
+    // (`base_rendering_context_2d.cc`) and when reporting the box.
+    const advance = paragraph.advance;
+    const horizontal = align === "center" ? -advance / 2 : alignsRight ? -advance : 0;
     const vertical =
       this.#state.textBaseline === "top"
         ? paragraph.topBaselineOrigin
@@ -1356,6 +1367,36 @@ export function clearsWholeCanvas(
     x + width >= canvas[0] &&
     y + height >= canvas[1]
   );
+}
+
+/**
+ * Where the actual bounding box starts and ends horizontally, before the
+ * `textAlign` shift. Not simply the glyph outlines' union: Blink derives this
+ * in `PlainTextNode::ShapeItems` (`plain_text_node.cc`) and two of its cases
+ * are observable through `measureText`.
+ *
+ * Text with NO ink still gets a box, and it does not sit at the origin.
+ * Chromium's `gfx::RectF::Union` replaces the accumulator wholesale while it
+ * is still empty, so every ink-free glyph overwrites the one before it and the
+ * LAST glyph's pen is what survives. `" "` therefore reports its box at 0 and
+ * `"   "` reports one two spaces along — the advance minus that last glyph's
+ * own, not the advance.
+ *
+ * A negative advance extends the box LEFT to cover the overflow: glyphs that
+ * walked back past the origin sit outside a rect spanning only the outlines.
+ * Blink deliberately leaves the right edge alone there, calling it excessive
+ * but certain to contain every glyph, so matching Chrome means not tightening
+ * it either.
+ */
+function horizontalInkExtent(paragraph: Paragraph, advance: number): [number, number] {
+  if (!paragraph.hasOutline) {
+    const origin = paragraph.lastGlyphOrigin ?? 0;
+    return [origin, origin];
+  }
+  const left = paragraph.outlineLeft;
+  const right = paragraph.outlineRight;
+  if (advance >= 0) return [left, right];
+  return [Math.min(left, advance, right - left), right];
 }
 
 function textHorizontalScale(width: number, maxWidth: number): number {

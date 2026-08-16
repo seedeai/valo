@@ -8,10 +8,10 @@
     "build:web": "npm run build --workspace @valo/web",
     "dev:web": "npm run dev --workspace @valo/web",
     "check:web": "npm run check --workspace @valo/web",
-    "check:conformance": "npm run check --workspace @valo/conformance",
-    "test:conformance": "npm run test --workspace @valo/conformance",
-    "fuzz:canvas": "npm run test:fuzz --workspace @valo/conformance",
-    "benchmark:canvas": "npm run benchmark --workspace @valo/conformance",
+    "check:conformance": "npm run build:web && npm run check --workspace @valo/conformance",
+    "test:conformance": "npm run build:web && npm run test --workspace @valo/conformance",
+    "fuzz:canvas": "npm run build:web && npm run test:fuzz --workspace @valo/conformance",
+    "benchmark:canvas": "npm run build:web && npm run benchmark --workspace @valo/conformance",
     "test:web": "npm run test --workspace @valo/web"
   }
 }

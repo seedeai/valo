@@ -125,6 +125,21 @@ impl WebParagraph {
         self.inner.width()
     }
 
+    /// The pen's signed travel, which `width` floors at zero. Canvas2D's
+    /// `TextMetrics.width` is an advance, not a layout box.
+    #[wasm_bindgen(getter)]
+    pub fn advance(&self) -> f32 {
+        self.inner.advance()
+    }
+
+    /// Pen x of the last glyph placed, or `undefined` when the paragraph
+    /// placed none. The Canvas adapter needs somewhere to anchor the bounding
+    /// box of text that puts down no ink at all.
+    #[wasm_bindgen(getter, js_name = lastGlyphOrigin)]
+    pub fn last_glyph_origin(&self) -> Option<f32> {
+        self.inner.last_glyph_origin()
+    }
+
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> f32 {
         self.inner.height()

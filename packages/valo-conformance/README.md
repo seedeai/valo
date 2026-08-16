@@ -56,6 +56,28 @@ Every one is covered by name instead, in `degenerate-scenes.ts` or as its own
 test in `query.browser.test.ts`, with a comment at the generator saying where.
 When the divergence closes, widen the generator and delete the comment.
 
+## Why these scripts build `@valo/web` first
+
+This suite imports `@valo/web` by package name, so it resolves through that
+package's `exports` to the emitted `dist/` — the same entry point a real
+consumer gets. That is deliberate: a polyfill is only proven by testing what
+ships, including its `exports` map and its emitted types, rather than the
+source those were generated from.
+
+The consequence is that `dist/` is an input to every run, and it is a build
+output that nothing tracks. `check:web` only typechecks (`tsc --noEmit`), so it
+never regenerates it. Left to chance a run validates whatever `dist/` a machine
+last happened to build: it can fail on correct source, and — worse — pass on
+stale source. A `dist/` older than its sibling `wasm/` has also crashed the
+browser tests outright at the wasm ABI boundary, which reads as dozens of
+unrelated failures rather than as a stale build.
+
+So `check:conformance`, `test:conformance`, `fuzz:canvas` and `benchmark:canvas`
+all run `build:web` first. Both `wasm-pack` and `tsc` are incremental, so this
+costs seconds when the build is already current. It looks redundant next to a CI
+job that also builds; it is not, and removing it reintroduces a class of failure
+that wastes far more time than it saves.
+
 ## Working on the harness
 
 Set `VALO_CONFORMANCE_PROFILE=1` for screenshot, decode, comparison and artifact
