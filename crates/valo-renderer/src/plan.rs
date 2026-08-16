@@ -977,8 +977,12 @@ impl<'a> Planner<'a> {
             return blurred.expect("empty effects returned early");
         };
         match blurred {
+            // A downsampled blur's output is smaller than the layer it stands
+            // for. Only the `_input` helper reads it at its own resolution;
+            // the raw one takes its source for full semantic size and would
+            // shove the halo into the layer's top-left corner.
+            Some(blurred) => self.push_color_filter_input(&blurred, whole, filter),
             None => self.push_color_filter(&info.resolve, size, whole, filter),
-            Some(blurred) => self.push_color_filter(&blurred.view, blurred.size, whole, filter),
         }
     }
 
@@ -2356,8 +2360,8 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// One quad over the used corner of a pooled 1-sample target; fs_blur
-    /// taps `source` along `step` (radius 0 = plain resample).
+    /// One quad filling an exactly-sized 1-sample target; fs_blur taps
+    /// `source` along `step` (radius 0 = plain resample).
     fn push_filter_pass(
         &mut self,
         source: &wgpu::TextureView,
@@ -2367,21 +2371,21 @@ impl<'a> Planner<'a> {
         step: [f32; 2],
         pre_copies: Vec<TextureCopy>,
     ) -> (wgpu::TextureView, [f32; 2]) {
-        let bucket = [filter_bucket(work[0]), filter_bucket(work[1])];
-        let target = self.pool.take_filter(bucket, self.format);
+        let extent = [exact_extent(work[0]), exact_extent(work[1])];
+        let target = self.pool.take_filter(extent, self.format);
         let quad = Rect::new(0.0, 0.0, work[0], work[1]);
         let radius = if sigma > 0.0 {
             (sigma * 2.5).ceil().min(48.0)
         } else {
             0.0
         };
-        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(&quad), bucket, 0.0), [0.0; 4]);
+        let mut record = UniformRecord::new(ortho_mvp(&rect_to_unit(&quad), extent, 0.0), [0.0; 4]);
         record.set_local_rect(&quad);
         record.set_payload(PAYLOAD_GEOM, source_uv);
         record.set_payload(PAYLOAD_MISC, [sigma, radius, step[0], step[1]]);
         let bind = self.texture_bind(source);
         self.push_filter(target.view.clone(), Frag::Blur, record, bind, pre_copies);
-        (target.view, [bucket[0] as f32, bucket[1] as f32])
+        (target.view, [extent[0] as f32, extent[1] as f32])
     }
 
     /// Recolour a raw layer texture in one filter pass.
@@ -3456,6 +3460,30 @@ fn push_glyph_quad(
 /// Filter targets snap up to the pool bucket so chains share textures.
 fn filter_bucket(px: f32) -> u32 {
     (px.ceil().max(1.0) as u32).div_ceil(FILTER_SIZE_BUCKET) * FILTER_SIZE_BUCKET
+}
+
+/// A blur pass's target holds exactly the texels it writes, the way Impeller
+/// allocates `subpass_size`.
+///
+/// Bucketing leaves cleared texels beside the used corner, and every read of
+/// a blur target runs past that corner: the composite's linear upscale reaches
+/// half a texel beyond the last real one, and `fs_blur`'s own ±radius taps
+/// reach much further. Clamp-to-edge answers those reads on the left and top,
+/// cleared gutter answers them on the right and bottom. So the far borders
+/// faded where the near ones held, AND the blur came out slightly too strong,
+/// since half its out-of-range taps returned transparent instead of the edge.
+/// At σ 64 — one blur texel per sixteen output pixels — that was a pixel of
+/// centroid and a whole level of amplitude away from Chrome.
+///
+/// The cost, paid knowingly: `filter_bucket` existed so a blur chain whose
+/// size drifts frame to frame keeps reusing one pooled texture. Exact extents
+/// give that up, so an animating blur can allocate a fresh target per frame
+/// (bounded by the pool's eviction). Nothing measures that yet. If it ever
+/// bites, measure a real animated-blur scene first — rounding some passes back
+/// up is a guess about which reads are safe, and the reads are the whole
+/// problem.
+fn exact_extent(px: f32) -> u32 {
+    px.ceil().max(1.0) as u32
 }
 
 /// local (0..work px) → uv spanning `region` inside a `source_size` texture

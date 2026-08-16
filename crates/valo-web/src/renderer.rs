@@ -1,4 +1,4 @@
-use valo::{Color, Context, Image, ImageDesc, RenderStats, Surface};
+use valo::{Color, Context, Image, ImageDesc, PersistentCanvas, RenderStats, Surface};
 use wasm_bindgen::prelude::*;
 
 use crate::recording::WebDisplayList;
@@ -68,6 +68,10 @@ impl WebRenderStats {
 pub struct WebRenderer {
     context: Context,
     surface: Surface,
+    /// Where the canvas's pixels actually live. A swapchain image is gone the
+    /// moment it is presented, so Canvas2D's "what you drew stays drawn"
+    /// needs storage of its own.
+    canvas: PersistentCanvas,
     unrestricted_external_copies: bool,
 }
 
@@ -133,8 +137,11 @@ pub async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<WebRe
         size,
     )
     .map_err(|error| JsValue::from_str(&format!("cannot create canvas surface: {error:?}")))?;
+    let mut context = Context::new(device, queue);
+    let canvas = PersistentCanvas::new(&mut context, size, surface.format());
     Ok(WebRenderer {
-        context: Context::new(device, queue),
+        context,
+        canvas,
         surface,
         unrestricted_external_copies: adapter
             .get_downlevel_capabilities()
@@ -145,8 +152,12 @@ pub async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<WebRe
 
 #[wasm_bindgen(js_class = Renderer)]
 impl WebRenderer {
+    /// Resize the swapchain and the canvas backing together. The backing's
+    /// contents are dropped: Canvas2D specifies that setting `width` or
+    /// `height` clears the canvas, so there is nothing to carry over.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.surface.resize([width, height]);
+        self.canvas.resize(&mut self.context, [width, height]);
     }
 
     #[wasm_bindgen(getter)]
@@ -160,19 +171,38 @@ impl WebRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Draw one frame's DELTA onto the persistent canvas, then show it.
+    ///
+    /// `discard` throws away what was on the canvas and starts from the given
+    /// colour — `reset`, `beginFrame`, or a full-surface `clearRect`. Without
+    /// it the previous pixels are restored first, which is what makes N
+    /// incremental frames cost O(N) instead of the O(N²) that replaying every
+    /// past display list did.
     pub fn render(
         &mut self,
         list: &WebDisplayList,
-        clear: bool,
+        discard: bool,
         red: f32,
         green: f32,
         blue: f32,
         alpha: f32,
     ) -> Option<WebRenderStats> {
-        let frame = self.surface.acquire()?;
-        let clear = clear.then_some(Color::rgba(red, green, blue, alpha));
-        let inner = self.context.render(&list.inner, &frame.target(clear));
-        self.context.present(frame);
+        let clear = discard.then_some(Color::rgba(red, green, blue, alpha));
+        let inner = self.canvas.draw(&mut self.context, &list.inner, clear);
+
+        // Presenting is a COPY, and an unavoidable one: WebGPU cannot hand an
+        // arbitrary texture to the compositor the way Chrome hands over a
+        // SharedImage, so the canvas has to be blitted into the swapchain
+        // image. Nothing to optimise away here.
+        //
+        // A failed acquisition costs only this frame's presentation. The
+        // pixels are already safe in the backing, so the next present shows
+        // them.
+        if let Some(frame) = self.surface.acquire() {
+            self.canvas
+                .present_to(&mut self.context, &frame.target(None));
+            self.context.present(frame);
+        }
         Some(WebRenderStats { inner })
     }
 

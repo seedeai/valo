@@ -74,19 +74,19 @@ export class ImageSourceCache {
    * current frame are both silent no-ops in Canvas2D, and copying from them
    * would throw.
    *
-   * `retained` says whether display lists from EARLIER frames may still
-   * reference the previous texture. When they cannot, a volatile source is
-   * refreshed in place, which keeps its texture and the renderer's cached
-   * bind group; when they can, it gets a fresh image so those earlier draws
-   * keep the pixels they were recorded with.
+   * A stale volatile source is refreshed IN PLACE, keeping its texture and
+   * the renderer's cached bind group. That is safe because nothing outlives a
+   * present any more: the canvas keeps its pixels in a persistent backing
+   * rather than in a list of past display lists, and the queue orders the
+   * refresh copy after the draw that was already submitted.
    */
-  resolve(source: ValoImageSource, retained: boolean): Image | undefined {
+  resolve(source: ValoImageSource): Image | undefined {
     if (source instanceof Image) return source;
     const state = sourceState(source);
     if (!state) return undefined;
 
     const entry = this.#entries.get(source);
-    if (entry && this.#reuse(entry, state, source, retained)) return entry.image;
+    if (entry && this.#reuse(entry, state, source)) return entry.image;
 
     const image = this.#renderer.uploadExternalImage(
       this.#copyable(source, state),
@@ -106,12 +106,7 @@ export class ImageSourceCache {
   }
 
   /** `true` when `entry` now holds `source`'s current pixels. */
-  #reuse(
-    entry: CacheEntry,
-    state: SourceState,
-    source: ValoImageSource,
-    retained: boolean,
-  ): boolean {
+  #reuse(entry: CacheEntry, state: SourceState, source: ValoImageSource): boolean {
     if (entry.width !== state.width || entry.height !== state.height) return false;
     if (!state.volatile) {
       // A non-volatile source can only change when its revision does, so
@@ -126,10 +121,6 @@ export class ImageSourceCache {
     // draws in one frame.
     if (state.revision !== undefined && entry.revision === state.revision) return true;
     if (entry.frame === this.#frame) return true;
-    // Stale, and an earlier frame's display list may still be showing the
-    // texture — those draws keep the pixels they were recorded with, so this
-    // needs a new image rather than an in-place refresh.
-    if (retained) return false;
     const copyable = this.#copyable(source, state);
     if (!this.#renderer.refreshExternalImage(entry.image, copyable, state.width, state.height)) {
       return false;

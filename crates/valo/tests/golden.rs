@@ -3757,6 +3757,120 @@ fn a_downsampled_blur_spreads_symmetrically() {
     }
 }
 
+/// A blur downsampled hard enough that one work texel covers sixteen output
+/// pixels has to upscale symmetrically. Filter targets used to snap up to the
+/// 32px pool bucket, so the linear sampler's half-texel reach past the used
+/// corner found cleared texels on the right and bottom while clamp-to-edge
+/// held the left and top — the far borders faded away over half a work texel
+/// and the near ones did not. Centroid alone is too coarse for that; the
+/// border profiles have to mirror.
+#[test]
+fn a_sixteenth_scale_blur_upscales_symmetrically() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_sixteenth_scale_blur_upscales_symmetrically");
+        return;
+    };
+    // σ 64 puts `blur_scale` at 1/16, so a 128px layer blurs at 8×8.
+    let side = 128usize;
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(40.0, 40.0, 48.0, 48.0),
+        &Paint {
+            color: Color::rgb(1.0, 0.31, 0.47),
+            image_filter: Some(valo::ImageFilter::blur(64.0, 64.0)),
+            ..Default::default()
+        },
+    );
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(
+        &builder.build(),
+        [side as u32, side as u32],
+        Some(Color::TRANSPARENT),
+    );
+    let alpha = |x: usize, y: usize| i32::from(pixels[(y * side + x) * 4 + 3]);
+    let middle = side / 2;
+    // One whole work texel in from each border is where the fade lived.
+    for step in 0..16 {
+        let (near, far) = (step, side - 1 - step);
+        let (left, right) = (alpha(near, middle), alpha(far, middle));
+        let (top, bottom) = (alpha(middle, near), alpha(middle, far));
+        assert!(
+            (left - right).abs() <= 2,
+            "column {near} (α={left}) and column {far} (α={right}) must mirror"
+        );
+        assert!(
+            (top - bottom).abs() <= 2,
+            "row {near} (α={top}) and row {far} (α={bottom}) must mirror"
+        );
+    }
+}
+
+/// Alpha-weighted centroid of an RGBA buffer, in pixels.
+fn ink_centroid(pixels: &[u8], size: [usize; 2]) -> (f32, f32) {
+    let (mut weight, mut sum_x, mut sum_y) = (0.0f64, 0.0f64, 0.0f64);
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let alpha = f64::from(pixels[(y * size[0] + x) * 4 + 3]);
+            weight += alpha;
+            sum_x += alpha * x as f64;
+            sum_y += alpha * y as f64;
+        }
+    }
+    assert!(weight > 0.0, "nothing was drawn");
+    ((sum_x / weight) as f32, (sum_y / weight) as f32)
+}
+
+/// A Canvas2D shadow is a `save_layer` carrying BOTH a mask blur and a colour
+/// matrix, which is the one route into `mask_blur_then_recolour`. The recolour
+/// pass used to read the blur's texture as a raw layer, discarding the used
+/// corner a downsampled blur leaves behind — so past σ 4√2, where `blur_scale`
+/// first drops to ½, the halo was rescaled into the layer's top-left quadrant.
+/// A CSS-filter blur sweep cannot see this: that path never opens a subpass
+/// with a colour filter over the blur.
+#[test]
+fn a_recoloured_mask_blur_stays_centred_past_the_downsample_threshold() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_recoloured_mask_blur_stays_centred_past_the_downsample_threshold");
+        return;
+    };
+    // Straight-through RGB with alpha retinted to the shadow colour — the same
+    // shape of matrix Canvas2D's shadow uses, and not foldable into the paint.
+    let mut shadow_colour = [0.0f32; 20];
+    shadow_colour[4] = 0.82;
+    shadow_colour[9] = 0.20;
+    shadow_colour[14] = 0.27;
+    shadow_colour[18] = 1.0;
+
+    let size = [240usize, 240];
+    let mut context = Context::new(device, queue);
+    for sigma in [4.0f32, 5.6, 5.7, 12.0, 24.0] {
+        let mut builder = DisplayListBuilder::new();
+        builder.save_layer(
+            None,
+            &Paint {
+                color_filter: Some(valo::ColorFilter::Matrix(shadow_colour)),
+                mask_blur: Some(MaskBlur::new(sigma)),
+                ..Default::default()
+            },
+        );
+        builder.draw_rect(
+            Rect::new(104.0, 104.0, 32.0, 32.0),
+            &Paint::from_color(Color::rgb(1.0, 0.31, 0.47)),
+        );
+        builder.restore();
+        let pixels = context.render_to_rgba(
+            &builder.build(),
+            [size[0] as u32, size[1] as u32],
+            Some(Color::TRANSPARENT),
+        );
+        let (x, y) = ink_centroid(&pixels, size);
+        assert!(
+            (x - 120.0).abs() <= 1.5 && (y - 120.0).abs() <= 1.5,
+            "σ={sigma}: recoloured blur centroid ({x:.2}, {y:.2}) drifted off the source"
+        );
+    }
+}
+
 /// `ImageFilter::DropShadow` — CSS `filter: drop-shadow()`. Varies offset
 /// direction, σ, and shadow colour, and includes a translucent source so the
 /// "shadow comes from the input's ALPHA, not its colour" rule is visible.

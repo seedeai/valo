@@ -32,7 +32,7 @@ pub use context::Context;
 pub use export::unpremultiply;
 #[cfg(target_os = "macos")]
 pub use surface::{metal_device_of, wrap_metal_texture, ExternalMetalTexture};
-pub use surface::{Offscreen, Surface, SurfaceFrame};
+pub use surface::{Offscreen, PersistentCanvas, Surface, SurfaceFrame};
 
 pub use valo_dl::{
     BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, DisplayListBuilder,

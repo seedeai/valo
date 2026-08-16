@@ -153,7 +153,16 @@ export class ValoCanvasRenderingContext2D {
   #stack: State[] = [];
   #path = new ValoPath2D();
   #builder = new DisplayListBuilder();
-  #history: DisplayList[] = [];
+  /**
+   * The next present starts from a CLEAR rather than from what is already on
+   * the canvas — `reset`, `beginFrame`, or a `clearRect` that provably covers
+   * the whole surface. The renderer skips its restore draw then, which is
+   * valo's analogue of Chrome dropping its copy-on-write when the new record
+   * replaces everything.
+   *
+   * True at construction: the first present has nothing to preserve.
+   */
+  #discardNext = true;
   #images: ImageSourceCache;
   #scheduled = false;
   #dirty = false;
@@ -393,7 +402,7 @@ export class ValoCanvasRenderingContext2D {
   }
 
   reset(): void {
-    this.#releaseHistory();
+    this.#discardNext = true;
     this.#builder.free();
     this.#path.free();
     disposeState(this.#state);
@@ -522,14 +531,12 @@ export class ValoCanvasRenderingContext2D {
     if (!allFinite(x, y, width, height)) return;
     [x, y, width, height] = normalizedRectangle(x, y, width, height);
     if (
-      equalMatrix(this.#state.transform, identity) &&
-      this.#state.clips.length === 0 &&
-      x <= 0 &&
-      y <= 0 &&
-      x + width >= this.canvas.width &&
-      y + height >= this.canvas.height
+      clearsWholeCanvas(this.#state.transform, this.#state.clips.length, [x, y, width, height], [
+        this.canvas.width,
+        this.canvas.height,
+      ])
     ) {
-      this.#releaseHistory();
+      this.#discardNext = true;
       this.#builder.free();
       this.#builder = new DisplayListBuilder();
       this.#replayState();
@@ -871,7 +878,7 @@ export class ValoCanvasRenderingContext2D {
   /** Drop retained draws and start the next frame from a clear surface. */
   beginFrame(clearColor = "transparent"): void {
     this.#clearColor = parseColor(clearColor);
-    this.#releaseHistory();
+    this.#discardNext = true;
     this.#builder.free();
     this.#builder = new DisplayListBuilder();
     this.#replayState();
@@ -883,17 +890,21 @@ export class ValoCanvasRenderingContext2D {
     this.#scheduled = false;
     if (!this.#dirty) return this.#lastStats;
 
-    const delta = this.#builder.build();
+    // Only this frame's new work crosses the boundary. The renderer keeps a
+    // persistent backing and restores it before drawing the delta, so the
+    // cost of a present is the delta plus one fullscreen restore — flat,
+    // however long the canvas has been accumulating.
+    const displayList = this.#builder.build();
     this.#builder.free();
-    if (delta.draw_count > 0) this.#history.push(delta);
-    else delta.free();
-
-    const frame = new DisplayListBuilder();
-    for (const list of this.#history) frame.drawDisplayList(list);
-    const displayList = frame.build();
-    frame.free();
     const [red, green, blue, alpha] = this.#clearColor;
-    const rawStats = this.#renderer.render(displayList, true, red, green, blue, alpha);
+    const rawStats = this.#renderer.render(
+      displayList,
+      this.#discardNext,
+      red,
+      green,
+      blue,
+      alpha,
+    );
     this.#lastStats = rawStats
       ? {
           cpuMilliseconds: rawStats.cpuMilliseconds,
@@ -911,6 +922,7 @@ export class ValoCanvasRenderingContext2D {
     this.#builder = new DisplayListBuilder();
     this.#replayState();
     this.#dirty = false;
+    this.#discardNext = false;
     // Live sources (a `<video>`, a `<canvas>`) become stale here, so the next
     // frame re-reads them once however many times they are drawn.
     this.#images.advanceFrame();
@@ -937,13 +949,15 @@ export class ValoCanvasRenderingContext2D {
   }
 
   /**
-   * The image for a source, uploading or refreshing it as needed. Retained
-   * history is what decides whether a live source may reuse its texture: an
-   * earlier frame's display list still referencing it must keep the pixels it
-   * was recorded with.
+   * The image for a source, uploading or refreshing it as needed.
+   *
+   * Nothing is retained across presents any more — the persistent backing
+   * holds the pixels, not a list of past display lists — so a live source can
+   * always refresh its texture in place. The already-submitted draw keeps the
+   * pixels it was recorded with because the queue orders the copy after it.
    */
   #resolveImage(source: ValoImageSource): Image | undefined {
-    return this.#images.resolve(source, this.#history.length > 0);
+    return this.#images.resolve(source);
   }
 
   /**
@@ -1254,11 +1268,6 @@ export class ValoCanvasRenderingContext2D {
     requestAnimationFrame(() => this.present());
   }
 
-  #releaseHistory(): void {
-    for (const list of this.#history) list.free();
-    this.#history = [];
-  }
-
   #replayState(): void {
     let appliedTransform = identity;
     let appliedClipCount = 0;
@@ -1320,6 +1329,33 @@ function acceptedStyle(value: ValoCanvasStyle): ValoCanvasStyle | undefined {
   if (value instanceof ValoCanvasGradient || value instanceof ValoCanvasPattern) return value;
   if (typeof value !== "string") return undefined;
   return accepted(() => parseColor(value)) ? value : undefined;
+}
+
+/**
+ * Whether a `clearRect` provably wipes the ENTIRE canvas, so the next present
+ * can start from a clear instead of restoring the persistent backing.
+ *
+ * Every condition is load-bearing. A transform or an active clip means the
+ * recorded rectangle is not the region actually cleared, and the bounds have
+ * to cover the surface rather than merely overlap it. Answering `true` too
+ * eagerly silently discards pixels the canvas promised to keep, which is the
+ * one failure of this predicate that produces no error — just missing ink.
+ */
+export function clearsWholeCanvas(
+  transform: Affine,
+  clipCount: number,
+  rectangle: readonly [number, number, number, number],
+  canvas: readonly [number, number],
+): boolean {
+  const [x, y, width, height] = rectangle;
+  return (
+    equalMatrix(transform, identity) &&
+    clipCount === 0 &&
+    x <= 0 &&
+    y <= 0 &&
+    x + width >= canvas[0] &&
+    y + height >= canvas[1]
+  );
 }
 
 function textHorizontalScale(width: number, maxWidth: number): number {

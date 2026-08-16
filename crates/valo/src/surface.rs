@@ -1,5 +1,6 @@
-use valo_geometry::Color;
-use valo_renderer::RenderTarget;
+use valo_dl::{DisplayList, DisplayListBuilder, Image};
+use valo_geometry::{Color, Rect};
+use valo_renderer::{RenderStats, RenderTarget};
 
 /// The raw `MTLDevice*` behind a wgpu device (macOS) — hand it to a
 /// `CAMetalLayer` so externally-owned drawable textures live on the same
@@ -347,4 +348,183 @@ impl Offscreen {
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
+}
+
+/// A canvas whose pixels PERSIST between frames, the way Canvas2D promises
+/// and a swapchain cannot deliver.
+///
+/// A swapchain hands out a different texture every frame and guarantees
+/// nothing about what was in it, so a host that wants "what I drew last frame
+/// is still there" has to keep the pixels itself. The alternative — replaying
+/// every display list ever recorded — costs O(N²) over N incremental frames,
+/// which is exactly the workload an annotation or paint tool generates.
+///
+/// # Why two textures
+///
+/// A texture cannot be sampled and written in the same pass, and the restore
+/// samples last frame's pixels while the resolve writes this frame's. So the
+/// two swap roles every frame: `front` holds the authoritative pixels,
+/// `back` receives the resolve, and they exchange once the frame is drawn.
+///
+/// # Why the restore is a DRAW
+///
+/// Skia's Graphite loads a 1× resolve target back into a discardable MSAA
+/// attachment. Portable WebGPU has no such unresolve, so the prior pixels are
+/// re-established with a 1:1 image draw into the fresh 4× scratch instead.
+/// That keeps valo's ×4 MSAA and its final-segment discard intact — only
+/// these two 1-sample textures persist, never a 4× attachment.
+///
+/// The draw must stay EXACT. What makes it exact is the ALIGNMENT: `src` and
+/// `dst` are the same integer rectangle, so every destination pixel centre
+/// lands on its own texel centre and the round trip through an 8-bit UNORM
+/// attachment is lossless. `Nearest` is belt-and-braces — at perfect
+/// alignment a linear tap has weights 1 and 0 and is equally exact — so the
+/// thing to protect is the rectangle, not the filter. A sub-pixel offset or a
+/// scale here would compound every frame, forever, and surface months later
+/// as "the canvas looks soft".
+pub struct PersistentCanvas {
+    front: Image,
+    back: Image,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+    /// Nothing has been drawn yet, so there is nothing to restore.
+    painted: bool,
+}
+
+impl PersistentCanvas {
+    /// Allocate a cleared pair at `size`. `format` should match the eventual
+    /// present target so the blit needs no format conversion.
+    pub fn new(context: &mut crate::Context, size: [u32; 2], format: wgpu::TextureFormat) -> Self {
+        let size = [size[0].max(1), size[1].max(1)];
+        Self {
+            front: backing(context, size, format),
+            back: backing(context, size, format),
+            size,
+            format,
+            painted: false,
+        }
+    }
+
+    /// The canvas's dimensions in pixels.
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
+
+    /// The authoritative pixels: what a present blits and what a snapshot of
+    /// this canvas would sample.
+    pub fn front(&self) -> &Image {
+        &self.front
+    }
+
+    /// Copy the canvas 1:1 onto `target`, filling it exactly — how these
+    /// pixels reach a swapchain image.
+    ///
+    /// The copy is unavoidable rather than a shortcut. WebGPU has no way to
+    /// make an arbitrary texture the one the compositor presents, which is
+    /// precisely what Chrome does when it hands Viz a `SharedImage`. So this
+    /// is the price of portability, not a missing optimisation.
+    ///
+    /// Exact when `target` matches [`Self::size`] — same rectangle,
+    /// `Nearest`, `Src` — so presenting never resamples.
+    pub fn present_to(&self, context: &mut crate::Context, target: &crate::RenderTarget) {
+        let image = self.front();
+        let source = Rect::new(0.0, 0.0, image.width(), image.height());
+        let destination = Rect::new(0.0, 0.0, target.size[0] as f32, target.size[1] as f32);
+        let mut builder = valo_dl::DisplayListBuilder::new();
+        builder.draw_image_rect(
+            image,
+            source,
+            destination,
+            crate::context::EXACT_SAMPLING,
+            &crate::context::copy_paint(),
+        );
+        context.render(&builder.build(), target);
+    }
+
+    /// Draw `delta` onto the canvas.
+    ///
+    /// `clear` of `None` PRESERVES what is already there — the Canvas2D
+    /// default, and the case the restore draw exists for. `Some(colour)`
+    /// discards it instead, which is what a `reset`, a `beginFrame` or a
+    /// proven full-surface clear wants; skipping the restore there is the
+    /// analogue of Chrome dropping its copy-on-write when the new record
+    /// replaces everything.
+    pub fn draw(
+        &mut self,
+        context: &mut crate::Context,
+        delta: &std::sync::Arc<DisplayList>,
+        clear: Option<Color>,
+    ) -> RenderStats {
+        let mut frame = DisplayListBuilder::new();
+        if clear.is_none() && self.painted {
+            frame.draw_image_rect(
+                &self.front,
+                self.whole(),
+                self.whole(),
+                crate::context::EXACT_SAMPLING,
+                &crate::context::copy_paint(),
+            );
+        }
+        frame.draw_display_list(delta);
+        let list = frame.build();
+
+        // The scratch is always cleared; the restore draw above is what puts
+        // the previous frame back. `Src` means it REPLACES rather than
+        // composites, so a translucent canvas restores its own alpha instead
+        // of accumulating it.
+        let stats = context.render(
+            &list,
+            &self.back_target(clear.unwrap_or(Color::TRANSPARENT)),
+        );
+        std::mem::swap(&mut self.front, &mut self.back);
+        self.painted = true;
+        stats
+    }
+
+    /// Reallocate at a new size. The contents are NOT carried over: every
+    /// caller of this also repaints, and a resize that scaled the old pixels
+    /// would be the one place this design could smuggle in resampling.
+    pub fn resize(&mut self, context: &mut crate::Context, size: [u32; 2]) {
+        let size = [size[0].max(1), size[1].max(1)];
+        if size == self.size {
+            return;
+        }
+        *self = Self::new(context, size, self.format);
+    }
+
+    fn whole(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.size[0] as f32, self.size[1] as f32)
+    }
+
+    fn back_target(&self, clear: Color) -> RenderTarget<'_> {
+        RenderTarget {
+            view: self.back.view(),
+            texture: self.back.texture(),
+            format: self.format,
+            size: self.size,
+            clear: Some(clear),
+        }
+    }
+}
+
+fn backing(context: &mut crate::Context, size: [u32; 2], format: wgpu::TextureFormat) -> Image {
+    let texture = context.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("valo.canvas.backing"),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        // RENDER_ATTACHMENT to resolve into, TEXTURE_BINDING to restore and
+        // blit from, COPY_SRC so a host can read the canvas back.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    context.import_image(texture, size)
 }

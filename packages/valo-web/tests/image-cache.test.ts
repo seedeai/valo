@@ -109,9 +109,9 @@ describe("source classification", () => {
       const cache = cacheOver(renderer);
       const frame = videoFrame(1000);
 
-      for (let draw = 0; draw < 5; draw += 1) cache.resolve(frame, false);
+      for (let draw = 0; draw < 5; draw += 1) cache.resolve(frame);
       cache.advanceFrame();
-      cache.resolve(frame, false);
+      cache.resolve(frame);
 
       expect(renderer.uploads).toBe(1);
       expect(renderer.refreshes).toBe(0);
@@ -125,7 +125,7 @@ describe("source classification", () => {
       const renderer = new RecordingRenderer();
       const cache = cacheOver(renderer);
       for (const timestamp of [0, 33, 66]) {
-        cache.resolve(videoFrame(timestamp), false);
+        cache.resolve(videoFrame(timestamp));
         cache.advanceFrame();
       }
       expect(renderer.uploads).toBe(3);
@@ -149,11 +149,11 @@ describe("ImageSourceCache", () => {
     const cache = cacheOver(renderer);
     const canvas = canvasElement();
 
-    cache.resolve(canvas, false);
+    cache.resolve(canvas);
     cache.advanceFrame();
-    cache.resolve(canvas, false);
+    cache.resolve(canvas);
     cache.advanceFrame();
-    cache.resolve(canvas, false);
+    cache.resolve(canvas);
 
     expect(renderer.uploads).toBe(1);
     expect(renderer.refreshes).toBe(2);
@@ -164,7 +164,7 @@ describe("ImageSourceCache", () => {
     const cache = cacheOver(renderer);
     const canvas = canvasElement();
 
-    for (let draw = 0; draw < 10; draw += 1) cache.resolve(canvas, false);
+    for (let draw = 0; draw < 10; draw += 1) cache.resolve(canvas);
 
     expect(renderer.uploads).toBe(1);
     expect(renderer.refreshes).toBe(0);
@@ -177,8 +177,8 @@ describe("ImageSourceCache", () => {
     const bitmap = imageBitmap();
 
     for (let frame = 0; frame < 5; frame += 1) {
-      cache.resolve(still, false);
-      cache.resolve(bitmap, false);
+      cache.resolve(still);
+      cache.resolve(bitmap);
       cache.advanceFrame();
     }
 
@@ -191,11 +191,11 @@ describe("ImageSourceCache", () => {
     const cache = cacheOver(renderer);
     const element = imageElement("a.png") as { currentSrc: string; src: string };
 
-    cache.resolve(element as unknown as ValoImageSource, false);
+    cache.resolve(element as unknown as ValoImageSource);
     element.currentSrc = "b.png";
     element.src = "b.png";
     cache.advanceFrame();
-    cache.resolve(element as unknown as ValoImageSource, false);
+    cache.resolve(element as unknown as ValoImageSource);
 
     expect(renderer.uploads + renderer.refreshes).toBe(2);
   });
@@ -205,32 +205,17 @@ describe("ImageSourceCache", () => {
     const cache = cacheOver(renderer);
     const video = videoElement(1.5) as { currentTime: number };
 
-    cache.resolve(video as unknown as ValoImageSource, false);
+    cache.resolve(video as unknown as ValoImageSource);
     cache.advanceFrame();
-    cache.resolve(video as unknown as ValoImageSource, false);
+    cache.resolve(video as unknown as ValoImageSource);
     expect(renderer.uploads).toBe(1);
     expect(renderer.refreshes).toBe(0);
 
     // Playing again advances the timestamp, and that has to be picked up.
     video.currentTime = 1.6;
     cache.advanceFrame();
-    cache.resolve(video as unknown as ValoImageSource, false);
+    cache.resolve(video as unknown as ValoImageSource);
     expect(renderer.refreshes).toBe(1);
-  });
-
-  it("mints a new image rather than refreshing while earlier frames are retained", () => {
-    // Refreshing in place would rewrite the texture an already-recorded draw
-    // is still showing, so retained history has to buy a new one.
-    const renderer = new RecordingRenderer();
-    const cache = cacheOver(renderer);
-    const canvas = canvasElement();
-
-    cache.resolve(canvas, true);
-    cache.advanceFrame();
-    cache.resolve(canvas, true);
-
-    expect(renderer.uploads).toBe(2);
-    expect(renderer.refreshes).toBe(0);
   });
 
   it("blits an OffscreenCanvas through a scratch canvas when the adapter cannot copy it", () => {
@@ -253,7 +238,7 @@ describe("ImageSourceCache", () => {
         transferToImageBitmap: () => null,
       } as unknown as ValoImageSource;
 
-      cache.resolve(offscreen, false);
+      cache.resolve(offscreen);
 
       expect(created).toEqual(["canvas"]);
       expect(renderer.copied[0]).toBe(scratch);
@@ -273,7 +258,7 @@ describe("ImageSourceCache", () => {
       transferToImageBitmap: () => null,
     } as unknown as ValoImageSource;
 
-    cache.resolve(offscreen, false);
+    cache.resolve(offscreen);
     expect(renderer.copied[0]).toBe(offscreen);
   });
 
@@ -281,14 +266,14 @@ describe("ImageSourceCache", () => {
     withVideoFrameConstructor(() => {
       const renderer = new RecordingRenderer();
       const cache = cacheOver(renderer);
-      expect(cache.resolve(videoFrame(1000), false)).toMatchObject({ mipmaps: false });
+      expect(cache.resolve(videoFrame(1000))).toMatchObject({ mipmaps: false });
     });
   });
 
   it("asks for mips only where they will be reused", () => {
     const renderer = new RecordingRenderer();
     const cache = cacheOver(renderer);
-    expect(cache.resolve(imageElement(), false)).toMatchObject({ mipmaps: true });
-    expect(cache.resolve(canvasElement(), false)).toMatchObject({ mipmaps: false });
+    expect(cache.resolve(imageElement())).toMatchObject({ mipmaps: true });
+    expect(cache.resolve(canvasElement())).toMatchObject({ mipmaps: false });
   });
 });

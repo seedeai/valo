@@ -1,4 +1,5 @@
-use valo_dl::{DisplayList, Image};
+use valo_dl::{BlendMode, DisplayList, Filter, Image, MipmapMode, Paint, Sampling, TileMode};
+use valo_geometry::Color;
 use valo_renderer::{ImageDesc, MemoryReport, RenderStats, RenderTarget, RendererCore};
 
 /// One per `wgpu::Device`: owns every GPU-side cache (pipelines, per-frame
@@ -69,11 +70,15 @@ impl Context {
         self.renderer.set_raster_hold(held);
     }
 
-    // Export-only accessors; the readback path doesn't exist on wasm.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn device(&self) -> &wgpu::Device {
+    /// The device this context renders on.
+    ///
+    /// Public because [`Self::import_image`] is: a host cannot hand over a
+    /// texture it has no device to create.
+    pub fn device(&self) -> &wgpu::Device {
         self.renderer.device()
     }
+
+    // Export-only accessor; the readback path doesn't exist on wasm.
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn queue_handle(&self) -> wgpu::Queue {
@@ -214,4 +219,27 @@ fn copy_external_image(
             depth_or_array_layers: 1,
         },
     );
+}
+
+/// Nearest, clamped, no mips. ALIGNMENT is what makes a 1:1 image draw exact
+/// (see [`crate::PersistentCanvas`]); this only removes the remaining ways to
+/// be wrong.
+pub(crate) const EXACT_SAMPLING: Sampling = Sampling {
+    filter: Filter::Nearest,
+    mipmap: MipmapMode::None,
+    tile_x: TileMode::Clamp,
+    tile_y: TileMode::Clamp,
+};
+
+/// White at full alpha, `Src`. `fs_image` multiplies the sample by the paint
+/// colour, so anything darker would tint the copy — and `Paint::default()` is
+/// BLACK, which would copy a black rectangle. `Src` REPLACES rather than
+/// composites, so a translucent canvas keeps its own alpha instead of
+/// accumulating it.
+pub(crate) fn copy_paint() -> Paint {
+    Paint {
+        color: Color::WHITE,
+        blend_mode: BlendMode::Src,
+        ..Paint::default()
+    }
 }
