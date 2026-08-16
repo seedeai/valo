@@ -1,6 +1,6 @@
 # valo — a 2D render engine in Rust on wgpu. A display list is recorded with a
 # record-time oracle (bounds, depth slots), planned into GPU passes, and drawn
-# alongside a Skia-shaped text stack. See CLAUDE.md for the design principles.
+# alongside a Skia-shaped text stack. See AGENTS.md for how the project works.
 [workspace]
 resolver = "2"
 members = ["crates/*"]
@@ -10,22 +10,24 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/seedeai/valo"
+readme = "README.md"
 # wgpu 30 sets the floor; verified in CI.
 rust-version = "1.87"
 keywords = ["graphics", "gpu", "wgpu", "2d", "renderer"]
 categories = ["graphics", "rendering::engine"]
-publish = false
 
 [workspace.dependencies]
-# internal
-valo-geometry = { path = "crates/valo-geometry" }
-valo-dl = { path = "crates/valo-dl" }
-valo-text = { path = "crates/valo-text" }
-valo-renderer = { path = "crates/valo-renderer" }
+# internal — path + version, because crates.io drops the path and needs the
+# version. valo-harness stays version-less on purpose: it is dev-only and a
+# version-less dev-dependency is stripped at publish instead of published.
+valo-geometry = { path = "crates/valo-geometry", version = "0.1.0" }
+valo-dl = { path = "crates/valo-dl", version = "0.1.0" }
+valo-text = { path = "crates/valo-text", version = "0.1.0" }
+valo-renderer = { path = "crates/valo-renderer", version = "0.1.0" }
 valo-harness = { path = "crates/valo-harness" }
-valo = { path = "crates/valo" }
-valo-svg = { path = "crates/valo-svg" }
-valo-system-fonts = { path = "crates/valo-system-fonts" }
+valo = { path = "crates/valo", version = "0.1.0" }
+valo-svg = { path = "crates/valo-svg", version = "0.1.0" }
+valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.1.0" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
 # text — one crate per role in Skia's stack, each an intended swap seam:
