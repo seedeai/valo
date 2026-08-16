@@ -1,10 +1,10 @@
-# @valo/web
+# valo-web
 
 WebGPU-native 2D rendering through Valo's raw retained API or a typed,
 Canvas-shaped adapter.
 
 ```ts
-import { createValoCanvas } from "@valo/web";
+import { createValoCanvas } from "valo-web";
 
 const context = await createValoCanvas(document.querySelector("canvas")!);
 context.fillStyle = "#c8ff3d";
@@ -12,7 +12,7 @@ context.roundRect(24, 24, 240, 140, [28, 8, 28, 8]);
 context.fill();
 ```
 
-Import `@valo/web/raw` for `DisplayListBuilder`, paths, paint, shaders,
+Import `valo-web/raw` for `DisplayListBuilder`, paths, paint, shaders,
 paragraphs, image upload, render statistics, and explicit resource lifetimes.
 
 The adapter supports fixed-font `fillText`, `strokeText`, and Canvas-shaped

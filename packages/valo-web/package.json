@@ -1,5 +1,5 @@
 {
-  "name": "@valo/web",
+  "name": "valo-web",
   "version": "0.1.0",
   "description": "WebGPU-native 2D rendering with a retained API and Canvas2D adapter",
   "license": "MIT",

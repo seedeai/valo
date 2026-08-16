@@ -56,9 +56,9 @@ Every one is covered by name instead, in `degenerate-scenes.ts` or as its own
 test in `query.browser.test.ts`, with a comment at the generator saying where.
 When the divergence closes, widen the generator and delete the comment.
 
-## Why these scripts build `@valo/web` first
+## Why these scripts build `valo-web` first
 
-This suite imports `@valo/web` by package name, so it resolves through that
+This suite imports `valo-web` by package name, so it resolves through that
 package's `exports` to the emitted `dist/` — the same entry point a real
 consumer gets. That is deliberate: a polyfill is only proven by testing what
 ships, including its `exports` map and its emitted types, rather than the

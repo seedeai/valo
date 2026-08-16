@@ -8,7 +8,7 @@
  * number written across a dozen demos.
  *
  * Every value is the index the Rust side uses in `crates/valo-web/src/types.rs`.
- * If `@valo/web` ever exports these, delete this file and import from there.
+ * If `valo-web` ever exports these, delete this file and import from there.
  */
 
 /** Order of `types::blend_mode`. */

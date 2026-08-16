@@ -18,7 +18,7 @@ import { DIST_TYPES } from './scene-types';
  *
  * This module is reached only through `next/dynamic` from the playground, so
  * the several megabytes below never enter the landing page's graph. It is also
- * the reason the editor is worth having: fed `@valo/web`'s own `.d.ts`, typing
+ * the reason the editor is worth having: fed `valo-web`'s own `.d.ts`, typing
  * `Paint.` lists the real API, which is a better argument for the
  * compatibility claim than any prose about it.
  */
@@ -69,8 +69,8 @@ const compilerOptions = {
   noImplicitAny: false,
   baseUrl: 'file:///',
   paths: {
-    '@valo/web': ['file:///node_modules/@valo/web/dist/index.d.ts'],
-    '@valo/web/raw': ['file:///node_modules/@valo/web/dist/raw.d.ts'],
+    'valo-web': ['file:///node_modules/valo-web/dist/index.d.ts'],
+    'valo-web/raw': ['file:///node_modules/valo-web/dist/raw.d.ts'],
   },
 };
 
@@ -93,7 +93,7 @@ async function loadValoTypes() {
 
   const files = await Promise.all(
     [...DIST_TYPES.map((name) => `dist/${name}`), 'wasm/valo_web'].map(async (name) => ({
-      path: `file:///node_modules/@valo/web/${name}.d.ts`,
+      path: `file:///node_modules/valo-web/${name}.d.ts`,
       text: await (await fetch(`/valo/types/${name.split('/').pop()}.d.ts`)).text(),
     })),
   );

@@ -2,7 +2,7 @@ import {
   createRenderer,
   initializeValo,
   ValoCanvasRenderingContext2D,
-} from "@valo/web";
+} from "valo-web";
 import {
   CANVAS_PAIR_TEST_ID,
   CANVAS_SIZE,

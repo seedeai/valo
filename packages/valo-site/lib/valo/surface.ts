@@ -1,4 +1,4 @@
-import type { Renderer } from '@valo/web/raw';
+import type { Renderer } from 'valo-web/raw';
 import { attachRenderer, sharedRuntime } from './device';
 import { valoModule, type Scene, type SceneModule } from './scene';
 

@@ -70,7 +70,7 @@ jobs:
       - run: npm ci
       - run: npm run check:web
       - run: npm run check:conformance
-      - run: npm run build:playground --workspace @valo/web
+      - run: npm run build:playground --workspace valo-web
 
   canvas-conformance:
     name: Canvas2D conformance

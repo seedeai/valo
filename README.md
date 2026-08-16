@@ -19,7 +19,7 @@ Valo is a WebGPU-native 2D rendering engine built with Rust and [wgpu](https://w
 
 For browsers:
 ```sh
-npm install @valo/web
+npm install valo-web
 ```
 
 For native platforms:
@@ -69,7 +69,7 @@ Gradients, image filters, blend modes, clips, layers and shaped paragraphs are a
 The raw API is the engine's own vocabulary — display lists, paints, shaders, paragraphs — with explicit resource lifetimes:
 
 ```ts
-import { initializeValo, createRenderer, DisplayListBuilder, Paint } from "@valo/web/raw";
+import { initializeValo, createRenderer, DisplayListBuilder, Paint } from "valo-web/raw";
 
 await initializeValo();
 const renderer = await createRenderer(document.querySelector("canvas")!);
@@ -86,7 +86,7 @@ list.free(); builder.free(); paint.free();
 The Canvas2D adapter runs existing drawing code on the same renderer:
 
 ```ts
-import { createValoCanvas } from "@valo/web";
+import { createValoCanvas } from "valo-web";
 
 const context = await createValoCanvas(document.querySelector("canvas")!);
 context.fillStyle = "#c8ff3d";
@@ -95,7 +95,7 @@ context.fill();
 context.backdropBlur(48, 72, 192, 56, 12); // Valo extension
 ```
 
-It covers Canvas2D state, paths, transforms, clips, gradients, images, shadows, blends and text, and is checked against Chrome's own Canvas2D by a [differential conformance suite](packages/valo-conformance/README.md). Browsers without WebGPU can use `@valo/web/compat`, which falls back to WebGL2 (raw API, one canvas per renderer).
+It covers Canvas2D state, paths, transforms, clips, gradients, images, shadows, blends and text, and is checked against Chrome's own Canvas2D by a [differential conformance suite](packages/valo-conformance/README.md). Browsers without WebGPU can use `valo-web/compat`, which falls back to WebGL2 (raw API, one canvas per renderer).
 
 ## From C
 

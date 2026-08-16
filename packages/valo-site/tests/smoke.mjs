@@ -231,7 +231,7 @@ try {
   await blinded.waitForSelector('.monaco-editor', { timeout: 60_000 });
   await blinded.waitForTimeout(7000);
   const blindErrors = await blinded.locator('.squiggly-error').count();
-  check("and it is @valo/web's own types doing it", blindErrors > 0, `${blindErrors} errors without them`);
+  check("and it is valo-web's own types doing it", blindErrors > 0, `${blindErrors} errors without them`);
   await blinded.close();
 
   await page.goto(`${BASE}/docs`, { waitUntil: 'networkidle' });

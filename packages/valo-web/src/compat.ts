@@ -13,7 +13,7 @@ export * from "./enums.js";
  * - the GLSL transpiler roughly doubles the wasm download for everyone;
  * - WebGL is one context per canvas, so on the fallback path `Device.attach`
  *   accepts a single canvas — create one `Device` per canvas instead;
- * - only this raw API is served: the Canvas2D layer stays on `@valo/web`,
+ * - only this raw API is served: the Canvas2D layer stays on `valo-web`,
  *   which requires WebGPU.
  */
 

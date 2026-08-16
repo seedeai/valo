@@ -15,7 +15,7 @@ the backing its pixels live in.
 ## The raw API
 
 ```ts
-import { createDevice, initializeValo } from '@valo/web/raw';
+import { createDevice, initializeValo } from 'valo-web/raw';
 
 await initializeValo();
 const device = await createDevice();
@@ -28,7 +28,7 @@ const third = device.attach(canvasC);
 ## The Canvas2D layer
 
 ```ts
-import { ValoDevice } from '@valo/web';
+import { ValoDevice } from 'valo-web';
 
 const device = await ValoDevice.create();
 const contextA = device.attach(canvasA);

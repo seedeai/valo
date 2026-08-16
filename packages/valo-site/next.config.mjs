@@ -9,8 +9,8 @@ const config = {
   // This repo already has an AGENTS.md at the root that says something else,
   // and a second one a directory down would only compete with it.
   agentRules: false,
-  // `@valo/web` is a workspace sibling shipping untranspiled ESM.
-  transpilePackages: ['@valo/web'],
+  // `valo-web` is a workspace sibling shipping untranspiled ESM.
+  transpilePackages: ['valo-web'],
   // The wasm module is served from `public/valo/` and fetched by URL, so the
   // bundler never has to understand it. `initializeValo` takes that URL, which
   // keeps the loader identical between webpack, Turbopack and the playground's

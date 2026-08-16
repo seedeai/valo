@@ -27,7 +27,7 @@ type Tab = 'scene' | 'setup';
 /**
  * Two files, because a scene on its own is half the picture.
  *
- * `scene.js` is a real module: it imports from `@valo/web/raw` and exports its
+ * `scene.js` is a real module: it imports from `valo-web/raw` and exports its
  * draw function, and the same text runs on the landing page. `setup.ts` is the
  * bootstrap that calls it — the device, the fonts, the canvas and the frame
  * loop — served straight from the repository so it cannot describe an API that
@@ -87,7 +87,7 @@ export function Playground({ initialDemo }: { initialDemo?: string }) {
         <p className="m-0 font-mono text-[10px] uppercase tracking-[0.12em] text-[#5f5e65]">
           {stats
             ? `${stats.draws} draws · ${stats.drawCalls} calls · ${stats.renderPasses} passes · ${stats.cpuMilliseconds.toFixed(2)} ms cpu`
-            : 'raw api · @valo/web/raw'}
+            : 'raw api · valo-web/raw'}
         </p>
       </header>
 

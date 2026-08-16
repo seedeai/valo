@@ -3,7 +3,7 @@
  *
  * Each demo is the SOURCE TEXT, not a function: the card evaluates it and so
  * does the playground, so what the editor opens is provably what the card ran.
- * Each is a real ES module — it imports from `@valo/web/raw` and default-exports
+ * Each is a real ES module — it imports from `valo-web/raw` and default-exports
  * its draw function — because a visitor reading one should be reading code they
  * could paste into their own project, not a body with names already in scope.
  *
@@ -33,7 +33,7 @@ export interface Demo {
 const wordmark = `// Crisp type over a breathing field. The aurora is three coverage-blurred
 // vector shapes; the contour lines swim slowly through it; the word carries
 // its own soft gradient, one register above the field behind it.
-import { BlurStyle, Paint, Paragraph, Path, Shader, TextAlign } from '@valo/web/raw';
+import { BlurStyle, Paint, Paragraph, Path, Shader, TextAlign } from 'valo-web/raw';
 
 let name;
 
@@ -150,7 +150,7 @@ export default function draw(scene) {
 const paragraphLayout = `// Canvas2D has no line breaking at all: fillText draws one run on one line
 // and where it wraps is your problem. This column was shaped ONCE; every
 // frame only re-wraps it to the moving measure - the cheap half of text.
-import { Paint, Paragraph, Shader, TextAlign } from '@valo/web/raw';
+import { Paint, Paragraph, Shader, TextAlign } from 'valo-web/raw';
 
 let overline;
 let copy;
@@ -232,7 +232,7 @@ export default function draw(scene) {
 const maskBlurStyles = `// A specimen sheet. Four identical blades, ONE colour, four mask-blur
 // styles: the blur runs on each blade's coverage, so all four stay single
 // analytic quads. Canvas2D's shadowBlur is Normal and nothing else.
-import { BlurStyle, Paint, Paragraph, Shader, TextAlign } from '@valo/web/raw';
+import { BlurStyle, Paint, Paragraph, Shader, TextAlign } from 'valo-web/raw';
 
 const NAMES = ['NORMAL', 'SOLID', 'INNER', 'OUTER'];
 let labels;
@@ -309,7 +309,7 @@ const backdropBlur = `// One fixed lens over moving ribbons. backdropBlur breaks
 // snapshots what is already recorded beneath the region, blurs it and
 // composites it back. Canvas2D's filter only ever applies to what you are
 // about to draw, never to what is already there.
-import { BlurStyle, ClipOp, FillRule, Paint, Path, Shader } from '@valo/web/raw';
+import { BlurStyle, ClipOp, FillRule, Paint, Path, Shader } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -410,7 +410,7 @@ const gradientSpreads = `// One linear gradient, half a card long. Everything pa
 // is the SPREAD MODE: Pad holds the edge colours, Repeat tiles the ramp,
 // Reflect mirrors it back and forth. Canvas2D gradients only ever pad -
 // the lower two bands have no spelling there.
-import { Paint, Paragraph, Shader, SpreadMode, TextAlign } from '@valo/web/raw';
+import { Paint, Paragraph, Shader, SpreadMode, TextAlign } from 'valo-web/raw';
 
 const NAMES = ['PAD', 'REPEAT', 'REFLECT'];
 let labels;
@@ -480,7 +480,7 @@ export default function draw(scene) {
 const differenceClip = `// An eclipse cut from an arch. The circle is a DIFFERENCE clip: it subtracts
 // itself from the clip stack, and the fill and every contour line vanish
 // through it together. Canvas2D's clip() only ever intersects.
-import { ClipOp, FillRule, Paint, Path, Shader } from '@valo/web/raw';
+import { ClipOp, FillRule, Paint, Path, Shader } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -569,7 +569,7 @@ export default function draw(scene) {
 const sweepGradient = `// An off-centre fan. The geometry never moves: the sweep gradient rotates
 // around the pivot, and a colour matrix on the paint tilts the whole palette
 // warm and cool. Canvas2D has neither a conic paint nor a paint matrix.
-import { BlurStyle, ColorFilter, Paint, Path, Shader } from '@valo/web/raw';
+import { BlurStyle, ColorFilter, Paint, Path, Shader } from 'valo-web/raw';
 
 const IDENTITY = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
 const CROSS_MIX = [
@@ -685,7 +685,7 @@ export default function draw(scene) {
 const blendModes = `// These modes have to read the destination, so they cannot be a pipeline
 // blend state. Each one breaks the pass: the target resolves into a snapshot
 // and one shader computes the blend and the composite together.
-import { BlendMode, Paint, Shader } from '@valo/web/raw';
+import { BlendMode, Paint, Shader } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -732,7 +732,7 @@ const groupOpacity = `// Left: three circles at per-draw alpha, so every overlap
 // darkens. Right: the same circles inside a save layer - they render opaque
 // into one texture and the alpha applies ONCE, to the group.
 // Canvas2D's globalAlpha only ever does the left-hand thing.
-import { FillRule, Paint, Path } from '@valo/web/raw';
+import { FillRule, Paint, Path } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -771,7 +771,7 @@ const strokes = `// A signal braid. The geometry never moves - only each stroke'
 // advances. Dashing runs on the flattened contour before the stroker, so
 // every dash is real geometry: round caps on the short marks, square ends
 // and bevelled corners on the angular track.
-import { BlurStyle, Cap, Join, Paint, Path, Shader } from '@valo/web/raw';
+import { BlurStyle, Cap, Join, Paint, Path, Shader } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -870,7 +870,7 @@ const gradientText = `// Text is an ordinary render object here. The paragraph s
 // kept; drawParagraphWith fills its glyphs with any paint, gradient included.
 // The glyph atlas lives on the DEVICE, so every card on this page that sets
 // type rasters into the same one.
-import { Paint, Paragraph, Shader, TextAlign } from '@valo/web/raw';
+import { Paint, Paragraph, Shader, TextAlign } from 'valo-web/raw';
 
 let headline;
 
@@ -926,7 +926,7 @@ export default function draw(scene) {
 const filterChain = `// Image filters compose. This one is a drop shadow with a blur behind it,
 // built as a chain and hung on the paint - the layer is filtered as a whole
 // rather than each shape carrying its own shadow.
-import { FillRule, ImageFilter, Paint, Path } from '@valo/web/raw';
+import { FillRule, ImageFilter, Paint, Path } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {
@@ -976,7 +976,7 @@ const retainedList = `// One recording, replayed sixteen times. The frame below 
 // display list ONCE - its bounds and depth slots worked out at record time -
 // and every copy is drawDisplayListCached under a different transform.
 // Canvas2D is immediate mode: there is no list to keep, nothing to replay.
-import { Cap, DisplayListBuilder, Join, Paint, Path, Shader } from '@valo/web/raw';
+import { Cap, DisplayListBuilder, Join, Paint, Path, Shader } from 'valo-web/raw';
 
 let frame;
 
@@ -1086,7 +1086,7 @@ export default function draw(scene) {
 const nestedLayers = `// A layer inside a layer, with a rotated clip in the inner one. The recorder
 // works the bounds and the depth slots out at RECORD time, so replay never
 // looks ahead and never patches anything at restore.
-import { ClipOp, FillRule, Paint, Path } from '@valo/web/raw';
+import { ClipOp, FillRule, Paint, Path } from 'valo-web/raw';
 
 /** @param {import('./setup').Scene} scene */
 export default function draw(scene) {

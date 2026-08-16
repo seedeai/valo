@@ -19,7 +19,7 @@ export const repositoryUrl = `https://github.com/${gitConfig.user}/${gitConfig.r
 /** Package names, in one place because they appear in prose and in code samples. */
 export const packages = {
   rust: 'valo',
-  npm: '@valo/web',
+  npm: 'valo-web',
 } as const;
 
 /**

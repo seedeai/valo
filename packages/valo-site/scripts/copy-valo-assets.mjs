@@ -8,7 +8,7 @@
  *   depending on each one's wasm asset handling.
  * - the fonts, because valo never reaches for a font itself. Text arrives as
  *   registered bytes, so the site has to serve the bytes.
- * - `@valo/web`'s emitted `.d.ts`, because the playground feeds them to Monaco.
+ * - `valo-web`'s emitted `.d.ts`, because the playground feeds them to Monaco.
  *   Completions on `ctx.` come from the shipped types, not a hand-written copy,
  *   so they cannot drift from the package.
  * - `standalone-setup.ts`, because the playground shows it as a read-only tab.

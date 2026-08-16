@@ -3,12 +3,12 @@ import { valoModule, type SceneModule } from './scene';
 /**
  * Evaluate a scene module.
  *
- * A demo is written as a real ES module — it imports from `@valo/web/raw` and
+ * A demo is written as a real ES module — it imports from `valo-web/raw` and
  * default-exports a `draw` function — and a card and the playground evaluate
  * the same text, so what the editor opens is provably what the card ran.
  *
  * The browser cannot `import` a string, so the two module keywords are
- * rewritten into the equivalent expressions: an import from `@valo/web/raw`
+ * rewritten into the equivalent expressions: an import from `valo-web/raw`
  * becomes a destructure of the module object already in hand, and the exports
  * become a returned record. Nothing else is touched, and nothing is injected —
  * a name a scene did not import is a name it does not have.
@@ -18,7 +18,7 @@ export type CompileResult =
   | { readonly ok: true; readonly module: SceneModule }
   | { readonly ok: false; readonly error: string };
 
-const RAW_SPECIFIER = '@valo/web/raw';
+const RAW_SPECIFIER = 'valo-web/raw';
 
 /** `import { a, b as c } from '...'` — the only import form a scene needs. */
 const IMPORT = /^[ \t]*import\s+(type\s+)?(\{[^}]*\}|[A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+)['"];?[ \t]*$/gm;

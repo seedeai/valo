@@ -5,8 +5,8 @@ import {
   type Device,
   type MemoryReport,
   type Renderer,
-} from '@valo/web/raw';
-import { ValoCanvasRenderingContext2D, type ValoCanvasOptions } from '@valo/web';
+} from 'valo-web/raw';
+import { ValoCanvasRenderingContext2D, type ValoCanvasOptions } from 'valo-web';
 
 /**
  * The site's single point of contact with valo's GPU objects.

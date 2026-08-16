@@ -23,7 +23,7 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 | `valo-svg` | SVG → display list translation |
 | `valo-system-fonts` | native OS font discovery behind `FontSource`. Never a wasm dependency |
 | `valo-capi` | C ABI for non-Rust embedders; the committed header is `crates/valo-capi/include/valo.h` |
-| `valo-web` | wasm-bindgen bindings: the raw API, canvas attach, image upload. Ships to npm as `@valo/web`; the `webgl` feature builds the WebGL2-fallback compat artifact |
+| `valo-web` | wasm-bindgen bindings: the raw API, canvas attach, image upload. Ships to npm as `valo-web`; the `webgl` feature builds the WebGL2-fallback compat artifact |
 | `valo-web-demo` | dev only: the browser playground chapters (`npm run dev:web`) |
 | `valo-harness` | dev only: headless GPU, golden compare, example runner. Never a dependency of a shipping crate |
 

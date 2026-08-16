@@ -77,7 +77,7 @@ export function Canvas2DParity() {
     <div className="grid gap-px border border-valo-line bg-valo-line md:grid-cols-2">
       <ParityPane
         title="valo"
-        note={`@valo/web · WebGPU · ${conformance.passing}/${conformance.total} differential scenes`}
+        note={`valo-web · WebGPU · ${conformance.passing}/${conformance.total} differential scenes`}
         canvasRef={valoRef}
         error={error}
       />

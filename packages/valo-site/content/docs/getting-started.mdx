@@ -6,7 +6,7 @@ description: Install valo, acquire a device, and draw a first frame on the web o
 ## On the web
 
 ```bash
-npm install @valo/web
+npm install valo-web
 ```
 
 The package ships WebAssembly plus a typed TypeScript layer over it. It needs a
@@ -15,7 +15,7 @@ browser with WebGPU: Chrome 113+, Edge 113+, or Safari 18+.
 ### One canvas
 
 ```ts
-import { createValoCanvas } from '@valo/web';
+import { createValoCanvas } from 'valo-web';
 
 const canvas = document.querySelector('canvas')!;
 const ctx = await createValoCanvas(canvas);
@@ -33,7 +33,7 @@ For a page with more than one canvas, see [one device, many canvases](/docs/shar
 ### The raw API
 
 ```ts
-import { createDevice, initializeValo, DisplayListBuilder, Paint } from '@valo/web/raw';
+import { createDevice, initializeValo, DisplayListBuilder, Paint } from 'valo-web/raw';
 
 await initializeValo();
 const device = await createDevice();

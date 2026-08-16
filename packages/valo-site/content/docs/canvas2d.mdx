@@ -3,11 +3,11 @@ title: Canvas2D compatibility
 description: What the drop-in layer covers, how it is verified, and where it deliberately diverges.
 ---
 
-`@valo/web` exposes `ValoCanvasRenderingContext2D`, which takes the calls you
+`valo-web` exposes `ValoCanvasRenderingContext2D`, which takes the calls you
 already write.
 
 ```ts
-import { createValoCanvas } from '@valo/web';
+import { createValoCanvas } from 'valo-web';
 
 const ctx = await createValoCanvas(document.querySelector('canvas')!);
 ctx.fillStyle = 'rgba(200, 255, 61, 0.9)';

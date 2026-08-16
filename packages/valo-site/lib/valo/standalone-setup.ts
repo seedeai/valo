@@ -4,7 +4,7 @@ import {
   createDevice,
   initializeValo,
   type Renderer,
-} from '@valo/web/raw';
+} from 'valo-web/raw';
 
 /**
  * The smallest complete valo bootstrap, and the playground shows this file.

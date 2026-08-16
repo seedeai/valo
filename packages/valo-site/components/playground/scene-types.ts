@@ -1,5 +1,5 @@
 /**
- * `@valo/web`'s emitted declarations, staged into `public/valo/types/` by
+ * `valo-web`'s emitted declarations, staged into `public/valo/types/` by
  * `scripts/copy-valo-assets.mjs` and laid out in the editor's virtual file
  * system exactly as they sit in the package — `dist/` beside `wasm/` — so the
  * relative import inside `raw.d.ts` resolves without rewriting anything.
