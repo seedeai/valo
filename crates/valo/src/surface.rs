@@ -180,9 +180,14 @@ impl Surface {
         Ok(Self::from_wgpu_surface(surface, adapter, device, size))
     }
 
-    /// Shared tail of both constructors: pick a non-sRGB format (sRGB-space
-    /// blending, the CSS/Skia look) and configure.
-    fn from_wgpu_surface(
+    /// [`Surface::new`] over a surface the embedder already created.
+    ///
+    /// This ordering matters on wgpu's WebGL backend, where the adapter can
+    /// only be requested with a `compatible_surface` — the GL context lives
+    /// on the canvas, so the surface has to exist first. Also the shared tail
+    /// of the other constructors: picks a non-sRGB format (sRGB-space
+    /// blending, the CSS/Skia look) and configures.
+    pub fn from_wgpu_surface(
         surface: wgpu::Surface<'static>,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
@@ -196,11 +201,18 @@ impl Surface {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
-            // Blending happens in sRGB space (AGENTS.md's CSS/Skia look), and
-            // the format picked below is non-sRGB to keep it there.
+            // Blending happens in sRGB space, and the format picked above is
+            // non-sRGB to keep it there. Linear-light blending would be
+            // physically "more correct" but diverge from every browser and
+            // from Skia — Canvas2D parity is the goal, so sRGB it is.
             color_space: wgpu::SurfaceColorSpace::Srgb,
-            // COPY_SRC: advanced blends snapshot the resolved target mid-frame.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            // COPY_SRC where the platform allows it: advanced blends snapshot
+            // the resolved target mid-frame when rendering direct to the
+            // swapchain. WebGL2's default framebuffer cannot be a copy source
+            // — and never needs to be, because on that path every frame blits
+            // from the persistent backing, which carries its own COPY_SRC.
+            usage: (wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC)
+                & caps.usages,
             format,
             width: size[0].max(1),
             height: size[1].max(1),

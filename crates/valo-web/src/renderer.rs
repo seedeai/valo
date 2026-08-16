@@ -218,10 +218,79 @@ pub async fn create_device() -> Result<WebDevice, JsValue> {
 ///
 /// A page with several live canvases should call [`create_device`] once and
 /// [`WebDevice::attach`] per canvas instead; this exists for the common case
-/// of exactly one.
+/// of exactly one. In the compat build it is also the WebGL2 entry point:
+/// where WebGPU is missing this falls back to the GL backend, which is
+/// canvas-first by nature and so only reachable from here.
 #[wasm_bindgen(js_name = createRenderer)]
 pub async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<WebRenderer, JsValue> {
-    create_device().await?.attach(canvas)
+    match create_device().await {
+        Ok(device) => device.attach(canvas),
+        Err(error) => create_renderer_fallback(canvas, error).await,
+    }
+}
+
+/// The WebGL2 path. On wgpu's GL backend the adapter can only be requested
+/// with a `compatible_surface` — the GL context lives on the canvas — so the
+/// order is inverted: surface first, then adapter, then device. Everything
+/// created here is bound to this one canvas, which is why the compat story is
+/// one renderer per canvas rather than one device for the page.
+#[cfg(feature = "webgl")]
+async fn create_renderer_fallback(
+    canvas: web_sys::HtmlCanvasElement,
+    _webgpu_error: JsValue,
+) -> Result<WebRenderer, JsValue> {
+    console_error_panic_hook::set_once();
+    let instance = wgpu::Instance::default();
+    let size = [canvas.width().max(1), canvas.height().max(1)];
+    let raw_surface = instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        .map_err(|error| JsValue::from_str(&format!("cannot create canvas surface: {error:?}")))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&raw_surface),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| {
+            JsValue::from_str(&format!("neither WebGPU nor WebGL2 is available: {error:?}"))
+        })?;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("valo.web.compat"),
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+            // The default limits are WebGPU-sized and a WebGL2 device refuses
+            // them; start from the WebGL2 floor and take what this adapter
+            // actually offers.
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                .using_resolution(adapter.limits()),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| JsValue::from_str(&format!("cannot create WebGL2 device: {error:?}")))?;
+    let unrestricted_external_copies = adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::UNRESTRICTED_EXTERNAL_TEXTURE_COPIES);
+    let surface = Surface::from_wgpu_surface(raw_surface, &adapter, &device, size);
+    let context = Rc::new(RefCell::new(Context::new(device, queue)));
+    let backing = PersistentCanvas::new(&mut context.borrow_mut(), size, surface.format());
+    Ok(WebRenderer {
+        context,
+        canvas: backing,
+        surface,
+        unrestricted_external_copies,
+    })
+}
+
+/// Without the `webgl` feature there is nothing to fall back to: report the
+/// WebGPU failure as-is.
+#[cfg(not(feature = "webgl"))]
+async fn create_renderer_fallback(
+    _canvas: web_sys::HtmlCanvasElement,
+    webgpu_error: JsValue,
+) -> Result<WebRenderer, JsValue> {
+    Err(webgpu_error)
 }
 
 #[wasm_bindgen(js_class = Device)]
@@ -231,6 +300,15 @@ impl WebDevice {
     /// Only the swapchain and the persistent backing are allocated here — the
     /// atlases, caches and pools stay shared, which is the point.
     pub fn attach(&self, canvas: web_sys::HtmlCanvasElement) -> Result<WebRenderer, JsValue> {
+        // WebGL is one context per canvas by design, and wgpu's GL backend
+        // renders every surface into the last one created (gfx-rs/wgpu#2343).
+        // Refusing here turns a silent black canvas into an explanation.
+        if self.adapter.get_info().backend == wgpu::Backend::Gl && self.attached_canvases() >= 1 {
+            return Err(JsValue::from_str(
+                "this device is running on WebGL, which drives one canvas per device; \
+                 create a second Device for a second canvas",
+            ));
+        }
         let size = [canvas.width().max(1), canvas.height().max(1)];
         let surface = Surface::new(
             &self.instance,

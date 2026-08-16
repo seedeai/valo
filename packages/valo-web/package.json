@@ -5,10 +5,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tyxu/valo.git",
+    "url": "git+https://github.com/seedeai/valo.git",
     "directory": "packages/valo-web"
   },
-  "homepage": "https://github.com/tyxu/valo#readme",
+  "homepage": "https://github.com/seedeai/valo#readme",
   "keywords": [
     "canvas",
     "graphics",
@@ -16,9 +16,11 @@
     "webgpu"
   ],
   "type": "module",
+  "sideEffects": false,
   "files": [
     "dist",
-    "wasm"
+    "wasm",
+    "wasm-compat"
   ],
   "publishConfig": {
     "access": "public"
@@ -31,16 +33,24 @@
     "./raw": {
       "types": "./dist/raw.d.ts",
       "import": "./dist/raw.js"
-    }
+    },
+    "./compat": {
+      "types": "./dist/compat.d.ts",
+      "import": "./dist/compat.js"
+    },
+    "./wasm/valo_web_bg.wasm": "./wasm/valo_web_bg.wasm",
+    "./wasm-compat/valo_web_bg.wasm": "./wasm-compat/valo_web_bg.wasm"
   },
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/valo-web --target web --out-dir ../../packages/valo-web/wasm --out-name valo_web --no-pack && node -e \"require('node:fs').rmSync('wasm/.gitignore', { force: true })\"",
-    "build": "npm run build:wasm && tsc -p tsconfig.json",
-    "check": "npm run build:wasm && tsc -p tsconfig.json --noEmit && tsc -p tests/tsconfig.json && tsc -p playground/tsconfig.json",
+    "build:wasm:compat": "wasm-pack build ../../crates/valo-web --target web --out-dir ../../packages/valo-web/wasm-compat --out-name valo_web --no-pack --features webgl && node -e \"require('node:fs').rmSync('wasm-compat/.gitignore', { force: true })\"",
+    "build": "npm run build:wasm && npm run build:wasm:compat && tsc -p tsconfig.json",
+    "check": "npm run build:wasm && npm run build:wasm:compat && tsc -p tsconfig.json --noEmit && tsc -p tests/tsconfig.json && tsc -p playground/tsconfig.json",
     "dev": "npm run build:wasm && vite playground",
     "build:playground": "npm run build && vite build playground",
     "prepack": "npm run build",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts",
+    "test:compat": "node tests/compat-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

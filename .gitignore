@@ -6,3 +6,4 @@ packages/*/dist
 packages/*/playground/dist
 packages/valo-web/wasm
 packages/valo-conformance/artifacts
+packages/valo-web/wasm-compat

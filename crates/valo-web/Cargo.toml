@@ -26,3 +26,11 @@ web-sys = { version = "0.3", features = [
     "OffscreenCanvas",
     "VideoFrame",
 ] }
+
+[features]
+# The compat build: keeps the WebGPU backend and adds wgpu's WebGL2 backend,
+# so the same binary falls back where WebGPU is missing. WebGL is one context
+# per canvas, so `Device.attach` allows a single canvas on that path — and the
+# GLSL transpiler roughly doubles the wasm, which is why this is a separate
+# artifact instead of the default.
+webgl = ["wgpu/webgl"]

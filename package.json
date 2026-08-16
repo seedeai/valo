@@ -18,6 +18,7 @@
     "test:conformance": "npm run build:web && npm run test --workspace @valo/conformance",
     "fuzz:canvas": "npm run build:web && npm run test:fuzz --workspace @valo/conformance",
     "benchmark:canvas": "npm run build:web && npm run benchmark --workspace @valo/conformance",
-    "test:web": "npm run test --workspace @valo/web"
+    "test:web": "npm run test --workspace @valo/web",
+    "test:compat": "npm run build:web && npm run test:compat --workspace @valo/web"
   }
 }
