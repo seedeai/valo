@@ -2,251 +2,219 @@
 
 Valo is a WebGPU-native 2D rendering engine built with Rust and [wgpu](https://wgpu.rs/). It follows the architecture of Flutter's [Impeller](https://github.com/flutter/flutter/tree/master/engine/src/flutter/impeller) with no shader compilation at draw time — behind a user-facing API in the shape of Canvas2D and Skia.
 
-**Web playground** — `npm install && npm run dev:web`
+## What WebGPU brings
 
-Valo runs in the browser on WebGPU and natively on desktop through wgpu, from the same code, with performance comparable to Skia and Impeller.
+- **On browsers**
+  - Modern-GPU rendering without WebGL's overhead
+  - One shared context drives every `<canvas>` on the page, no per-canvas resource allocation
+  - Advanced rendering features without hacks needed
 
-The browser package exposes both the retained engine directly and a typed,
-Canvas-shaped adapter. The adapter keeps familiar application code while adding
-Valo's layers, color matrices, backdrop blur, and explicit frame control.
+- **On native platforms**
+  - Small binary, small memory footprint, fast rendering
+  - The same code on Windows, macOS, Linux, Android and iOS
 
-## What it looks like
+**Playground** [valo.im/playground](https://valo.im/playground)
 
-```rust
-use std::sync::Arc;
-use valo::{
-    Color, DisplayListBuilder, DrawParagraphExt, GradientStop, Paint, ParagraphBuilder,
-    Point, Rect, Shader, SpreadMode, TextStyle,
-};
+## Install
 
-let mut builder = DisplayListBuilder::new();
-
-// A card: rounded rect, per-corner radii, soft shadow underneath.
-builder.draw_rrect_radii(
-    Rect::new(40.0, 40.0, 400.0, 240.0),
-    [24.0, 24.0, 24.0, 24.0],
-    &Paint {
-        color: Color::rgba(0.0, 0.0, 0.0, 0.35),
-        mask_blur: Some(valo::MaskBlur::new(18.0)),
-        ..Default::default()
-    },
-);
-
-// Gradients are a paint, so they fill rects, paths, and text alike.
-builder.draw_rrect_radii(
-    Rect::new(40.0, 40.0, 400.0, 240.0),
-    [24.0, 24.0, 24.0, 24.0],
-    &Paint::from_shader(Shader::Linear {
-        start: Point::new(40.0, 40.0),
-        end: Point::new(440.0, 280.0),
-        stops: vec![
-            GradientStop { offset: 0.0, color: Color::rgb(0.16, 0.18, 0.28) },
-            GradientStop { offset: 1.0, color: Color::rgb(0.35, 0.16, 0.40) },
-        ],
-        spread: SpreadMode::Pad,
-        local: valo::Matrix::IDENTITY,
-    }),
-);
-
-// Frosted glass over whatever is already there.
-builder.backdrop_blur(Rect::new(64.0, 200.0, 352.0, 56.0), 12.0);
-
-// Text is laid out once and re-usable; wrapping, bidi and fallback included.
-let mut paragraph = ParagraphBuilder::new(&mut fonts)
-    .add_text("Valo renders this", &TextStyle::new("Fira Sans", 28.0, Color::WHITE))
-    .build();
-paragraph.layout(360.0);
-builder.draw_paragraph(&paragraph, (64.0, 96.0));
-
-let display_list = Arc::new(builder.build());
-```
-
-Recording touches no GPU and needs no `Context` — it is pure CPU work you can do on any thread, keep, nest inside other lists, and replay every frame.
-
-## From TypeScript
-
+For browsers:
 ```sh
 npm install @valo/web
 ```
 
-Use the Canvas-shaped API for existing drawing code:
+For native platforms:
+```sh
+cargo add valo
+```
+
+## What it looks like
+
+Recording touches no GPU: a `DisplayListBuilder` is pure CPU work you can run on any thread, keep, nest inside other lists, and replay every frame.
+
+```rust
+use valo::{Color, DisplayListBuilder, Paint, Rect};
+
+let mut builder = DisplayListBuilder::new();
+builder.draw_rrect_radii(
+    Rect::new(40.0, 40.0, 400.0, 240.0),
+    [24.0; 4],
+    &Paint::from_color(Color::rgb(0.13, 0.15, 0.20)),
+);
+builder.draw_circle(
+    (330.0, 180.0),
+    70.0,
+    &Paint::from_color(Color::rgba(0.30, 0.75, 0.95, 0.85)),
+);
+// Frosted glass over whatever is already recorded beneath.
+builder.backdrop_blur(Rect::new(64.0, 200.0, 352.0, 56.0), 12.0);
+let display_list = builder.build();
+```
+
+Rendering is where the GPU comes in — a `Context` wraps the wgpu device you own, and a `Surface` wraps your window's swapchain:
+
+```rust
+let mut context = valo::Context::new(device, queue);
+
+// Each frame: acquire, render, present.
+if let Some(frame) = surface.acquire() {
+    context.render(&display_list, &frame.target(Some(Color::WHITE)));
+    context.present(frame);
+}
+```
+
+Gradients, image filters, blend modes, clips, layers and shaped paragraphs are all paints and draws on the same builder — the [examples](#examples) walk through each.
+
+## From TypeScript
+
+The raw API is the engine's own vocabulary — display lists, paints, shaders, paragraphs — with explicit resource lifetimes:
+
+```ts
+import { initializeValo, createRenderer, DisplayListBuilder, Paint } from "@valo/web/raw";
+
+await initializeValo();
+const renderer = await createRenderer(document.querySelector("canvas")!);
+
+const builder = new DisplayListBuilder();
+const paint = new Paint(0.78, 1, 0.24, 1);
+builder.drawRoundedRect(24, 24, 240, 140, new Float32Array([28, 8, 28, 8]), paint);
+const list = builder.build();
+renderer.render(list, true, 1, 1, 1, 1);
+
+list.free(); builder.free(); paint.free();
+```
+
+The Canvas2D adapter runs existing drawing code on the same renderer:
 
 ```ts
 import { createValoCanvas } from "@valo/web";
 
-const canvas = document.querySelector("canvas")!;
-const context = await createValoCanvas(canvas);
-
+const context = await createValoCanvas(document.querySelector("canvas")!);
 context.fillStyle = "#c8ff3d";
 context.roundRect(24, 24, 240, 140, [28, 8, 28, 8]);
 context.fill();
 context.backdropBlur(48, 72, 192, 56, 12); // Valo extension
 ```
 
-Or import `@valo/web/raw` for retained `DisplayListBuilder`, `Path`, `Paint`,
-`Shader`, `Paragraph`, image upload, render statistics, and explicit resource
-lifetimes. Both layers use the same WebAssembly renderer.
-
-The adapter covers common Canvas2D state, paths (including `arc`, `arcTo`, and
-`ellipse`), transforms, clips, gradients, images, shadows, blends, and filled or
-stroked fixed-font text. Deliberate gaps currently throw `NotSupportedError`:
-synchronous `getImageData`/`putImageData`, `isPointInStroke`, and non-repeating
-pattern modes. Canvas `filter` supports ordered `blur`, `brightness`,
-`contrast`, `grayscale`, `hue-rotate`, `invert`, `opacity`, `saturate`, and
-`sepia` chains; `drop-shadow()` and `url()` are not yet supported. Valo's typed
-`setColorMatrix` extension accepts a direct 4×5 matrix. Web fonts are explicitly registered from bytes;
-Valo does not silently depend on browser font fallback. For animation, call
-`beginFrame()` and `present()` to bound retained history.
+It covers Canvas2D state, paths, transforms, clips, gradients, images, shadows, blends and text, and is checked against Chrome's own Canvas2D by a [differential conformance suite](packages/valo-conformance/README.md). Browsers without WebGPU can use `@valo/web/compat`, which falls back to WebGL2 (raw API, one canvas per renderer).
 
 ## From C
 
-Valo also ships a C API, so it embeds into anything that speaks C. The header is [`crates/valo-capi/include/valo.h`](crates/valo-capi/include/valo.h), every function is null-safe, and every object is an opaque handle with a matching `dispose`.
+Valo ships a C API — every function null-safe, every object an opaque handle with a matching `dispose`. The header is [`crates/valo-capi/include/valo.h`](crates/valo-capi/include/valo.h):
 
 ```c
-#include "valo.h"
-
 ValoContext *context = valo_context_new();
 ValoDisplayListBuilder *builder = valo_builder_new();
 
 ValoPaint paint = {0};
 paint.color = (ValoColor){0.96f, 0.35f, 0.25f, 1.0f};
-paint.blend_mode = 3; /* srcOver */
-
-ValoCornerRadii radii = {24, 24, 24, 24, 24, 24, 24, 24};
-valo_builder_draw_rounded_rect(builder, (ValoRect){40, 40, 400, 240}, radii, paint);
+valo_builder_draw_rect(builder, (ValoRect){40, 40, 400, 240}, paint);
 
 ValoDisplayList *list = valo_builder_build(builder);
-
-uint8_t *pixels = malloc(480 * 320 * 4);
 valo_context_render_to_pixels(context, list, (ValoColor){1, 1, 1, 1}, 480, 320, pixels);
 
 valo_display_list_dispose(list);
 valo_context_dispose(context);
 ```
 
-The complete version — build, run, write an image — is [`examples/c/hello.c`](examples/c/hello.c):
+The complete version — build, run, write an image — is [`examples/c/hello.c`](examples/c/hello.c), run by `./examples/c/run.sh`.
+
+## Quick start (Rust)
 
 ```sh
-./examples/c/run.sh
+cargo add valo wgpu pollster
 ```
 
-## Quick start
-
-```toml
-[dependencies]
-valo = { git = "https://github.com/tyxu/valo" }
-wgpu = "29"
-```
-
-Valo draws onto a device you own, so the host keeps control of the window, the swapchain, and presentation:
+Valo draws onto a device you own — a surface you configured, or a headless one:
 
 ```rust
-use valo::{Color, Context, DisplayListBuilder, Offscreen, Paint, Rect};
+use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
 
-// Any wgpu device works — a surface you configured, or a headless one.
-let mut context = Context::new(device.clone(), queue);
-let target = Offscreen::new(&device, [480, 320]);
+fn main() {
+    let instance = wgpu::Instance::default();
+    let adapter =
+        pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&Default::default())).unwrap();
 
-let mut builder = DisplayListBuilder::new();
-builder.draw_rect(
-    Rect::new(40.0, 40.0, 160.0, 90.0),
-    &Paint::from_color(Color::rgb(0.96, 0.35, 0.25)),
-);
-let display_list = builder.build();
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(40.0, 40.0, 160.0, 90.0),
+        &Paint::from_color(Color::rgb(0.96, 0.35, 0.25)),
+    );
+    let display_list = builder.build();
 
-let stats = context.render(&display_list, &target.target(Some(Color::WHITE)));
-println!("{} draws, {} culled, {:.2}ms", stats.draws, stats.culled, stats.cpu_ms);
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(&display_list, [480, 320], Some(Color::WHITE));
+    // 480×320 straight-alpha RGBA8 — hand it to any PNG encoder.
+    println!("rendered {} bytes", pixels.len());
+}
 ```
 
-Run the same thing end to end, straight to a PNG:
+Or run the shipped version straight to a PNG:
 
 ```sh
 cargo run -p valo --example hello       # → target/examples/hello.png
 ```
 
-## Testing Canvas compatibility
+### In a window
 
-The private `@valo/conformance` package replays the same scenes into browser
-Canvas2D and Valo in Chromium. Curated cases protect named behavior; constrained,
-seeded fuzzing explores command combinations; the benchmark reports JavaScript
-recording and submission cost without hiding a GPU wait in the result.
+With winit, valo's `Surface` wraps the window's swapchain and the frame loop is acquire → render → present:
 
-```sh
-npm run build:web
-npm run test:conformance
-npm run fuzz:canvas
-npm run benchmark:canvas
+```rust
+use std::sync::Arc;
+use valo::{Color, Context, DisplayListBuilder, Paint, Surface};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::window::{Window, WindowId};
+
+#[derive(Default)]
+struct App(Option<(Arc<Window>, Surface, Context)>);
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.0.is_some() {
+            return;
+        }
+        let window = Arc::new(event_loop.create_window(Window::default_attributes()).unwrap());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let size = window.inner_size();
+        let surface = Surface::new(&instance, &adapter, &device, window.clone(), [size.width, size.height]).unwrap();
+        self.0 = Some((window, surface, Context::new(device, queue)));
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let Some((window, surface, context)) = self.0.as_mut() else { return };
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => surface.resize([size.width, size.height]),
+            WindowEvent::RedrawRequested => {
+                let mut builder = DisplayListBuilder::new();
+                builder.draw_circle(
+                    (200.0, 150.0),
+                    80.0,
+                    &Paint::from_color(Color::rgb(0.78, 1.0, 0.24)),
+                );
+                let list = builder.build();
+                if let Some(frame) = surface.acquire() {
+                    context.render(&list, &frame.target(Some(Color::rgb(0.04, 0.04, 0.06))));
+                    context.present(frame);
+                }
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn main() {
+    EventLoop::new().unwrap().run_app(&mut App::default()).unwrap();
+}
 ```
 
-Failed comparisons write the Canvas2D image, Valo image, visual diff, and exact
-scene to `packages/valo-conformance/artifacts/`.
-
-## API Catalog
-
-### Recording
-
-| Canvas state | Transforms | Clips | Draws |
-|---|---|---|---|
-| `DisplayListBuilder::new` | `translate` | `clip_rect` | `draw_rect` |
-| `save` | `scale` | `clip_rrect` | `draw_rrect` |
-| `restore` | `rotate` | `clip_rrect_radii` | `draw_rrect_radii` |
-| `save_layer` | `concat` | `clip_rrect_radii_elliptical` | `draw_rrect_radii_elliptical` |
-| `save_layer_mask` | | `clip_path` | `draw_circle` |
-| `build` | | | `draw_path` |
-| `draw_display_list` | | | `draw_image` |
-| `draw_display_list_cached` | | | `draw_image_rect` |
-| | | | `draw_paragraph` |
-| | | | `draw_paragraph_with` |
-| | | | `backdrop_blur` |
-| | | | `backdrop_blur_shared` |
-
-### Paint and geometry
-
-| Paint | Shaders | Paths | Types |
-|---|---|---|---|
-| `Paint::from_color` | `Shader::Linear` | `PathBuilder::new` | `Color` |
-| `Paint::from_shader` | `Shader::Radial` | `move_to` | `Rect` |
-| `PaintStyle::Fill` | `Shader::Sweep` | `line_to` | `Point` |
-| `PaintStyle::Stroke` | `GradientStop` | `quad_to` | `Size` |
-| `Stroke` · `Cap` · `Join` | `SpreadMode` | `cubic_to` | `Matrix` |
-| `Dash` | `TileMode` | `close` | `FillRule` |
-| `MaskBlur::new` | `Filter` | `rect` · `circle` | `ClipOp` |
-| `MaskBlur::solid` | `MaskKind` | `rrect` · `rrect_radii` | `BlendMode` |
-| `MaskBlur::inner` · `outer` | `Shader::Image` | `rrect_radii_elliptical` | `constrain_radii` |
-| | `FocalCircle` | | |
-| `ColorFilter::Matrix` | | `arc` · `ellipse` | `constrain_radii_elliptical` |
-| `ColorFilter::Blend` | | `arc_to` | |
-| `ImageFilter::blur` | | | |
-| `ImageFilter::color` | | | |
-| `ImageFilter::compose` | | | |
-| `BlurStyle` | | `contains` | |
-| | | `build` | |
-
-### Text
-
-| Fonts | Building | Layout | Editing |
-|---|---|---|---|
-| `FontCollection::register` | `ParagraphBuilder::new` | `layout` | `caret_for_offset` |
-| `register_with` | `add_text` | `lines` | `glyph_position_at` |
-| `add_fallback` | `style` | `line_metrics` | `rects_for_range` |
-| `add_alias` | `build` | `width` · `height` | `word_boundary` |
-| `family` | `TextStyle::new` | `bounds` | `update_color` |
-| `family_variant` | `ParagraphStyle` | `min_intrinsic_width` | `truncated` |
-| `FaceSet::grown_by` | `Shadow` | `max_intrinsic_width` | `text` |
-| `FontSource` | `Decoration` | `longest_line` | `demand` |
-| `FontAttrs` | `TextAlign` | `Line` · `LineMetrics` | `PositionWithAffinity` |
-
-### Device and output
-
-| Context | Targets | Images | Diagnostics |
-|---|---|---|---|
-| `Context::new` | `RenderTarget` | `upload_image` | `RenderStats` |
-| `render` | `Surface::new` | `import_image` | `memory_report` |
-| `set_text_tiers` | `acquire` · `present` | `upload_image_bitmap` | `MemoryReport` |
-| `set_text_raster_hold` | `resize` | `ImageDesc` | `AtlasReport` |
-| `set_raster_hold` | `Offscreen::new` | `Sampling` | `PoolReport` |
-| `set_hide_missing_glyphs` | `target` | `unpremultiply` | `WgpuCounters` |
-| | `ExternalMetalTexture` | | `Hud` |
+The animated version with a retained list and a live HUD title is [`crates/valo/examples/window.rs`](crates/valo/examples/window.rs).
 
 ## Examples
 
@@ -275,16 +243,20 @@ Two run interactively in a native window, and the browser playground builds from
 cargo run -p valo --example window       # animated transforms + retained lists
 cargo run -p valo --example board        # Figma-style pan/zoom board, ~3.3k draws, live HUD
 npm install
-npm run dev:web                         # five raw/Canvas API chapters
+npm run dev:web                          # five raw/Canvas API chapters
 ```
 
 ## Testing
 
 ```sh
-cargo test                   # unit tests + 34 golden pixel tests on a headless device
+cargo test                   # unit tests + golden pixel tests on a headless device
 VALO_BLESS=1 cargo test      # accept new goldens after an intended visual change
 cargo bench -p valo          # criterion: record, frame, text, geometry
+npm run test:conformance     # the same scenes through Valo and Chrome's Canvas2D, compared as pixels
+npm run test:compat          # the WebGL2 fallback build, in a browser with no WebGPU
 ```
+
+Failed conformance comparisons write both renders, the diff and the exact scene to `packages/valo-conformance/artifacts/`.
 
 ## License
 

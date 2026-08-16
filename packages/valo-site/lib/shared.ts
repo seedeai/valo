@@ -2,7 +2,7 @@ export const appName = 'valo';
 export const tagline = 'The WebGPU render engine.';
 /** Says the domain the tagline leaves open, for anyone who has not seen a demo. */
 export const subtitle =
-  'Cross-platform portable 2D graphics engine in Rust. Works on Windows, macOS, Linux, and Web.';
+  'Cross-platform portable 2D graphics engine in Rust. Works on Windows, macOS, Linux, Android, iOS and Web.';
 
 export const docsRoute = '/docs';
 export const docsImageRoute = '/og/docs';

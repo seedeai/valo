@@ -2840,6 +2840,13 @@ impl<'a> Planner<'a> {
         Rect::new(0.0, 0.0, s[0] as f32, s[1] as f32)
     }
 
+    /// The depth value a slot occupies: `z = (slot_offset + slot) / (depth_slots + 1)`.
+    ///
+    /// The depth buffer clears to zero and draws test `GreaterEqual`, so a
+    /// clip writes its ceiling at its EXPIRY slot and everything recorded
+    /// after that slot passes again. `slot_offset` is the base of a display
+    /// list replayed inside another one — nested lists get a contiguous slot
+    /// range of their own. The `+ 1` keeps every z strictly below 1.0.
     fn slot_z(&self, slot: u32) -> f32 {
         (self.slot_offset + slot as i64) as f32 / self.frame().z_denom
     }

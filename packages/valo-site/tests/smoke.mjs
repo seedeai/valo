@@ -181,7 +181,7 @@ try {
   check('the landing page has one live canvas per demo plus the hero', canvases === EXPECTED_DEMOS + 1, `${canvases}`);
   check(
     'the hero canvas is live',
-    (await distinctColours(page.locator('canvas[aria-label="live · valo"]'), '/tmp/valo-site-hero.png')) > 8,
+    (await distinctColours(page.locator('canvas[aria-label="live"]'), '/tmp/valo-site-hero.png')) > 8,
   );
   const sharedCanvases = Number(
     await page.locator('[data-shared-device-canvases]').getAttribute('data-shared-device-canvases'),
