@@ -1,0 +1,6 @@
+/.next/
+/.source/
+/out/
+/public/valo/
+next-env.d.ts
+*.tsbuildinfo

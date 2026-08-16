@@ -1,0 +1,54 @@
+{
+  "name": "@valo/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:assets": "node scripts/copy-valo-assets.mjs",
+    "dev": "npm run prepare:assets && next dev",
+    "build": "npm run prepare:assets && next build",
+    "start": "next start",
+    "check": "npm run prepare:assets && next typegen && tsc --noEmit",
+    "test": "node tests/smoke.mjs"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@valo/web": "0.1.0",
+    "cnfast": "^0.1.0",
+    "fumadocs-core": "^16.14.4",
+    "fumadocs-mdx": "^15.2.3",
+    "fumadocs-ui": "^16.14.4",
+    "lucide-react": "^1.31.0",
+    "monaco-editor": "^0.56.0",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "lightningcss": "1.32.0",
+    "playwright": "^1.55.0",
+    "pngjs": "^7.0.0",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.2"
+  },
+  "optionalDependencies": {
+    "lightningcss-android-arm64": "1.32.0",
+    "lightningcss-darwin-arm64": "1.32.0",
+    "lightningcss-darwin-x64": "1.32.0",
+    "lightningcss-freebsd-x64": "1.32.0",
+    "lightningcss-linux-arm-gnueabihf": "1.32.0",
+    "lightningcss-linux-arm64-gnu": "1.32.0",
+    "lightningcss-linux-arm64-musl": "1.32.0",
+    "lightningcss-linux-x64-gnu": "1.32.0",
+    "lightningcss-linux-x64-musl": "1.32.0",
+    "lightningcss-win32-arm64-msvc": "1.32.0",
+    "lightningcss-win32-x64-msvc": "1.32.0"
+  }
+}

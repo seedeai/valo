@@ -1,0 +1,160 @@
+---
+title: The raw API
+description: Display lists, paints, shaders, layers and paragraphs — valo's own vocabulary.
+---
+
+The raw API is valo speaking for itself. Everything on the landing page is
+written against it.
+
+```ts
+import * as valo from '@valo/web/raw';
+```
+
+## Recording
+
+A `DisplayListBuilder` records; it never draws. It holds no device, touches no
+GPU, and the list it produces can be replayed as many times as you like.
+
+```ts
+const builder = new valo.DisplayListBuilder();
+
+builder.save();
+builder.translate(120, 90);
+builder.rotate(0.3);
+builder.drawRect(-40, -30, 80, 60, paint);
+builder.restore();
+
+const list = builder.build();   // the builder is spent after this
+```
+
+| Method | What it records |
+| --- | --- |
+| `drawRect(x, y, w, h, paint)` | An axis-aligned rectangle |
+| `drawRoundedRect(x, y, w, h, radii, paint)` | 1, 4 or 8 radii — per-corner and elliptical |
+| `drawPath(path, fillRule, paint)` | Any path, non-zero or even-odd |
+| `drawParagraph(paragraph, x, y)` | Laid-out text at its own colours |
+| `drawParagraphWith(paragraph, x, y, paint)` | The same glyphs under any paint |
+| `drawDisplayList(list)` / `drawDisplayListCached(list)` | Replay a recording inside another |
+| `clipRect` / `clipPath` | `ClipOp.Intersect` or `ClipOp.Difference` |
+| `saveLayer(paint)` / `saveLayerBounds(x, y, w, h, paint)` | An explicitly composited group |
+| `backdropBlur(x, y, w, h, sigma)` | Frosted glass over what is already recorded |
+
+## Paint
+
+A `Paint` is colour, style and a stack of effects.
+
+```ts
+const paint = new valo.Paint(0.784, 1, 0.239, 1);   // straight sRGB, 0..1
+
+paint.setStroke(
+  8,      // width
+  1,      // cap:  0 butt, 1 round, 2 square
+  1,      // join: 0 miter, 1 round, 2 bevel
+  4,      // miter limit
+  new Float32Array([20, 8]),   // dash intervals; empty for solid
+  0,      // dash phase
+);
+
+paint.setShader(shader);
+paint.setBlendMode(24);          // Multiply
+paint.setMaskBlur(8, 1);         // sigma, style: 0 normal, 1 solid, 2 inner, 3 outer
+paint.setColorFilter(filter);
+paint.setImageFilter(filter);
+paint.free();
+```
+
+<Callout>
+The integer parameters are the indices in `crates/valo-web/src/types.rs`. They
+are not yet exported as named constants from `@valo/web`; until they are, keep
+a table of your own — this site does.
+</Callout>
+
+### Mask blur styles
+
+Mask blur applies to the shape's **coverage**, not to its pixels, which is why
+each style is a single analytic quad rather than an offscreen texture.
+
+- **Normal** — a shadow in every direction.
+- **Solid** — the sharp shape sitting on its own glow, in one draw.
+- **Inner** — blurred only inward, a pressed look.
+- **Outer** — the halo, and no shape at all.
+
+Only `Normal` has a Canvas2D equivalent, and only via `shadowBlur`.
+
+## Shaders
+
+```ts
+valo.Shader.linearGradient(x0, y0, x1, y1, offsets, colors, spread);
+valo.Shader.radialGradient(focusX, focusY, focusR, centerX, centerY, radius, offsets, colors, spread);
+valo.Shader.sweepGradient(centerX, centerY, startAngle, offsets, colors);
+valo.Shader.imagePattern(image, filter, mipmap, tileX, tileY);
+```
+
+`offsets` is a `Float32Array` of stop positions; `colors` is four floats of
+straight RGBA per stop, flattened. `spread` decides what happens outside the
+gradient's own range — `0` pad, `1` repeat, `2` reflect. Canvas2D only ever
+pads.
+
+Every shader takes a local matrix, so the ramp can be moved without moving the
+geometry:
+
+```ts
+shader.setTransform(new Float32Array([1, 0, 0, 1, offsetX, 0]));
+```
+
+<Callout type="warn">
+A gradient that leaves pixels uncovered — a two-point conical outside its cone
+is the usual case — must never be treated as opaque. valo's record-time oracle
+handles this; it is called out here because it is the kind of thing an
+integrator can reintroduce by hand.
+</Callout>
+
+## Filters
+
+Colour filters recolour a draw's own pixels. Image filters sample it.
+
+```ts
+const grade = valo.ColorFilter.matrix(new Float32Array(/* 20 values, 4x5 */));
+const tint  = valo.ColorFilter.blend(1, 0.3, 0.4, 0.5, /* blend mode */ 24);
+
+const shadow  = valo.ImageFilter.dropShadow(dx, dy, sigmaX, sigmaY, r, g, b, a);
+const soften  = valo.ImageFilter.blur(4, 4);
+const chain   = valo.ImageFilter.compose(shadow, soften);
+```
+
+Within a layer they run in Impeller's order: the colour filter recolours the
+layer's own pixels, then the blur spreads the filtered result.
+
+## Text
+
+```ts
+const fonts = new valo.FontCollection();
+fonts.registerFont('Inter', bytes, /* fallback */ true);
+
+const paragraph = new valo.Paragraph(
+  fonts, 'Type at GPU speed', 'Inter',
+  62, 600, false,        // size, weight, italic
+  1, 1, 1, 1,            // colour
+  100, true, 0,          // stretch, kerning, variant caps
+  0, 0, 1.0,             // letter spacing, word spacing, line height
+  0, 0, 0, '',           // align, direction, max lines, ellipsis
+  520, false,            // max width, preserve trailing whitespace
+);
+
+builder.drawParagraphWith(paragraph, 40, 40, gradientPaint);
+```
+
+A paragraph shapes once and keeps the faces it resolved. `layout(maxWidth)`
+re-wraps without re-shaping, which is the cheap half.
+
+## Presenting
+
+```ts
+const stats = renderer.render(list, /* discard */ true, r, g, b, a);
+console.log(stats.draws, stats.renderPasses, stats.cpuMilliseconds);
+stats.free();
+```
+
+`discard` throws away the canvas's previous contents and starts from the given
+colour. Without it the previous pixels are restored first, which is what makes
+N incremental frames cost O(N) rather than O(N²).

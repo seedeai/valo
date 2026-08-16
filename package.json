@@ -5,6 +5,12 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "npm run dev:site",
+    "build": "npm run build:site",
+    "dev:site": "npm run build:web && npm run dev --workspace @valo/site",
+    "build:site": "npm run build:web && npm run build --workspace @valo/site",
+    "check:site": "npm run build:web && npm run check --workspace @valo/site",
+    "test:site": "npm run build:site && npm run test --workspace @valo/site",
     "build:web": "npm run build --workspace @valo/web",
     "dev:web": "npm run dev --workspace @valo/web",
     "check:web": "npm run check --workspace @valo/web",

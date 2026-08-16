@@ -196,7 +196,7 @@ impl Surface {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
-            // Blending happens in sRGB space (CLAUDE.md's CSS/Skia look), and
+            // Blending happens in sRGB space (AGENTS.md's CSS/Skia look), and
             // the format picked below is non-sRGB to keep it there.
             color_space: wgpu::SurfaceColorSpace::Srgb,
             // COPY_SRC: advanced blends snapshot the resolved target mid-frame.

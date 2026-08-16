@@ -19,7 +19,7 @@
 //! # }
 //! ```
 //!
-//! Design principles and the memory model: see CLAUDE.md.
+//! Design principles and the memory model: see AGENTS.md.
 
 #![warn(missing_docs)]
 

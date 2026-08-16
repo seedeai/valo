@@ -95,6 +95,23 @@ jobs:
           path: packages/valo-conformance/artifacts
           if-no-files-found: ignore
 
+  windows:
+    name: windows (Direct3D)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Direct3D 12 is wgpu's backend on Windows, so building the workspace
+      # here is what keeps that path compiling.
+      - run: cargo check --workspace --all-targets
+      - run: cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-svg -p valo-system-fonts
+      # WARP is Windows' software Direct3D 12 adapter, so this exercises the
+      # real renderer on the real backend without a GPU. Same probation as the
+      # macOS goldens job: report until it proves stable, then require it.
+      - name: Golden pixels on WARP (Direct3D 12)
+        continue-on-error: true
+        run: cargo test -p valo -p valo-capi -p valo-harness
+
   msrv:
     name: msrv (1.87)
     runs-on: ubuntu-latest

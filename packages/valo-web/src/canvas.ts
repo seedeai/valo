@@ -1,4 +1,5 @@
 import {
+  BlendMode,
   ColorFilter,
   DisplayListBuilder,
   FontCollection,
@@ -1648,33 +1649,36 @@ function imageColorFilter(matrix: readonly number[]): ImageFilter {
   return image;
 }
 
+// Canvas2D's composite operators, each named as the engine mode it becomes.
+// Written against `BlendMode` rather than the integers so that this file and
+// the raw API cannot drift apart on what 24 means.
 const blendModes: Partial<Record<GlobalCompositeOperation, number>> = {
-  copy: 1,
-  "source-over": 3,
-  "destination-over": 4,
-  "source-in": 5,
-  "destination-in": 6,
-  "source-out": 7,
-  "destination-out": 8,
-  "source-atop": 9,
-  "destination-atop": 10,
-  xor: 11,
-  lighter: 12,
-  screen: 14,
-  overlay: 15,
-  darken: 16,
-  lighten: 17,
-  "color-dodge": 18,
-  "color-burn": 19,
-  "hard-light": 20,
-  "soft-light": 21,
-  difference: 22,
-  exclusion: 23,
-  multiply: 24,
-  hue: 25,
-  saturation: 26,
-  color: 27,
-  luminosity: 28,
+  copy: BlendMode.Src,
+  "source-over": BlendMode.SrcOver,
+  "destination-over": BlendMode.DstOver,
+  "source-in": BlendMode.SrcIn,
+  "destination-in": BlendMode.DstIn,
+  "source-out": BlendMode.SrcOut,
+  "destination-out": BlendMode.DstOut,
+  "source-atop": BlendMode.SrcAtop,
+  "destination-atop": BlendMode.DstAtop,
+  xor: BlendMode.Xor,
+  lighter: BlendMode.Plus,
+  screen: BlendMode.Screen,
+  overlay: BlendMode.Overlay,
+  darken: BlendMode.Darken,
+  lighten: BlendMode.Lighten,
+  "color-dodge": BlendMode.ColorDodge,
+  "color-burn": BlendMode.ColorBurn,
+  "hard-light": BlendMode.HardLight,
+  "soft-light": BlendMode.SoftLight,
+  difference: BlendMode.Difference,
+  exclusion: BlendMode.Exclusion,
+  multiply: BlendMode.Multiply,
+  hue: BlendMode.Hue,
+  saturation: BlendMode.Saturation,
+  color: BlendMode.Color,
+  luminosity: BlendMode.Luminosity,
 };
 
 const blendModeNames = Object.fromEntries(

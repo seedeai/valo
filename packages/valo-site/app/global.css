@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/**
+ * The playground's design system, lifted whole.
+ *
+ * Near-black, one lime accent, a faint violet bloom, and display type set
+ * tight. Fumadocs ships a light and a dark palette; this site has one theme,
+ * so the `.dark` values are also the `:root` values and there is nothing to
+ * toggle between.
+ */
+@theme {
+  --color-valo-ink: #09090b;
+  --color-valo-text: #f4f2ef;
+  --color-valo-muted: #8f8e94;
+  --color-valo-lime: #c8ff3d;
+  --color-valo-line: rgba(255, 255, 255, 0.12);
+  --color-valo-panel: #0e0e12;
+
+  --font-sans: var(--font-manrope), system-ui, sans-serif;
+  --font-mono: var(--font-dm-mono), ui-monospace, monospace;
+}
+
+:root,
+.dark {
+  --color-fd-background: #09090b;
+  --color-fd-foreground: #f4f2ef;
+  --color-fd-muted: #131317;
+  --color-fd-muted-foreground: #8f8e94;
+  --color-fd-popover: #101014;
+  --color-fd-popover-foreground: #f4f2ef;
+  --color-fd-card: #0e0e12;
+  --color-fd-card-foreground: #f4f2ef;
+  --color-fd-border: rgba(255, 255, 255, 0.12);
+  --color-fd-primary: #c8ff3d;
+  --color-fd-primary-foreground: #09090b;
+  --color-fd-secondary: #131317;
+  --color-fd-secondary-foreground: #f4f2ef;
+  --color-fd-accent: rgba(255, 255, 255, 0.07);
+  --color-fd-accent-foreground: #f4f2ef;
+  --color-fd-ring: rgba(200, 255, 61, 0.5);
+  --color-fd-overlay: rgba(0, 0, 0, 0.55);
+}
+
+html {
+  color-scheme: dark;
+  scrollbar-gutter: stable;
+}
+
+/* The violet bloom sits on the page rather than on any one section, so it
+   survives scrolling between the landing grid and the docs. */
+body {
+  background:
+    radial-gradient(circle at 75% 15%, rgba(128, 82, 255, 0.09), transparent 31rem),
+    #09090b;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* Display type in the playground is set at -0.04em and tighter still at the
+   largest sizes. Tailwind's tracking scale does not go that far. */
+.valo-display {
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.valo-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #68676d;
+}
+
+/** The brand mark: a lime blob with one squared corner, turned 45°. */
+.valo-mark {
+  width: 19px;
+  height: 19px;
+  border-radius: 50% 50% 50% 12%;
+  background: var(--color-valo-lime);
+  transform: rotate(-45deg);
+  box-shadow: 0 0 28px rgba(200, 255, 61, 0.24);
+}

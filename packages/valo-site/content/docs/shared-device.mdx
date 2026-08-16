@@ -1,0 +1,88 @@
+---
+title: One device, many canvases
+description: Why a page of live canvases should share a GPU device, and what it saves.
+---
+
+A traditional 2D context carries a GPU device of its own, and browsers cap
+those at around sixteen. A documentation site with a dozen animated examples is
+therefore near the ceiling before it has drawn anything.
+
+valo splits the two halves. A `Device` owns everything expensive and shareable —
+the glyph atlas, the image cache, the contour cache, the render-target pool.
+Attaching a canvas allocates only what is genuinely per-canvas: a swapchain and
+the backing its pixels live in.
+
+## The raw API
+
+```ts
+import { createDevice, initializeValo } from '@valo/web/raw';
+
+await initializeValo();
+const device = await createDevice();
+
+const first = device.attach(canvasA);
+const second = device.attach(canvasB);
+const third = device.attach(canvasC);
+```
+
+## The Canvas2D layer
+
+```ts
+import { ValoDevice } from '@valo/web';
+
+const device = await ValoDevice.create();
+const contextA = device.attach(canvasA);
+const contextB = device.attach(canvasB);
+```
+
+## What it saves
+
+Measured at twelve 256×256 canvases, each drawing the same text, an image and a
+blur:
+
+| | Device-level | Per-canvas backings | Total |
+| --- | --- | --- | --- |
+| **Shared device** | 6.25 MiB | 6.00 MiB | **12.25 MiB** |
+| **A device each** | 57.05 MiB | 6.00 MiB | **63.05 MiB** |
+
+5.1× overall — and almost all of it is the glyph atlas: 4 MiB against 48 MiB.
+
+The atlas is the dominant term because it is per-device and keyed by glyph, so
+twelve cards sharing a typeface raster it once. Driver overhead does not show up
+in this measurement at all. The accurate way to state the saving is **one glyph
+atlas instead of twelve**, not "fewer GPU contexts".
+
+That also means the effect is largest exactly where a documentation site lives:
+many small canvases, one typeface.
+
+## Lifetime
+
+The device is refcounted rather than owned by any canvas. A card scrolled out of
+the DOM can free its renderer — releasing that canvas's swapchain and backing —
+while the shared caches stay warm for whatever is still drawing.
+
+```ts
+renderer.free();                  // one canvas goes away
+device.attachedCanvases;          // how many are left
+```
+
+## Proving it
+
+`memoryReport()` reads the live device, which is how the landing page's counter
+is built:
+
+```ts
+const report = device.memoryReport();
+report.totalBytes;    // everything valo accounts for
+report.atlasBytes;    // glyph atlas pages, shared by every canvas
+report.imageBytes;    // uploaded images, deduped across canvases
+report.targetBytes;   // pooled render targets
+report.targetCount;
+report.free();
+```
+
+<Callout>
+A pixel test would pass just as happily on twelve devices, which is the
+arrangement being ruled out. The claim is about resources, so it is asserted
+against resources.
+</Callout>
