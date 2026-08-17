@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "valo-web": "0.1.0",
+    "valo-web": "0.2.0",
     "cnfast": "^0.1.0",
     "fumadocs-core": "^16.14.4",
     "fumadocs-mdx": "^15.2.3",

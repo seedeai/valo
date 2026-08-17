@@ -97,6 +97,14 @@ export const VariantCaps = {
   TitlingCaps: 6,
 } as const;
 
+/** `text::decoration_kind`. `-1` clears the decoration. */
+export const DecorationKind = {
+  None: -1,
+  Underline: 0,
+  LineThrough: 1,
+  Overline: 2,
+} as const;
+
 export type BlendModeValue = (typeof BlendMode)[keyof typeof BlendMode];
 export type BlurStyleValue = (typeof BlurStyle)[keyof typeof BlurStyle];
 export type CapValue = (typeof Cap)[keyof typeof Cap];
@@ -106,3 +114,5 @@ export type ClipOpValue = (typeof ClipOp)[keyof typeof ClipOp];
 export type SpreadModeValue = (typeof SpreadMode)[keyof typeof SpreadMode];
 export type TextAlignValue = (typeof TextAlign)[keyof typeof TextAlign];
 export type TextDirectionValue = (typeof TextDirection)[keyof typeof TextDirection];
+export type VariantCapsValue = (typeof VariantCaps)[keyof typeof VariantCaps];
+export type DecorationKindValue = (typeof DecorationKind)[keyof typeof DecorationKind];
