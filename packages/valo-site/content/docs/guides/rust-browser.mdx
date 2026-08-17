@@ -1,0 +1,110 @@
+---
+title: Rust in the browser
+description: Compile the valo crate to WebAssembly and render directly to an HTML canvas.
+icon: Globe
+---
+
+A browser application written in Rust uses the `valo` crate directly.
+`valo-web` is only needed when JavaScript or TypeScript needs to call Valo.
+
+The rendering code is the same as native Rust: create a `Context`, record a
+display list, acquire a `Surface` frame, render and present. The browser-specific
+part is finding the canvas and starting the WebAssembly module.
+
+## Project setup
+
+Build the crate as WebAssembly and add the browser bindings used by the host:
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+valo = "0.1"
+wgpu = "30"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["Window", "Document", "Element", "HtmlCanvasElement"]
+```
+
+## Create the surface
+
+```rust
+use valo::{Color, Context, DisplayListBuilder, Paint, Rect, Surface};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+
+#[wasm_bindgen(start)]
+pub async fn start() -> Result<(), JsValue> {
+    let canvas: web_sys::HtmlCanvasElement = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("canvas"))
+        .ok_or_else(|| JsValue::from_str("missing #canvas"))?
+        .dyn_into()?;
+
+    let size = [canvas.width().max(1), canvas.height().max(1)];
+    let instance = wgpu::Instance::default();
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions::default())
+        .await
+        .map_err(|error| JsValue::from_str(&format!("no adapter: {error:?}")))?;
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default())
+        .await
+        .map_err(|error| JsValue::from_str(&format!("no device: {error:?}")))?;
+
+    let mut surface = Surface::new(
+        &instance,
+        &adapter,
+        &device,
+        wgpu::SurfaceTarget::Canvas(canvas),
+        size,
+    )
+    .map_err(|error| JsValue::from_str(&format!("no surface: {error:?}")))?;
+    let mut context = Context::new(device, queue);
+
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(40.0, 40.0, 240.0, 140.0),
+        &Paint::from_color(Color::rgb(0.78, 1.0, 0.24)),
+    );
+    let display_list = builder.build();
+
+    if let Some(frame) = surface.acquire() {
+        context.render(
+            &display_list,
+            &frame.target(Some(Color::rgb(0.04, 0.04, 0.05))),
+        );
+        context.present(frame);
+    }
+
+    Ok(())
+}
+```
+
+Build and load it with your preferred Rust WebAssembly tool. With
+`wasm-pack`:
+
+```bash
+wasm-pack build --target web
+```
+
+```html
+<canvas id="canvas" width="320" height="220"></canvas>
+<script type="module">
+  import init from './pkg/my_app.js';
+  await init();
+</script>
+```
+
+For animation, keep `Context`, `Surface` and retained display lists in your
+application state, then acquire and present from `requestAnimationFrame`. Resize
+the canvas backing and call `surface.resize` when its displayed size changes.
+
+The repository's
+[`valo-web-demo`](https://github.com/seedeai/valo/tree/main/crates/valo-web-demo)
+is a complete Rust browser application with pointer input, zooming, fonts and a
+frame loop.

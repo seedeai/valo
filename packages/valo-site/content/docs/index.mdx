@@ -1,62 +1,42 @@
 ---
-title: What valo is
-description: A 2D render engine in Rust on wgpu, with a Canvas2D-compatible layer compiled to WebAssembly.
+title: Overview
+description: What Valo is and which package to use.
+icon: BookOpen
 ---
 
-valo is a 2D render engine. It records a display list on the CPU, plans its GPU
-passes in one pure pass over that recording, and encodes them through WebGPU.
+Valo is a WebGPU-native 2D render engine built with Rust and
+[wgpu](https://wgpu.rs/). It follows the architecture of Flutter's
+[Impeller](https://github.com/flutter/flutter/tree/master/engine/src/flutter/impeller):
+no shader compilation at draw time.
 
-It takes Impeller's architecture — display list, record-time oracle, planned GPU
-passes — and Skia's text architecture, and owns the orchestration between them.
+Use the `valo` crate from Rust on native platforms or in a browser through
+WebAssembly. JavaScript and TypeScript applications use `valo-web` — Valo's
+own API or a Canvas2D-compatible adapter. Valo supports every platform wgpu
+supports, including Windows, macOS, Linux, iOS, Android, and the web.
 
-## The frame
+## Packages
 
-```text
-record    DisplayListBuilder -> Arc<DisplayList>      CPU only, no GPU device, any thread
-plan      cull -> depth assign -> reorder -> segment  pure CPU pass over the recorded ops
-encode    render passes, breaking only where recorded (backdrop filters, advanced blends)
-submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU timestamps
-```
+- [`valo`](/docs/guides/embedding-rust) — Rust, native or browser ([wasm](/docs/guides/rust-browser))
+- [`valo-web/raw`](/docs/guides/raw-api) — JavaScript engine API
+- [`valo-web`](/docs/guides/canvas2d) — Canvas2D adapter
+- [`valo-capi`](/docs/guides/integrations) — C ABI
 
-Present and read-back belong to the host. valo never owns a window, a surface
-loop, or a font source.
-
-## Two audiences
+`valo-web` is a thin JavaScript wrapper over the same engine. A Rust app
+compiled to WebAssembly imports [`valo`](/docs/guides/rust-browser) directly.
 
 <Cards>
   <Card
-    title="A faster CanvasRenderingContext2D"
-    href="/docs/canvas2d"
-    description="The compatibility layer takes the calls you already write. 105 of 105 differential scenes match Chrome's own Canvas2D pixel for pixel."
+    title="Getting started"
+    href="/docs/getting-started"
+    description="Install a package and record your first rectangle."
   />
   <Card
-    title="An engine to embed"
-    href="/docs/raw-api"
-    description="Display lists, paints, shaders, layers and paragraphs — from Rust, from C, or from WebAssembly."
+    title="Playground"
+    href="/playground"
+    description="Inspect drawing features from the JavaScript engine API."
   />
 </Cards>
 
-## What the layers are
-
-There are two surfaces, and the difference matters when you choose one.
-
-| | Import | You work with |
-| --- | --- | --- |
-| **Raw** — valo's own | `valo-web/raw` | `DisplayListBuilder`, `Paint`, `Shader`, `Path`, `ImageFilter`, `ColorFilter`, `Paragraph` |
-| **Canvas2D shim** | `valo-web` | `CanvasRenderingContext2D`, as specified |
-
-The Canvas2D layer is a *compatibility* surface, and therefore a strict subset.
-Mask blur styles, backdrop blur, gradient spread modes, difference clips and
-the retained display list itself have no Canvas2D spelling at all. If you are
-porting an existing canvas application, start with the shim. If you are building
-something new, the raw API is the engine.
-
-## Invariants worth knowing early
-
-- y-down, origin top-left, logical pixels until a transform says otherwise.
-- `Color` is straight (unpremultiplied) sRGB. Premultiplication happens at the
-  GPU boundary and blending is in sRGB space — the CSS and Skia look.
-- Recording is GPU-free. A display list can be built on any thread, with no
-  device in hand, and replayed later.
-- The renderer holds no scene graph. Everything it keeps is a content-keyed or
-  frame-scoped cache, which is where retained-mode performance comes from.
+Drawing is two steps: record a `DisplayList`, then submit it to a `Context`.
+[Getting started](/docs/getting-started) shows that in code.
+[Reference](/docs/reference/paint) covers each type in order.

@@ -1,0 +1,57 @@
+---
+title: Path
+description: Lines, curves, and contours you fill, stroke, or clip with.
+icon: Spline
+---
+
+`PathBuilder` records verbs; `Path` is the immutable result. Build a path once
+and fill, stroke, or clip with it every frame.
+
+```rust
+use valo::{FillRule, PathBuilder};
+
+let mut path = PathBuilder::new();
+path.move_to((40.0, 40.0));
+path.line_to((200.0, 40.0));
+path.quad_to((240.0, 80.0), (200.0, 120.0));
+path.close();
+let path = path.build();
+
+builder.draw_path(&path, FillRule::NonZero, &paint);
+```
+
+```ts
+const path = new Path();
+path.moveTo(40, 40);
+path.lineTo(200, 40);
+path.quadraticCurveTo(240, 80, 200, 120);
+path.close();
+builder.drawPath(path, 0, paint); // 0 non-zero, 1 even-odd
+```
+
+## Verbs
+
+Move, line, quadratic, cubic, close, plus helpers for rects, rounded rects,
+circles, arcs, and ellipses. Angles are radians from the +x axis; a positive
+sweep is clockwise on screen (y downward).
+
+`close` has no effect when no contour is open. `reset` (JavaScript: a new
+`Path`) clears the path so it can be rebuilt.
+
+## Fill rules and hit testing
+
+`NonZero` (0) and `EvenOdd` (1) control both filling and `contains`. In
+JavaScript, out-of-range fill-rule integers use non-zero.
+
+```rust
+path.contains(Point::new(80.0, 60.0), FillRule::NonZero);
+```
+
+```ts
+path.contains(80, 60, 0);
+```
+
+Stroke a path by setting the paint's style to stroke — the path itself is the
+centerline.
+
+Next: [Image](/docs/reference/image).

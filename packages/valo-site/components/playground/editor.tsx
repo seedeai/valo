@@ -16,11 +16,11 @@ import { DIST_TYPES } from './scene-types';
 /**
  * Monaco, self-hosted and confined to this route.
  *
- * This module is reached only through `next/dynamic` from the playground, so
- * the several megabytes below never enter the landing page's graph. It is also
- * the reason the editor is worth having: fed `valo-web`'s own `.d.ts`, typing
- * `Paint.` lists the real API, which is a better argument for the
- * compatibility claim than any prose about it.
+ * This module is reached only through `next/dynamic`, so the several
+ * megabytes below never enter the landing page's graph. It is also the reason
+ * the editor is worth having: fed `valo-web`'s own `.d.ts`, typing `Paint.`
+ * lists the real API, which is a better argument for the compatibility claim
+ * than any prose about it.
  */
 
 loader.config({ monaco });

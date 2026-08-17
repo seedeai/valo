@@ -12,7 +12,7 @@ export default function HomePage() {
   return (
     <main className="mx-auto w-full max-w-[1180px] px-6 pb-28 sm:px-10">
       <Hero />
-      <TwoDoors />
+      <Interfaces />
       <LiveDemos />
       <Compatibility />
       <GetStarted />
@@ -24,7 +24,7 @@ function Hero() {
   return (
     <section className="grid gap-10 border-b border-valo-line py-20 lg:grid-cols-[minmax(0,1fr)_minmax(360px,1fr)] lg:items-center">
       <div>
-        <h1 className="valo-display m-0 text-[clamp(44px,7vw,82px)] font-medium">
+        <h1 className="valo-display m-0 text-[clamp(34px,6vw,72px)] font-medium">
           The
           <br />
           <span className="text-valo-lime">WebGPU</span>
@@ -55,20 +55,20 @@ function Hero() {
   );
 }
 
-function TwoDoors() {
+function Interfaces() {
   return (
     <section className="grid gap-px border-b border-valo-line bg-valo-line py-px md:grid-cols-2">
       <Door
-        title="Browser"
-        command={`npm install ${packages.npm}`}
-        note="Canvas2D-shaped API, powered by WebGPU."
-        backends={['WebGPU']}
+        title="Rust"
+        command={`cargo add ${packages.rust}`}
+        note="The same crate on native platforms and WebAssembly."
+        backends={['Metal', 'Vulkan', 'Direct3D', 'Web']}
       />
       <Door
-        title="Native"
-        command={`cargo add ${packages.rust}`}
-        note="Rust over the wgpu surface you own."
-        backends={['Metal', 'Vulkan', 'Direct3D']}
+        title="JavaScript / TypeScript"
+        command={`npm install ${packages.npm}`}
+        note="Valo's engine API or its Canvas2D-compatible adapter."
+        backends={['WebGPU', 'WebGL']}
       />
     </section>
   );
@@ -154,8 +154,8 @@ function GetStarted() {
     <section className="border-y border-valo-line py-20">
       <p className="valo-eyebrow m-0">Get started</p>
       <div className="mt-7 flex flex-col gap-3 font-mono text-[14px] text-valo-lime sm:flex-row sm:gap-10">
-        <code>npm install {packages.npm}</code>
         <code>cargo add {packages.rust}</code>
+        <code>npm install {packages.npm}</code>
       </div>
       <div className="mt-9 flex flex-wrap items-center gap-3">
         <Link
@@ -171,7 +171,7 @@ function GetStarted() {
           GitHub
         </a>
         <span className="ml-3 font-mono text-[11px] uppercase tracking-[0.12em] text-[#5f5e65]">
-          MIT · pre-1.0
+          MIT · 0.1.1
         </span>
       </div>
     </section>

@@ -1,0 +1,52 @@
+---
+title: Image
+description: A GPU texture the host uploaded, then drew into a rectangle.
+icon: Image
+---
+
+Valo never decodes files. The host supplies decoded RGBA8 pixels (or a GPU
+texture it already owns). The result is an `Image` you record with
+`draw_image_rect`.
+
+```rust
+use valo::ImageDesc;
+
+let image = context.upload_image(
+    ImageDesc {
+        size: [width, height],
+        premultiplied: false,
+        mips: true,
+    },
+    &pixels, // width * height * 4 bytes, straight RGBA8
+);
+builder.draw_image_rect(&image, src, dst, Sampling::default(), &paint);
+```
+
+```ts
+const image = renderer.uploadRgba(width, height, pixels, false, true);
+builder.drawImageRect(
+  image,
+  0, 0, width, height,
+  40, 40, 240, 140,
+  0, 1, 0, 0, // filter, mipmap, tileX, tileY
+  paint,
+);
+```
+
+The paint's alpha, blend mode, and mask blur apply; its RGB channels are
+ignored. Enable mips when the image may be drawn smaller than its source size.
+
+## Browser uploads
+
+JavaScript can also upload an `ImageBitmap` or copy a live DOM source
+(`HTMLImageElement`, canvas, video, `VideoFrame`):
+
+```ts
+const image = renderer.uploadImageBitmap(bitmap);
+renderer.refreshExternalImage(image, video); // after each video frame
+```
+
+Display lists retain the image. Dropping every JavaScript handle releases the
+texture after in-flight GPU use finishes.
+
+Next: [FontCollection](/docs/reference/font-collection).

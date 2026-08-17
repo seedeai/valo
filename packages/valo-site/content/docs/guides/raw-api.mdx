@@ -1,0 +1,90 @@
+---
+title: JavaScript engine API
+description: Use Valo's display lists, paints and rendering resources from JavaScript or TypeScript.
+icon: Code
+---
+
+The `valo-web/raw` entry point exposes Valo's own API to JavaScript and
+TypeScript. Use it for new applications that want retained display lists,
+explicit layers, advanced filters or paragraph layout.
+
+```bash
+npm install valo-web
+```
+
+## Initialize and attach a canvas
+
+```ts
+import {
+  DisplayListBuilder,
+  Paint,
+  createDevice,
+  initializeValo,
+} from 'valo-web/raw';
+
+await initializeValo();
+const device = await createDevice();
+const renderer = device.attach(document.querySelector('canvas')!);
+```
+
+`initializeValo()` loads the WebAssembly binary next to the package by default.
+Pass it a URL when your bundler or server places the binary elsewhere.
+
+## Record and render
+
+```ts
+const builder = new DisplayListBuilder();
+const paint = new Paint(0.78, 1, 0.24, 1);
+
+builder.save();
+builder.translate(160, 110);
+builder.rotate(0.2);
+builder.drawRoundedRect(-100, -55, 200, 110, new Float32Array([20]), paint);
+builder.restore();
+
+const list = builder.build();
+const stats = renderer.render(list, true, 0.04, 0.04, 0.05, 1);
+
+stats?.free();
+list.free();
+builder.free();
+paint.free();
+```
+
+The `true` argument starts from the supplied clear colour. Pass `false` to draw
+incrementally over the canvas's preserved pixels.
+
+## Named modes
+
+Blend modes, cap styles, clip operations and other modes are exported as named
+objects:
+
+```ts
+import { BlendMode, BlurStyle, ClipOp } from 'valo-web/raw';
+
+paint.setBlendMode(BlendMode.Multiply);
+paint.setMaskBlur(8, BlurStyle.Outer);
+builder.clipRect(20, 20, 200, 120, ClipOp.Difference);
+```
+
+## Share a device
+
+Attach every live canvas on a page to the same device when possible. Glyphs,
+images, pipelines and temporary render targets can then be reused:
+
+```ts
+const first = device.attach(canvasA);
+const second = device.attach(canvasB);
+```
+
+See [One device, many canvases](/docs/guides/shared-device) for lifetime
+guidance.
+
+## Clean up
+
+Objects created by the WebAssembly API own Rust memory and expose `free()`.
+Keep resources for as long as they are useful, then free them in child-before-
+parent order: frame objects and lists, renderers, then the shared device.
+
+See [Paint](/docs/reference/paint) for the main drawing objects and the
+[playground](/playground) for editable examples.

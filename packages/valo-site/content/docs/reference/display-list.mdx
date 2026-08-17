@@ -1,0 +1,36 @@
+---
+title: DisplayList
+description: An immutable recording of drawing commands.
+icon: Layers
+---
+
+`DisplayList` is the finished recording produced by
+[`DisplayListBuilder.build()`](/docs/reference/display-list-builder). It is
+GPU-free, nestable, and cheap to keep. Later edits to the builder that produced
+it do not affect the list.
+
+Replay it every frame, nest it inside another list, or keep a retained list for
+content that does not change and build a smaller list for live overlays.
+
+```rust
+builder.draw_display_list(&background);
+builder.draw_display_list(&overlay);
+```
+
+```ts
+builder.drawDisplayList(background);
+builder.drawDisplayListCached(overlay); // reuse a GPU raster of this list
+```
+
+`draw_display_list_cached` (JavaScript `drawDisplayListCached`) rasterizes the
+nested list into a texture and reuses it while the scale is stable. During a
+zoom gesture call `set_raster_hold` (JavaScript `setGestureHold`) and clear it
+when the view settles — see [Context](/docs/reference/context).
+
+A list does not own GPU resources of its own. Images and paragraphs it refers
+to must outlive the render that uses the list.
+
+In JavaScript, call `list.free()` when you no longer need it. Free the list
+before freeing images or the renderer it was drawn with.
+
+Next: [Context](/docs/reference/context).

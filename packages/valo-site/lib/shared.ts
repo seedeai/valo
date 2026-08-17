@@ -1,6 +1,5 @@
 export const appName = 'valo';
-export const tagline = 'The WebGPU render engine.';
-/** Says the domain the tagline leaves open, for anyone who has not seen a demo. */
+export const tagline = 'The WebGPU-native 2D render engine.';
 export const subtitle =
   'Cross-platform portable 2D graphics engine in Rust. Works on Windows, macOS, Linux, Android, iOS and Web.';
 
@@ -21,10 +20,3 @@ export const packages = {
   rust: 'valo',
   npm: 'valo-web',
 } as const;
-
-/**
- * The differential conformance result, stated as a number because it is one.
- * The suite renders each scene through valo and through Chrome's own Canvas2D
- * and compares pixels; `npm run test:conformance` is the thing that proves it.
- */
-export const conformance = { passing: 105, total: 105 } as const;

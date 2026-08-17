@@ -47,7 +47,7 @@ let display_list = builder.build();
 
 Rendering requires:
 
-- A `valo::Context`, created from a wgpu device and queue. See the device setup for [native Rust](packages/valo-site/content/docs/embedding-rust.mdx) or [Rust in the browser](packages/valo-site/content/docs/rust-browser.mdx).
+- A `valo::Context`, created from a wgpu device and queue. See the device setup for [native Rust](packages/valo-site/content/docs/guides/embedding-rust.mdx) or [Rust in the browser](packages/valo-site/content/docs/guides/rust-browser.mdx).
 - A `RenderTarget` to draw into. Acquire one from a `Surface` backed by a [winit window](crates/valo/examples/window.rs) or an [HTML canvas](crates/valo-web-demo/src/lib.rs), or use `Offscreen` when no display is needed.
 
 Render and present an acquired surface frame:

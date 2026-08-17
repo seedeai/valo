@@ -1,0 +1,80 @@
+---
+title: Rust on native platforms
+description: Render with the valo crate from a native Rust application.
+icon: Wrench
+---
+
+```bash
+cargo add valo wgpu pollster
+```
+
+Valo uses the wgpu device and queue owned by your application. For a first
+frame, rendering to pixels avoids any window-system setup:
+
+```rust
+use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
+
+fn main() {
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(
+        instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+    )
+    .expect("a compatible GPU adapter");
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&wgpu::DeviceDescriptor::default()),
+    )
+    .expect("a GPU device");
+
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(40.0, 40.0, 240.0, 140.0),
+        &Paint::from_color(Color::rgb(0.78, 1.0, 0.24)),
+    );
+    let display_list = builder.build();
+
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(
+        &display_list,
+        [320, 220],
+        Some(Color::rgb(0.04, 0.04, 0.05)),
+    );
+
+    assert_eq!(pixels.len(), 320 * 220 * 4);
+}
+```
+
+`render_to_rgba` is a blocking export helper for native applications. It
+returns straight-alpha RGBA8 pixels suitable for an image encoder.
+
+## Draw into a window
+
+For an interactive application, create `valo::Surface` over your window and
+render each acquired frame:
+
+```rust
+let mut surface = valo::Surface::new(
+    &instance,
+    &adapter,
+    context.device(),
+    window,
+    [width, height],
+)?;
+
+if let Some(frame) = surface.acquire() {
+    context.render(&display_list, &frame.target(Some(Color::BLACK)));
+    context.present(frame);
+}
+```
+
+Call `surface.resize([width, height])` when the window changes size. The
+complete winit application is in
+[`crates/valo/examples/window.rs`](https://github.com/seedeai/valo/blob/main/crates/valo/examples/window.rs).
+
+## Draw into your own texture
+
+If the host already owns a `wgpu::Texture`, construct a `RenderTarget` from its
+view, format and size. This is useful for game engines, editors, compositors and
+server-side image generation.
+
+See [Context](/docs/reference/context) and [Surface](/docs/reference/surface)
+for ownership, then [Paint](/docs/reference/paint) for the recording API.

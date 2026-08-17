@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://valo.im'),
   title: { default: `${appName} — ${tagline}`, template: `%s — ${appName}` },
   description:
-    'valo is a 2D render engine in Rust on wgpu, with a Canvas2D-compatible layer compiled to WebAssembly.',
+    'A WebGPU-native 2D render engine for Rust on native platforms and WebAssembly, with JavaScript, TypeScript and Canvas2D-compatible browser APIs.',
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {

@@ -1,105 +1,101 @@
 ---
 title: Getting started
-description: Install valo, acquire a device, and draw a first frame on the web or from Rust.
+description: Install Valo and record your first rectangle.
+icon: Rocket
 ---
 
-## On the web
+Install `valo` for Rust or `valo-web` for JavaScript, then record a display
+list.
+
+Drawing is two steps: record commands into a `DisplayList` (no GPU device),
+then submit that list to a `Context` to render on the GPU. The rectangle below
+is that first draw, running on this page.
+
+<Demo demo="first-rectangle" caption="live" />
+
+## Rust
 
 ```bash
-npm install valo-web
-```
-
-The package ships WebAssembly plus a typed TypeScript layer over it. It needs a
-browser with WebGPU: Chrome 113+, Edge 113+, or Safari 18+.
-
-### One canvas
-
-```ts
-import { createValoCanvas } from 'valo-web';
-
-const canvas = document.querySelector('canvas')!;
-const ctx = await createValoCanvas(canvas);
-
-ctx.fillStyle = '#c8ff3d';
-ctx.beginPath();
-ctx.roundRect(24, 24, 200, 120, 18);
-ctx.fill();
-```
-
-That is the Canvas2D layer, and it gives the canvas a GPU device of its own.
-For a page with more than one canvas, see [one device, many canvases](/docs/shared-device)
-— it is a much larger saving than it sounds.
-
-### The raw API
-
-```ts
-import { createDevice, initializeValo, DisplayListBuilder, Paint } from 'valo-web/raw';
-
-await initializeValo();
-const device = await createDevice();
-const renderer = device.attach(canvas);
-
-const builder = new DisplayListBuilder();
-const paint = new Paint(0.784, 1, 0.239, 1);
-builder.drawRoundedRect(24, 24, 200, 120, new Float32Array([18]), paint);
-paint.free();
-
-const list = builder.build();
-renderer.render(list, true, 0.04, 0.04, 0.05, 1);
-list.free();
-builder.free();
-```
-
-<Callout type="warn">
-Every object crossing the WebAssembly boundary owns memory on the Rust side and
-has a `free()`. A 60 Hz loop that forgets one leaks steadily. The rule is
-simple: whatever you construct in a frame, release in that frame.
-</Callout>
-
-### Loading the WebAssembly binary
-
-`initializeValo()` fetches the `.wasm` next to its own module by default. If your
-bundler does not emit it that way, hand it a URL you control:
-
-```ts
-await initializeValo('/valo_web_bg.wasm');
-```
-
-This site does exactly that — the binary is served from `public/` rather than
-routed through a bundler's asset pipeline, which keeps the loader identical
-across webpack, Turbopack and Vite.
-
-### Fonts are explicit
-
-valo never reaches for a font. Text arrives as registered bytes:
-
-```ts
-const bytes = new Uint8Array(await (await fetch('/fonts/inter.ttf')).arrayBuffer());
-await ctx.registerFont('Inter', bytes, /* use as fallback */ true);
-ctx.font = "600 32px 'Inter'";
-```
-
-There is no hidden browser fallback, which is also why the differential
-conformance suite can compare pixels at all: both engines are given the same
-face rather than each picking one.
-
-## From Rust
-
-```bash
-cargo add valo
+cargo add valo wgpu
 ```
 
 ```rust
 use valo::{Color, DisplayListBuilder, Paint, Rect};
 
 let mut builder = DisplayListBuilder::new();
-builder.draw_rrect(
-    Rect::new(24.0, 24.0, 200.0, 120.0),
-    18.0,
-    &Paint::from_color(Color::rgb(0.784, 1.0, 0.239)),
+builder.draw_rect(
+    Rect::new(40.0, 40.0, 240.0, 140.0),
+    &Paint::from_color(Color::rgb(0.78, 1.0, 0.24)),
 );
-let list = builder.build();
+let display_list = builder.build();
 ```
 
-Recording needs no GPU device and no thread affinity. See
-[embedding from Rust](/docs/embedding-rust) for handing that list to a surface.
+Rendering needs a `Context` from a host-owned wgpu device and queue, and a
+target: a `Surface` over a
+[winit window](https://github.com/seedeai/valo/blob/main/crates/valo/examples/window.rs)
+or an
+[HTML canvas](https://github.com/seedeai/valo/blob/main/crates/valo-web-demo/src/lib.rs),
+or `Offscreen` when no display is needed.
+
+```rust
+let mut context = valo::Context::new(device, queue);
+if let Some(frame) = surface.acquire() {
+    context.render(&display_list, &frame.target(Some(Color::BLACK)));
+    context.present(frame);
+}
+```
+
+Device setup: [native Rust](/docs/guides/embedding-rust) or
+[Rust in the browser](/docs/guides/rust-browser).
+
+## JavaScript and TypeScript
+
+```bash
+npm install valo-web
+```
+
+```ts
+import {
+  DisplayListBuilder,
+  Paint,
+  createDevice,
+  initializeValo,
+} from 'valo-web/raw';
+
+await initializeValo();
+const device = await createDevice();
+const renderer = device.attach(document.querySelector('canvas')!);
+
+const builder = new DisplayListBuilder();
+const paint = new Paint(0.78, 1, 0.24, 1);
+builder.drawRect(40, 40, 240, 140, paint);
+const list = builder.build();
+const stats = renderer.render(list, true, 0.04, 0.04, 0.05, 1);
+
+// Valo's resources are allocated in WebAssembly memory and need to be freed manually.
+stats?.free();
+list.free();
+builder.free();
+paint.free();
+renderer.free();
+device.free();
+```
+
+For Canvas2D-shaped code, use the adapter:
+
+```ts
+import { createValoCanvas } from 'valo-web';
+
+const context = await createValoCanvas(document.querySelector('canvas')!);
+context.fillStyle = '#c8ff3d';
+context.fillRect(40, 40, 240, 140);
+```
+
+The default WebAssembly build requires WebGPU and a secure context (HTTPS or
+localhost). For older browsers, `valo-web/compat` can fall back to WebGL2; that
+build is larger and cannot share one device across several canvases. The
+Canvas2D adapter requires WebGPU.
+
+More on the [engine API](/docs/guides/raw-api) and
+[Canvas2D adapter](/docs/guides/canvas2d). Next:
+[Paint](/docs/reference/paint).

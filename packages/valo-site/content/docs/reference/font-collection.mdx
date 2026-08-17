@@ -1,0 +1,39 @@
+---
+title: FontCollection
+description: Registered faces used to shape paragraphs.
+icon: Type
+---
+
+`FontCollection` holds the fonts a paragraph can use. Valo never opens font
+files or talks to the network. Register bytes the host already loaded.
+
+```rust
+let mut fonts = FontCollection::new();
+fonts.add(Font::from_bytes(regular)?);
+let cjk = fonts.add(Font::from_bytes(cjk)?);
+fonts.add_fallback(cjk);
+```
+
+```ts
+const fonts = new FontCollection();
+fonts.registerFont('Inter', bytes, false);
+fonts.registerFont('Noto Sans SC', cjkBytes, true); // fallback
+```
+
+Add styled families first, then fallbacks for codepoints they do not cover.
+Rebuild paragraphs after adding faces — lists built from earlier snapshots are
+unaffected.
+
+`registerFont` returns `false` when the bytes do not parse. An empty collection
+cannot build a paragraph (JavaScript throws).
+
+## Native system fonts
+
+On native platforms, `valo-system-fonts` discovers installed faces and
+implements `FontSource`. It is never a wasm dependency. See
+[Integrations](/docs/guides/integrations).
+
+After layout, unanswered families and codepoints are available as a font
+demand so the host can fetch more faces.
+
+Next: [Paragraph](/docs/reference/paragraph).

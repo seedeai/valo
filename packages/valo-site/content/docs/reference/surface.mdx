@@ -1,0 +1,54 @@
+---
+title: Surface
+description: The host-owned destination Valo draws into.
+icon: Monitor
+---
+
+Valo never creates a window or runs an event loop. The host supplies a
+destination: a presentable surface, an offscreen texture, or a raw render
+target.
+
+## Surface
+
+`Surface` wraps a native window or an HTML canvas. Acquire a frame, render into
+it, then present:
+
+```rust
+let mut surface = valo::Surface::new(
+    &instance,
+    &adapter,
+    context.device(),
+    window, // or wgpu::SurfaceTarget::Canvas(canvas)
+    [width, height],
+)?;
+
+if let Some(frame) = surface.acquire() {
+    context.render(&display_list, &frame.target(Some(Color::BLACK)));
+    context.present(frame);
+}
+```
+
+`acquire()` returns `None` when the swapchain skipped the frame (an occluded
+window). That is recoverable — try next frame. Call `surface.resize` when the
+window or canvas size changes.
+
+In JavaScript, `device.attach(canvas)` creates this surface for you. See
+[Rust on native platforms](/docs/guides/embedding-rust) and
+[Rust in the browser](/docs/guides/rust-browser) for full setup.
+
+## RenderTarget
+
+If you already own a `wgpu::Texture`, build a `RenderTarget` from its view,
+format, and size. `texture` must be the resource behind `view`. Advanced blends
+and backdrop filters require `COPY_SRC` usage.
+
+## Offscreen and PersistentCanvas
+
+`Offscreen` is a texture Valo allocates for render-to-texture. Native
+`render_to_rgba` uses this path internally.
+
+`PersistentCanvas` keeps pixels between incremental frames — Canvas2D's "what
+you drew stays drawn." JavaScript renderers use it when you pass `false` to
+`render` instead of clearing.
+
+Next: [Path](/docs/reference/path).

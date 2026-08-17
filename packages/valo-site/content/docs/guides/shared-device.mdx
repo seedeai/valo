@@ -1,0 +1,58 @@
+---
+title: One device, many canvases
+description: Share GPU resources across several browser canvases.
+icon: Share2
+---
+
+A device owns Valo's pipelines, glyph atlas, uploaded images and reusable
+render targets. A canvas owns only its surface and persistent backing. Sharing
+one device therefore avoids rebuilding the same caches for every canvas.
+
+Use this for documentation sites, dashboards and editors with several live
+previews.
+
+## JavaScript engine API
+
+```ts
+import { createDevice, initializeValo } from 'valo-web/raw';
+
+await initializeValo();
+const device = await createDevice();
+
+const first = device.attach(canvasA);
+const second = device.attach(canvasB);
+```
+
+Each renderer has its own size and frame history but shares the device-level
+resources.
+
+## Canvas2D adapter
+
+```ts
+import { ValoDevice } from 'valo-web';
+
+const device = await ValoDevice.create();
+const first = device.attach(canvasA);
+const second = device.attach(canvasB);
+```
+
+`createValoCanvas(canvas)` is more convenient for a single canvas because it
+creates its own device. Use `ValoDevice` when the page has several.
+
+## Lifetime
+
+Keep the shared device alive until all attached canvases have gone away. With
+the engine API, free each renderer before freeing the device:
+
+```ts
+first.free();
+second.free();
+device.free();
+```
+
+`memoryReport()` is available when you need to inspect Valo-managed memory. It
+reports atlas, image and render-target allocations; it does not attempt to
+measure browser or driver overhead.
+
+The default WebGPU build supports shared devices. The WebGL2 compatibility
+build uses one context per canvas and therefore cannot use this pattern.

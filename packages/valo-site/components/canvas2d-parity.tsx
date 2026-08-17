@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { PARITY_FONT_FAMILY, PARITY_SIZE, paritySource } from '@/lib/demos/parity';
-import { conformance } from '@/lib/shared';
 
 /**
  * The same Canvas2D code running through valo and through the browser, next to
@@ -77,7 +76,7 @@ export function Canvas2DParity() {
     <div className="grid gap-px border border-valo-line bg-valo-line md:grid-cols-2">
       <ParityPane
         title="valo"
-        note={`valo-web · WebGPU · ${conformance.passing}/${conformance.total} differential scenes`}
+        note="valo-web · WebGPU · tested against Chrome"
         canvasRef={valoRef}
         error={error}
       />

@@ -1,0 +1,69 @@
+---
+title: Paragraph
+description: Lay out styled text, then record it like any other draw.
+icon: TextAlignStart
+---
+
+`Paragraph` is the API for laying out and drawing text. A
+`ParagraphBuilder` assembles styled spans against a
+[`FontCollection`](/docs/reference/font-collection). Call `layout` before
+drawing or reading metrics.
+
+```rust
+use valo::{Color, DrawParagraphExt, ParagraphBuilder, TextStyle};
+
+let mut paragraph = ParagraphBuilder::new(&mut fonts)
+    .add_text("Hello, Valo", &TextStyle::new("Inter", 24.0, Color::WHITE))
+    .build();
+paragraph.layout(320.0);
+builder.draw_paragraph(&paragraph, (40.0, 40.0));
+```
+
+```ts
+const paragraph = new Paragraph(
+  fonts,
+  'Hello, Valo',
+  'Inter',
+  24,
+  400,
+  false,
+  1, 1, 1, 1,
+  1,
+  true,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  '',
+  320,
+  false,
+);
+builder.drawParagraph(paragraph, 40, 40);
+```
+
+The JavaScript constructor lays out once. `maxWidth` of `Infinity` disables
+soft wrapping. Family names are newline-separated when more than one is
+supplied. `align` is `0` left, `1` center, `2` right, `3` justify.
+
+## Layout and metrics
+
+`layout(max_width)` wraps to that width. Repeating the same width reuses the
+existing layout. Width, height, and line metrics are zero before the first
+layout.
+
+Use `draw_paragraph_with` (JavaScript `drawParagraphWith`) to stroke or blend
+every run with a paint. Shadows and decorations still come from the paragraph's
+styles. Valo's C paint has no shader, so gradient-filled text from C is not
+available; Rust and JavaScript paints may carry a shader.
+
+## Queries
+
+Caret rectangles, hit-testing a point to a byte offset, selection boxes, and
+word boundaries use UTF-8 byte offsets. An empty paragraph returns offset `0`
+and a zero caret.
+
+Next: platform setup in [Rust on native platforms](/docs/guides/embedding-rust)
+or the [JavaScript engine API](/docs/guides/raw-api).

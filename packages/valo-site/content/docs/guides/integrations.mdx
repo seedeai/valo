@@ -1,0 +1,41 @@
+---
+title: Integrations
+description: Use Valo from C, translate SVG, or discover native system fonts.
+icon: Plug
+---
+
+## C API
+
+`valo-capi` provides opaque, null-safe handles for native embedders. Every
+allocated object has a matching `valo_*_dispose` function.
+
+The committed header is
+[`crates/valo-capi/include/valo.h`](https://github.com/seedeai/valo/blob/main/crates/valo-capi/include/valo.h).
+[`examples/c/hello.c`](https://github.com/seedeai/valo/blob/main/examples/c/hello.c)
+shows context creation, display-list recording, pixel output and cleanup.
+
+On macOS, the C API can attach to a `CAMetalLayer` or render into a supplied
+Metal texture.
+
+## SVG
+
+Add `valo-svg` when the host needs to translate SVG bytes into a display list:
+
+```rust
+let svg = valo_svg::translate(bytes)?;
+builder.draw_display_list(&svg.list);
+```
+
+Translation is best-effort. Unsupported features are returned in
+`svg.missing`, allowing the host to log or replace individual elements instead
+of rejecting the entire document. Embedded raster images can be decoded by the
+host and supplied during translation.
+
+## Native system fonts
+
+The renderer accepts registered font bytes on every platform. Native
+applications that want installed operating-system fonts can use
+`valo-system-fonts`, which implements Valo's `FontSource` interface.
+
+System font discovery is intentionally separate from `valo`; it is never pulled
+into browser builds.

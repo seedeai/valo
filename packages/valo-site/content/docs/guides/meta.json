@@ -1,0 +1,11 @@
+{
+  "title": "Guides",
+  "pages": [
+    "embedding-rust",
+    "rust-browser",
+    "raw-api",
+    "canvas2d",
+    "shared-device",
+    "integrations"
+  ]
+}

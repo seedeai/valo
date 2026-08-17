@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { demoById, demos } from '@/lib/demos/catalog';
+import { takePlaygroundDraft } from '@/lib/demos/playground-draft';
 import type { SurfaceStats } from '@/lib/valo/surface';
 import { ValoCanvas } from '@/components/valo-canvas';
 import { cn } from '@/lib/cn';
@@ -28,10 +29,11 @@ type Tab = 'scene' | 'setup';
  * Two files, because a scene on its own is half the picture.
  *
  * `scene.js` is a real module: it imports from `valo-web/raw` and exports its
- * draw function, and the same text runs on the landing page. `setup.ts` is the
- * bootstrap that calls it — the device, the fonts, the canvas and the frame
- * loop — served straight from the repository so it cannot describe an API that
- * no longer exists. Nothing is injected into a scene that it did not import.
+ * draw function, and the same text runs on the landing page and in the docs.
+ * `setup.ts` is the bootstrap that calls it — the device, the fonts, the canvas
+ * and the frame loop — served straight from the repository so it cannot
+ * describe an API that no longer exists. Nothing is injected into a scene that
+ * it did not import.
  */
 export function Playground({ initialDemo }: { initialDemo?: string }) {
   const initial = demoById(initialDemo) ?? demos[0]!;
@@ -42,6 +44,13 @@ export function Playground({ initialDemo }: { initialDemo?: string }) {
   const [setupSource, setSetupSource] = useState('');
   const [stats, setStats] = useState<SurfaceStats | undefined>();
   const firstRender = useRef(true);
+
+  useEffect(() => {
+    const stashed = takePlaygroundDraft(initial.id);
+    if (!stashed) return;
+    setDraft(stashed);
+    setLive(stashed);
+  }, [initial.id]);
 
   useEffect(() => {
     if (firstRender.current) {

@@ -1,0 +1,56 @@
+---
+title: Context
+description: Submit a display list to a host-owned GPU device.
+icon: Cpu
+---
+
+`Context` is Valo on one GPU device. Create it from a device and queue your
+application already owns. It holds pipelines, atlases, uploaded images, and
+reusable targets — not windows, files, or application content. Reuse it across
+frames.
+
+```rust
+let mut context = valo::Context::new(device, queue);
+if let Some(frame) = surface.acquire() {
+    context.render(&display_list, &frame.target(Some(Color::BLACK)));
+    context.present(frame);
+}
+```
+
+Native applications can also export pixels without a window:
+
+```rust
+let pixels = context.render_to_rgba(&display_list, [320, 220], Some(Color::BLACK));
+```
+
+`render` submits one command buffer and returns frame statistics.
+`render_to_rgba` is a blocking helper for tests and exports.
+
+## JavaScript: Device and Renderer
+
+The same GPU owner is split across two objects. `createDevice()` is the shared
+`Context`. `device.attach(canvas)` is one canvas's swapchain and backing:
+
+```ts
+await initializeValo();
+const device = await createDevice();
+const renderer = device.attach(canvas);
+const stats = renderer.render(list, true, 0.04, 0.04, 0.05, 1);
+```
+
+The `true` argument clears to the supplied colour. Pass `false` to draw
+incrementally over preserved pixels. Attach several canvases to one device so
+they share atlases — see [One device, many canvases](/docs/guides/shared-device).
+
+## Options
+
+- `set_text_tiers` — bitmap, SDF, or outlines by font size. Defaults suit
+  normal use.
+- `set_hide_missing_glyphs` — blank instead of tofu for unresolved characters.
+- `set_text_raster_hold` / `set_raster_hold` — reuse existing rasters during a
+  zoom gesture; clear them when the view settles.
+
+`memory_report()` estimates retained GPU memory. In JavaScript, call
+`device.memoryReport()`.
+
+Next: [Surface](/docs/reference/surface).

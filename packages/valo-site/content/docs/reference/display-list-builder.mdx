@@ -1,0 +1,56 @@
+---
+title: DisplayListBuilder
+description: Record drawing commands without touching the GPU.
+icon: ListPlus
+---
+
+`DisplayListBuilder` records drawing commands into a display list. Recording is
+CPU-only: bounds, clips, and layer extents are resolved here so rendering does
+not rediscover them.
+
+```rust
+use valo::{Color, DisplayListBuilder, Paint, Rect};
+
+let paint = Paint::from_color(Color::rgb(0.78, 1.0, 0.24));
+let mut builder = DisplayListBuilder::new();
+builder.save();
+builder.translate(160.0, 110.0);
+builder.rotate(0.2);
+builder.draw_rrect(Rect::new(-100.0, -55.0, 200.0, 110.0), 20.0, &paint);
+builder.restore();
+let display_list = builder.build();
+```
+
+```ts
+const builder = new DisplayListBuilder();
+builder.save();
+builder.translate(160, 110);
+builder.rotate(0.2);
+builder.drawRoundedRect(-100, -55, 200, 110, new Float32Array([20]), paint);
+builder.restore();
+const list = builder.build();
+```
+
+`build()` finishes the recording. In Rust it consumes the builder. In
+JavaScript every mutating method throws after `build()`.
+
+## Transforms, clips, and layers
+
+Save and restore around local transforms, clips, and layers. An unmatched
+restore is a debug assertion in Rust and is ignored in release.
+
+- **Clips** may intersect the current region or subtract from it
+  (`ClipOp.Difference`).
+- **Save layers** group several draws before applying opacity, blending, or a
+  filter.
+- **Backdrop blur** reads what was already drawn beneath its bounds.
+
+Coordinates are local pixels with y downward until a transform says otherwise.
+
+## What you can record
+
+Rects, rounded rects, circles, paths, images, nested display lists, and
+paragraphs. See [Paint](/docs/reference/paint) for style and
+[Path](/docs/reference/path) for geometry.
+
+Next: [DisplayList](/docs/reference/display-list).

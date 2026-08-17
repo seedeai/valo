@@ -1,8 +1,11 @@
+import { firstRectangle } from './docs';
+
 /**
  * The scenes this site runs live.
  *
- * Each demo is the SOURCE TEXT, not a function: the card evaluates it and so
- * does the playground, so what the editor opens is provably what the card ran.
+ * Each demo is the SOURCE TEXT, not a function: a landing card, a docs widget,
+ * and the playground all evaluate the same string, so what the editor opens is
+ * provably what the card ran.
  * Each is a real ES module — it imports from `valo-web/raw` and default-exports
  * its draw function — because a visitor reading one should be reading code they
  * could paste into their own project, not a body with names already in scope.
@@ -1227,6 +1230,13 @@ export const demos: readonly Demo[] = [
     beyondCanvas2D: 'The recorder computes bounds and depth slots up front; replay never looks ahead.',
     grounding: 'examples/layers.rs · goldens/m4_layers.png',
     source: nestedLayers,
+  },
+  {
+    id: 'first-rectangle',
+    title: 'First rectangle',
+    beyondCanvas2D: 'A recorded display list, not a canvas state machine — the same first draw as Getting started.',
+    grounding: 'content/docs/getting-started.mdx',
+    source: firstRectangle,
   },
 ];
 

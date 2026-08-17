@@ -1,11 +1,10 @@
 {
   "title": "Documentation",
   "pages": [
+    "---Introduction---",
     "index",
     "getting-started",
-    "raw-api",
-    "canvas2d",
-    "shared-device",
-    "embedding-rust"
+    "reference",
+    "guides"
   ]
 }
