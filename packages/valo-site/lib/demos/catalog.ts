@@ -1,4 +1,12 @@
-import { firstRectangle } from './docs';
+import {
+  docsBuilder,
+  docsFonts,
+  docsList,
+  docsPaint,
+  docsParagraph,
+  docsPath,
+  firstRectangle,
+} from './docs';
 
 /**
  * The scenes this site runs live.
@@ -1237,6 +1245,48 @@ export const demos: readonly Demo[] = [
     beyondCanvas2D: 'A recorded display list, not a canvas state machine — the same first draw as Getting started.',
     grounding: 'content/docs/getting-started.mdx',
     source: firstRectangle,
+  },
+  {
+    id: 'docs-paint',
+    title: 'Paint',
+    beyondCanvas2D: 'Each draw carries its own paint — no global fillStyle.',
+    grounding: 'content/docs/reference/paint.mdx',
+    source: docsPaint,
+  },
+  {
+    id: 'docs-builder',
+    title: 'DisplayListBuilder',
+    beyondCanvas2D: 'Transforms and draws are recorded, not issued to a GPU immediately.',
+    grounding: 'content/docs/reference/display-list-builder.mdx',
+    source: docsBuilder,
+  },
+  {
+    id: 'docs-list',
+    title: 'DisplayList',
+    beyondCanvas2D: 'One recording, replayed several times. Canvas2D has no list to keep.',
+    grounding: 'content/docs/reference/display-list.mdx',
+    source: docsList,
+  },
+  {
+    id: 'docs-path',
+    title: 'Path',
+    beyondCanvas2D: 'Even-odd fill on a retained path, including a circular hole.',
+    grounding: 'content/docs/reference/path.mdx',
+    source: docsPath,
+  },
+  {
+    id: 'docs-fonts',
+    title: 'FontCollection',
+    beyondCanvas2D: 'Families are names the host registered, not CSS font stacks.',
+    grounding: 'content/docs/reference/font-collection.mdx',
+    source: docsFonts,
+  },
+  {
+    id: 'docs-paragraph',
+    title: 'Paragraph',
+    beyondCanvas2D: 'Styled spans are built, laid out, then recorded like any other draw.',
+    grounding: 'content/docs/reference/paragraph.mdx',
+    source: docsParagraph,
   },
 ];
 

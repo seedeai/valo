@@ -33,6 +33,10 @@ builder.drawImageRect(
 );
 ```
 
+Upload needs a renderer, which the scene widget does not expose. Record
+geometry on [Paint](/docs/reference/paint) or [Path](/docs/reference/path)
+instead; those canvases share the same device.
+
 The paint's alpha, blend mode, and mask blur apply; its RGB channels are
 ignored. Enable mips when the image may be drawn smaller than its source size.
 

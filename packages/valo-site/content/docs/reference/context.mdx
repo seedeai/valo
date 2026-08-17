@@ -42,6 +42,11 @@ The `true` argument clears to the supplied colour. Pass `false` to draw
 incrementally over preserved pixels. Attach several canvases to one device so
 they share atlases — see [One device, many canvases](/docs/guides/shared-device).
 
+The live canvases on [Paint](/docs/reference/paint) and
+[DisplayListBuilder](/docs/reference/display-list-builder) already go through
+`createDevice` and `attach`. Change those scenes to see a render on this
+device.
+
 ## Options
 
 - `set_text_tiers` — bitmap, SDF, or outlines by font size. Defaults suit

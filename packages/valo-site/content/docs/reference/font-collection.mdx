@@ -20,12 +20,19 @@ fonts.registerFont('Inter', bytes, false);
 fonts.registerFont('Noto Sans SC', cjkBytes, true); // fallback
 ```
 
+This page already registered **Fira Sans** and **JetBrains Mono**. Change a
+family name, size, or colour.
+
+<Demo demo="docs-fonts" caption="live" />
+
 Add styled families first, then fallbacks for codepoints they do not cover.
 Rebuild paragraphs after adding faces — lists built from earlier snapshots are
 unaffected.
 
 `registerFont` returns `false` when the bytes do not parse. An empty collection
-cannot build a paragraph (JavaScript throws).
+cannot build a paragraph (JavaScript throws). `registerInstances` registers
+every face a file offers — named instances of a variable font included — and
+optionally appends them to the fallback chain.
 
 ## Native system fonts
 

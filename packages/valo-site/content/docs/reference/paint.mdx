@@ -23,6 +23,11 @@ const paint = new Paint(0.78, 1, 0.24, 1);
 builder.drawRect(40, 40, 240, 140, paint);
 ```
 
+The scene is JavaScript. Change colour, stroke width, or blur sigma and it
+redraws.
+
+<Demo demo="docs-paint" caption="live" />
+
 Colour components are straight-alpha sRGB in `0..=1`. Shader and image draws
 use only the paint's alpha and ignore its RGB channels.
 

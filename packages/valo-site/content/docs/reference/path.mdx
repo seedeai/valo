@@ -29,14 +29,18 @@ path.close();
 builder.drawPath(path, 0, paint); // 0 non-zero, 1 even-odd
 ```
 
+The scene is JavaScript. Change the curve, the hole radius, or `FillRule`.
+
+<Demo demo="docs-path" caption="live" />
+
 ## Verbs
 
 Move, line, quadratic, cubic, close, plus helpers for rects, rounded rects,
 circles, arcs, and ellipses. Angles are radians from the +x axis; a positive
 sweep is clockwise on screen (y downward).
 
-`close` has no effect when no contour is open. `reset` (JavaScript: a new
-`Path`) clears the path so it can be rebuilt.
+`close` has no effect when no contour is open. `reset` clears the path so it
+can be rebuilt. `circle` adds a closed circular contour.
 
 ## Fill rules and hit testing
 
@@ -49,6 +53,7 @@ path.contains(Point::new(80.0, 60.0), FillRule::NonZero);
 
 ```ts
 path.contains(80, 60, 0);
+path.reset();
 ```
 
 Stroke a path by setting the paint's style to stroke — the path itself is the

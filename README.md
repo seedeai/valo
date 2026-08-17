@@ -17,7 +17,7 @@ Resources:
 | Interface | Package | Runs on | Use it when |
 | --- | --- | --- | --- |
 | Rust | `valo` | Native and browser | Your application is written in Rust |
-| JavaScript/TypeScript engine API | `valo-web/raw` | Browser | You want raw power and control over the rendering engine |
+| JavaScript | `valo-web/raw` | Browser | You want raw power and control over the rendering engine |
 | Canvas2D adapter | `valo-web` | Browser | Bringing existing Canvas2D-shaped code |
 | C API | `valo-capi` | Native | When C ABI required |
 

@@ -31,6 +31,11 @@ builder.restore();
 const list = builder.build();
 ```
 
+The scene is JavaScript. Change the rotation, corner radii, or circle radius
+and it redraws. This widget already owns the builder for the frame.
+
+<Demo demo="docs-builder" caption="live" />
+
 `build()` finishes the recording. In Rust it consumes the builder. In
 JavaScript every mutating method throws after `build()`.
 
@@ -50,7 +55,8 @@ Coordinates are local pixels with y downward until a transform says otherwise.
 ## What you can record
 
 Rects, rounded rects, circles, paths, images, nested display lists, and
-paragraphs. See [Paint](/docs/reference/paint) for style and
+paragraphs. JavaScript `drawCircle` and `clipRoundedRect` match the C and Rust
+circle and rounded-clip calls. See [Paint](/docs/reference/paint) for style and
 [Path](/docs/reference/path) for geometry.
 
 Next: [DisplayList](/docs/reference/display-list).

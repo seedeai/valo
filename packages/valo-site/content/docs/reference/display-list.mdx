@@ -22,6 +22,11 @@ builder.drawDisplayList(background);
 builder.drawDisplayListCached(overlay); // reuse a GPU raster of this list
 ```
 
+The scene records one cell, then replays it. Change the gap, count, or cell
+size.
+
+<Demo demo="docs-list" caption="live" />
+
 `draw_display_list_cached` (JavaScript `drawDisplayListCached`) rasterizes the
 nested list into a texture and reuses it while the scale is stable. During a
 zoom gesture call `set_raster_hold` (JavaScript `setGestureHold`) and clear it

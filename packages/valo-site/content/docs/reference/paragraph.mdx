@@ -20,33 +20,23 @@ builder.draw_paragraph(&paragraph, (40.0, 40.0));
 ```
 
 ```ts
-const paragraph = new Paragraph(
-  fonts,
-  'Hello, Valo',
-  'Inter',
-  24,
-  400,
-  false,
-  1, 1, 1, 1,
-  1,
-  true,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  '',
-  320,
-  false,
-);
+const style = new TextStyle('Inter', 24);
+style.setColor(1, 1, 1, 1);
+const paragraphs = new ParagraphBuilder();
+paragraphs.addText('Hello, Valo', style);
+const paragraph = paragraphs.build(fonts);
+paragraph.layout(320);
 builder.drawParagraph(paragraph, 40, 40);
 ```
 
-The JavaScript constructor lays out once. `maxWidth` of `Infinity` disables
-soft wrapping. Family names are newline-separated when more than one is
-supplied. `align` is `0` left, `1` center, `2` right, `3` justify.
+The scene is JavaScript and uses **Fira Sans**, which this page registered.
+Change size, weight, align, or layout width.
+
+<Demo demo="docs-paragraph" caption="live" />
+
+`TextStyle` defaults to opaque black, weight 400, and no italic. `align` is `0`
+left, `1` center, `2` right, `3` justify. The one-span `Paragraph` constructor
+still exists for the Canvas2D adapter; prefer the builder in new code.
 
 ## Layout and metrics
 
@@ -64,6 +54,15 @@ available; Rust and JavaScript paints may carry a shader.
 Caret rectangles, hit-testing a point to a byte offset, selection boxes, and
 word boundaries use UTF-8 byte offsets. An empty paragraph returns offset `0`
 and a zero caret.
+
+```ts
+const caret = paragraph.caretForOffset(0);
+const hit = paragraph.glyphPositionAt(12, 8);
+const word = paragraph.wordBoundary(hit.offset);
+```
+
+Unanswered families and codepoints are on `demandFamilies` and
+`demandCodepoints` after build, so the host can fetch more faces and rebuild.
 
 Next: platform setup in [Rust on native platforms](/docs/guides/embedding-rust)
 or the [JavaScript engine API](/docs/guides/raw-api).

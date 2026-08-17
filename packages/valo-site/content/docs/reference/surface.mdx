@@ -32,7 +32,8 @@ if let Some(frame) = surface.acquire() {
 window). That is recoverable — try next frame. Call `surface.resize` when the
 window or canvas size changes.
 
-In JavaScript, `device.attach(canvas)` creates this surface for you. See
+In JavaScript, `device.attach(canvas)` creates this surface for you. The live
+canvases on the drawing pages are that attach. See
 [Rust on native platforms](/docs/guides/embedding-rust) and
 [Rust in the browser](/docs/guides/rust-browser) for full setup.
 

@@ -187,7 +187,7 @@ export default function SceneEditor({
         renderLineHighlight: readOnly ? 'none' : 'line',
         tabSize: 2,
         automaticLayout: true,
-        wordWrap: 'on',
+        wordWrap: 'off',
         overviewRulerLanes: 0,
         scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
       }}
