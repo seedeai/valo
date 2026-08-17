@@ -115,4 +115,12 @@ npm run build:site          # documentation site
 npm run test:conformance    # compare the Canvas2D adapter with Chrome
 ```
 
+## Contributing and AI
+
+Valo is developed with strong assistance from AI agents, with humans leading the design, reviewing changes, testing, and remain responsible for correctness.
+
+AI-assisted contributions are welcome as long as the contributor fully reviews the work, understands how it fits the architecture, manually reviews code changes and tests the work. Code that the contributor cannot explain, verify, or maintain should not be submitted.
+
+## License
+
 MIT licensed. Third-party test fonts under `assets/` retain their own licenses.
