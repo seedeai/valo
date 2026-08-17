@@ -1,8 +1,15 @@
 import { RootProvider } from 'fumadocs-ui/provider/next';
 import { DM_Mono, Manrope } from 'next/font/google';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './global.css';
-import { appName, tagline } from '@/lib/shared';
+import {
+  appName,
+  brand,
+  description,
+  keywords,
+  siteOrigin,
+  tagline,
+} from '@/lib/shared';
 
 const manrope = Manrope({
   subsets: ['latin'],
@@ -16,11 +23,45 @@ const dmMono = DM_Mono({
   variable: '--font-dm-mono',
 });
 
+const origin = siteOrigin();
+const title = `${appName} — ${tagline}`;
+
+export const viewport: Viewport = {
+  themeColor: brand.ink,
+  colorScheme: 'dark',
+};
+
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://valo.im'),
-  title: { default: `${appName} — ${tagline}`, template: `%s — ${appName}` },
-  description:
-    'A WebGPU-native 2D render engine for Rust on native platforms and WebAssembly, with JavaScript, TypeScript and Canvas2D-compatible browser APIs.',
+  metadataBase: new URL(origin),
+  title: { default: title, template: `%s — ${appName}` },
+  description,
+  applicationName: appName,
+  keywords,
+  authors: [{ name: appName, url: origin }],
+  creator: appName,
+  category: 'technology',
+  alternates: { canonical: '/' },
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    url: origin,
+    siteName: appName,
+    title,
+    description,
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title,
+    description,
+  },
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/icon.png', type: 'image/png', sizes: '96x96' },
+    ],
+    apple: [{ url: '/apple-icon', sizes: '180x180', type: 'image/png' }],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {

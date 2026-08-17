@@ -4,6 +4,7 @@ import { Playground } from '@/components/playground/playground';
 export const metadata: Metadata = {
   title: 'Playground',
   description: "Edit a valo scene against the engine's raw API and watch it re-render live.",
+  alternates: { canonical: '/playground' },
 };
 
 export default async function PlaygroundPage(props: PageProps<'/playground'>) {

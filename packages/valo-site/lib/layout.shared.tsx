@@ -11,6 +11,7 @@ export function baseOptions(): BaseLayoutProps {
       { text: 'Docs', url: '/docs', active: 'nested-url' },
       { text: 'Playground', url: '/playground', active: 'url' },
       { text: 'Rust API', url: rustDocsUrl, external: true },
+      { text: 'llms.txt', url: '/llms.txt', external: true },
     ],
     githubUrl: repositoryUrl,
     // One theme, so there is nothing for a switcher to switch.

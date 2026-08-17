@@ -16,6 +16,13 @@ const config = {
   // keeps the loader identical between webpack, Turbopack and the playground's
   // plain Vite build.
   turbopack: {},
+  async rewrites() {
+    return [
+      { source: '/favicon.ico', destination: '/icon.png' },
+      { source: '/docs.md', destination: '/llms.mdx/docs' },
+      { source: '/docs/:path*.md', destination: '/llms.mdx/docs/:path*' },
+    ];
+  },
 };
 
 export default withMDX(config);

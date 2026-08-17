@@ -3,14 +3,49 @@ import { Canvas2DParity } from '@/components/canvas2d-parity';
 import { DemoGrid } from '@/components/demo-grid';
 import { HeroDemo } from '@/components/hero-demo';
 import { MemoryMeter } from '@/components/memory-meter';
+import { JsonLd } from '@/components/json-ld';
 import { HERO_DEMO_ID, demoById } from '@/lib/demos/catalog';
-import { packages, repositoryUrl, rustDocsUrl, subtitle } from '@/lib/shared';
+import {
+  appName,
+  description,
+  packages,
+  repositoryUrl,
+  rustDocsUrl,
+  siteOrigin,
+  subtitle,
+} from '@/lib/shared';
 
 const heroDemo = demoById(HERO_DEMO_ID)!;
 
 export default function HomePage() {
+  const origin = siteOrigin();
   return (
     <main className="mx-auto w-full max-w-[1180px] px-6 pb-28 sm:px-10">
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@graph': [
+            {
+              '@type': 'WebSite',
+              name: appName,
+              url: origin,
+              description,
+            },
+            {
+              '@type': 'SoftwareApplication',
+              name: appName,
+              applicationCategory: 'DeveloperApplication',
+              operatingSystem: 'Windows, macOS, Linux, Android, iOS, Web',
+              url: origin,
+              description,
+              license: 'https://opensource.org/licenses/MIT',
+              codeRepository: repositoryUrl,
+              programmingLanguage: ['Rust', 'JavaScript', 'TypeScript'],
+              offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+            },
+          ],
+        }}
+      />
       <Hero />
       <Interfaces />
       <LiveDemos />

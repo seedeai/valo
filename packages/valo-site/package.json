@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare:assets": "node scripts/copy-valo-assets.mjs",
+    "prepare:assets": "node scripts/render-favicon.mjs && node scripts/copy-valo-assets.mjs",
     "dev": "npm run prepare:assets && next dev",
     "build": "npm run prepare:assets && next build",
     "start": "next start",

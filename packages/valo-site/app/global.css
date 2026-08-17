@@ -78,6 +78,8 @@ html > body[data-scroll-locked] {
 
 /** The brand mark: a lime blob with one squared corner, turned 45°. */
 .valo-mark {
+  display: block;
+  flex-shrink: 0;
   width: 19px;
   height: 19px;
   border-radius: 50% 50% 50% 12%;
