@@ -2,11 +2,15 @@ use std::collections::HashMap;
 
 use crate::pipelines::{DEPTH_FORMAT, SAMPLE_COUNT};
 
-/// Pooled offscreen resources — Impeller's RenderTargetCache. Layer targets
-/// and snapshot textures are taken during planning, live through the frame's
-/// submission (wgpu keeps them alive until the GPU is done), and return to
-/// the pool at `end_frame`; entries idle for `EVICT_AFTER_FRAMES` drop.
-/// Main-target scratch (MSAA color + depth per size) is keyed and persistent.
+/// `TargetPool` reuses offscreen textures across frames.
+///
+/// Layer, snapshot, filter, and raster-attachment targets are taken during
+/// planning, stay alive through GPU submission, and return at [`Self::end_frame`].
+/// Entries unused for several frames are dropped. Main-target MSAA color and
+/// depth scratch is keyed by size and kept.
+///
+/// Views returned by `take_*` are cloned wgpu handles. Do not keep them past
+/// [`Self::end_frame`]: the pool may reuse or drop the underlying textures.
 pub struct TargetPool {
     device: wgpu::Device,
     frame: u64,
@@ -23,8 +27,10 @@ pub struct TargetPool {
     main_scratch: HashMap<(u32, u32, wgpu::TextureFormat, bool), MainScratch>,
 }
 
-/// Filter-pass sizes snap up to this so blur chains across frames (and the
-/// H/V pair within one) share pooled textures.
+/// `FILTER_SIZE_BUCKET` is the size quantum, in pixels, for pooled filter targets.
+///
+/// Blur-chain sizes snap up to this so consecutive frames and the horizontal
+/// and vertical passes of one blur share textures.
 pub const FILTER_SIZE_BUCKET: u32 = 32;
 
 const EVICT_AFTER_FRAMES: u64 = 3;
@@ -39,8 +45,11 @@ struct Pooled<T> {
     value: T,
 }
 
-/// One offscreen layer's attachments: render ×4, resolve to a sampleable
-/// texture (also the snapshot copy source for breaks INSIDE the layer).
+/// `LayerTarget` is one offscreen layer's attachments.
+///
+/// Content renders into `msaa` (4 samples) and resolves to `resolve`.
+/// `resolve_texture` is also the copy source when a snapshot is taken inside
+/// the layer.
 #[derive(Clone)]
 pub struct LayerTarget {
     pub msaa: wgpu::TextureView,
@@ -49,29 +58,39 @@ pub struct LayerTarget {
     pub depth: wgpu::TextureView,
 }
 
-/// A dst snapshot for advanced blends: copy target, sampleable.
+/// `Snapshot` is a copy of a destination region for advanced blends.
+///
+/// `view` is sampleable; `texture` is the copy destination.
 #[derive(Clone)]
 pub struct Snapshot {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
 
-/// A raster-cache fill's transient ATTACHMENTS — the wgpu word for what
-/// these are: the MSAA color attachment and the depth attachment, both
-/// tile-only, around a resolve into the cache's persistent texture.
+/// `RasterAttachments` are the transient MSAA color and depth attachments
+/// for a raster-cache fill.
+///
+/// The resolve target is the cache's own persistent texture, so it is not
+/// pooled here. Both attachments are tile-only on hardware that supports it.
 #[derive(Clone)]
 pub struct RasterAttachments {
     pub msaa: wgpu::TextureView,
     pub depth: wgpu::TextureView,
 }
 
-/// A gaussian filter pass's target: 1-sample, no depth, drawn then sampled.
+/// `FilterTarget` is a single-sample color target for a gaussian filter pass.
+///
+/// It has no depth buffer. After the pass it is sampled by the next pass or
+/// the composite.
 #[derive(Clone)]
 pub struct FilterTarget {
     pub view: wgpu::TextureView,
 }
 
-/// Main-target scratch: the caller owns the resolve; we pool MSAA + depth.
+/// `MainScratch` is the MSAA color and depth scratch for the frame's main target.
+///
+/// The caller owns the resolve texture; this pool only provides the 4-sample
+/// attachments around it.
 #[derive(Clone)]
 pub struct MainScratch {
     pub msaa: wgpu::TextureView,
@@ -79,6 +98,7 @@ pub struct MainScratch {
 }
 
 impl TargetPool {
+    /// `new` creates an empty pool for `device`.
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             device: device.clone(),
@@ -95,6 +115,10 @@ impl TargetPool {
         }
     }
 
+    /// `take_layer` returns a pooled offscreen layer of `size` and `format`.
+    ///
+    /// `transient` is true when every segment of the target discards at pass
+    /// end. The returned views must not be used after [`Self::end_frame`].
     pub fn take_layer(
         &mut self,
         size: [u32; 2],
@@ -108,9 +132,12 @@ impl TargetPool {
         value
     }
 
-    /// MSAA + depth for a raster-cache fill pass — the RESOLVE target is
-    /// the cache's own persistent texture, so only the transient
-    /// attachments pool here (pooled as `RasterAttachments`s, exact-size).
+    /// `take_raster_attachments` returns pooled MSAA color and depth for a
+    /// raster-cache fill of `size` and `format`.
+    ///
+    /// The resolve target is the cache's own persistent texture, so only the
+    /// transient attachments pool here. Exact-size match. The returned views
+    /// must not be used after [`Self::end_frame`].
     pub fn take_raster_attachments(
         &mut self,
         size: [u32; 2],
@@ -124,6 +151,9 @@ impl TargetPool {
         value
     }
 
+    /// `take_snapshot` returns a pooled destination copy of `size` and `format`.
+    ///
+    /// The returned views must not be used after [`Self::end_frame`].
     pub fn take_snapshot(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> Snapshot {
         let entry = take_matching(&mut self.snapshots, size, format, false)
             .unwrap_or_else(|| self.create_snapshot(size, format));
@@ -132,7 +162,10 @@ impl TargetPool {
         value
     }
 
-    /// `size` should arrive pre-bucketed (see `FILTER_SIZE_BUCKET`).
+    /// `take_filter` returns a pooled single-sample filter target of `size` and `format`.
+    ///
+    /// `size` should already be snapped to `FILTER_SIZE_BUCKET`. The returned
+    /// view must not be used after [`Self::end_frame`].
     pub fn take_filter(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> FilterTarget {
         let entry = take_matching(&mut self.filters, size, format, false)
             .unwrap_or_else(|| self.create_filter(size, format));
@@ -141,9 +174,11 @@ impl TargetPool {
         value
     }
 
-    /// `transient` when every segment of the target discards at pass end
-    /// (single-segment frames) — the swap to a persistent pair on the
-    /// first resume also comes through here.
+    /// `main_scratch` returns MSAA color and depth for the frame's main target.
+    ///
+    /// `transient` is true when every segment discards at pass end (a
+    /// single-segment frame). The swap to a persistent pair on the first
+    /// resume also comes through here. Scratch is keyed by size and kept.
     pub fn main_scratch(
         &mut self,
         size: [u32; 2],
@@ -172,7 +207,7 @@ impl TargetPool {
             .clone()
     }
 
-    /// Reclaim this frame's takes and drop entries idle too long.
+    /// `end_frame` returns this frame's takes to the pool and drops idle entries.
     pub fn end_frame(&mut self) {
         self.frame += 1;
         let cutoff = self.frame.saturating_sub(EVICT_AFTER_FRAMES);

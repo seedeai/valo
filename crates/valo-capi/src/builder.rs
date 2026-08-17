@@ -1,5 +1,5 @@
 //! Display-list recording: one builder handle, valo-dl's op vocabulary,
-//! paint by value per op. `valo_builder_build` finishes the handle into a
+//! paint by value per op. [`valo_builder_build`] finishes the handle into a
 //! display list the context renders (and other lists may embed).
 
 use std::sync::Arc;
@@ -11,14 +11,25 @@ use crate::{
     ValoImage, ValoPaint, ValoParagraph, ValoPath, ValoRect, ValoTransform,
 };
 
+/// `ValoDisplayListBuilder` records drawing commands into a [`ValoDisplayList`].
+///
+/// Create it with [`valo_builder_new`]. Recording is GPU-free. Finish with
+/// [`valo_builder_build`], which consumes the handle, or abandon it with
+/// [`valo_builder_dispose`]. Handles are not thread-safe.
 pub struct ValoDisplayListBuilder {
     builder: DisplayListBuilder,
 }
 
+/// `ValoDisplayList` is an immutable recording of drawing commands.
+///
+/// Produced by [`valo_builder_build`]. Replay it with [`crate::valo_context_render`]
+/// or nest it via [`valo_builder_draw_display_list`]. Dispose with
+/// [`valo_display_list_dispose`].
 pub struct ValoDisplayList {
     pub(crate) list: Arc<DisplayList>,
 }
 
+/// `valo_builder_new` creates an empty display-list recorder.
 #[no_mangle]
 pub extern "C" fn valo_builder_new() -> *mut ValoDisplayListBuilder {
     into_handle(ValoDisplayListBuilder {
@@ -26,8 +37,11 @@ pub extern "C" fn valo_builder_new() -> *mut ValoDisplayListBuilder {
     })
 }
 
-/// Finish recording: consumes the builder handle and returns the display
-/// list (dispose it with `valo_display_list_dispose`).
+/// `valo_builder_build` finishes recording: consumes the builder handle and
+/// returns the display list.
+///
+/// Dispose the list with [`valo_display_list_dispose`]. Null builder returns
+/// null.
 ///
 /// # Safety
 /// `builder` must be a live [`valo_builder_new`] handle (or null → null).
@@ -44,6 +58,8 @@ pub unsafe extern "C" fn valo_builder_build(
     })
 }
 
+/// `valo_builder_dispose` releases a builder that was not built. Null is a no-op.
+///
 /// # Safety
 /// `builder` must be a live handle not yet built (or null).
 #[no_mangle]
@@ -51,6 +67,8 @@ pub unsafe extern "C" fn valo_builder_dispose(builder: *mut ValoDisplayListBuild
     unsafe { dispose_handle(builder) }
 }
 
+/// `valo_display_list_dispose` releases a finished display list. Null is a no-op.
+///
 /// # Safety
 /// `list` must be a live [`valo_builder_build`] handle (or null).
 #[no_mangle]
@@ -58,9 +76,15 @@ pub unsafe extern "C" fn valo_display_list_dispose(list: *mut ValoDisplayList) {
     unsafe { dispose_handle(list) }
 }
 
+/// Records one display-list op as a `valo_builder_*` C function.
+///
+/// Invocation rustdoc covers that op's arguments and units. This expansion
+/// always appends the shared null-safety contract: a null `builder` (and any
+/// other handle argument) is a no-op.
 macro_rules! builder_op {
     ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),*), |$b:ident| $body:expr) => {
         $(#[$doc])*
+        ///
         /// # Safety
         /// `builder` must be a live handle (or null, a no-op); any other
         /// handle argument likewise.
@@ -76,23 +100,52 @@ macro_rules! builder_op {
 
 // ── state & transforms ──────────────────────────────────────────────────
 
-builder_op!(valo_builder_save(), |b| b.save());
 builder_op!(
-    /// A composited layer: `paint`'s alpha, blend mode, and mask blur
-    /// apply to the layer as a whole on restore.
+    /// `valo_builder_save` preserves the current transform and clip until the matching restore.
+    valo_builder_save(),
+    |b| b.save()
+);
+builder_op!(
+    /// `valo_builder_save_layer` begins a composited layer.
+    ///
+    /// The paint's alpha, blend mode, and mask blur apply to the layer as a
+    /// whole on restore.
     valo_builder_save_layer(paint: ValoPaint),
     |b| b.save_layer(None, &paint_of(paint))
 );
-builder_op!(valo_builder_restore(), |b| b.restore());
-builder_op!(valo_builder_translate(x: f32, y: f32), |b| b.translate(x, y));
-builder_op!(valo_builder_scale(x: f32, y: f32), |b| b.scale(x, y));
-builder_op!(valo_builder_rotate(radians: f32), |b| b.rotate(radians));
-builder_op!(valo_builder_transform(transform: ValoTransform), |b| b
-    .concat(&transform.into()));
+builder_op!(
+    /// `valo_builder_restore` closes the most recent save or layer scope.
+    ///
+    /// An unmatched restore triggers a debug assertion and is ignored in
+    /// release builds.
+    valo_builder_restore(),
+    |b| b.restore()
+);
+builder_op!(
+    /// `valo_builder_translate` offsets subsequent drawing and clipping, in logical pixels.
+    valo_builder_translate(x: f32, y: f32),
+    |b| b.translate(x, y)
+);
+builder_op!(
+    /// `valo_builder_scale` scales subsequent drawing and clipping.
+    valo_builder_scale(x: f32, y: f32),
+    |b| b.scale(x, y)
+);
+builder_op!(
+    /// `valo_builder_rotate` rotates subsequent drawing and clipping clockwise, in radians.
+    valo_builder_rotate(radians: f32),
+    |b| b.rotate(radians)
+);
+builder_op!(
+    /// `valo_builder_transform` concatenates a 2×3 affine transform.
+    valo_builder_transform(transform: ValoTransform),
+    |b| b.concat(&transform.into())
+);
 
-/// Concatenate a FULL column-major 4×4 (the 16 floats Flutter-architecture
-/// hosts hand a canvas) — perspective rows included; the z output is
-/// ignored for painting (2.5D).
+/// `valo_builder_transform_matrix` concatenates a full column-major 4×4.
+///
+/// The 16 floats are the Flutter canvas order — perspective rows included;
+/// the z output is ignored for painting.
 ///
 /// # Safety
 /// `builder` must be a live handle (or null, a no-op); `matrix` must point
@@ -119,15 +172,22 @@ pub unsafe extern "C" fn valo_builder_transform_matrix(
 // ── clips ───────────────────────────────────────────────────────────────
 
 builder_op!(
+    /// `valo_builder_clip_rect` applies a rectangular clip until the current scope ends.
+    ///
     /// `operation`: 0 intersect, 1 difference.
     valo_builder_clip_rect(rect: ValoRect, operation: i32),
     |b| b.clip_rect(rect, clip_op(operation))
 );
 builder_op!(
+    /// `valo_builder_clip_rounded_rect` applies a rounded-rectangle clip until the current scope ends.
+    ///
+    /// `operation`: 0 intersect, 1 difference.
     valo_builder_clip_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, operation: i32),
     |b| b.clip_rrect_radii_elliptical(rect, radii.to_elliptical(), clip_op(operation))
 );
 
+/// `valo_builder_clip_path` applies a path clip until the current scope ends.
+///
 /// `rule`: 0 non-zero, 1 even-odd; `operation`: 0 intersect, 1 difference.
 ///
 /// # Safety
@@ -150,17 +210,24 @@ pub unsafe extern "C" fn valo_builder_clip_path(
 
 // ── draws ───────────────────────────────────────────────────────────────
 
-builder_op!(valo_builder_draw_rect(rect: ValoRect, paint: ValoPaint), |b| b
-    .draw_rect(rect, &paint_of(paint)));
 builder_op!(
+    /// `valo_builder_draw_rect` fills or strokes an axis-aligned rectangle.
+    valo_builder_draw_rect(rect: ValoRect, paint: ValoPaint),
+    |b| b.draw_rect(rect, &paint_of(paint))
+);
+builder_op!(
+    /// `valo_builder_draw_rounded_rect` fills or strokes a rounded rectangle.
     valo_builder_draw_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, paint: ValoPaint),
     |b| b.draw_rrect_radii_elliptical(rect, radii.to_elliptical(), &paint_of(paint))
 );
 builder_op!(
+    /// `valo_builder_draw_circle` fills or strokes a circle in logical pixels.
     valo_builder_draw_circle(center_x: f32, center_y: f32, radius: f32, paint: ValoPaint),
     |b| b.draw_circle((center_x, center_y), radius, &paint_of(paint))
 );
 
+/// `valo_builder_draw_path` fills or strokes a path.
+///
 /// `rule`: 0 non-zero, 1 even-odd.
 ///
 /// # Safety
@@ -181,9 +248,10 @@ pub unsafe extern "C" fn valo_builder_draw_path(
         .draw_path(&path.built(), fill_rule(rule), &paint_of(paint));
 }
 
-/// Draw `source` (texel rect) of the image into `destination`. The
-/// paint's color multiplies (WHITE = plain); alpha, blend mode, and mask
-/// blur apply. `sampling`: 0 linear (mipmapped), 1 nearest.
+/// `valo_builder_draw_image_rect` draws `source` (texel rect) of the image into `destination`.
+///
+/// The paint's alpha, blend mode, and mask blur apply; its RGB channels are
+/// ignored. `sampling`: 0 linear (mipmapped), 1 nearest.
 ///
 /// # Safety
 /// `builder` and `image` must be live handles (or null, a no-op).
@@ -209,7 +277,7 @@ pub unsafe extern "C" fn valo_builder_draw_image_rect(
     );
 }
 
-/// Replay a finished display list here (nesting).
+/// `valo_builder_draw_display_list` replays a finished display list here (nesting).
 ///
 /// # Safety
 /// `builder` and `list` must be live handles (or null, a no-op).
@@ -225,8 +293,10 @@ pub unsafe extern "C" fn valo_builder_draw_display_list(
     handle.builder.draw_display_list(&list.list);
 }
 
-/// Draw a laid-out paragraph with its styles' own colors, top-left at
-/// (`x`, `y`).
+/// `valo_builder_draw_paragraph` draws a laid-out paragraph with its styles' own colors.
+///
+/// Top-left is (`x`, `y`) in logical pixels. Call [`crate::valo_paragraph_layout`]
+/// first.
 ///
 /// # Safety
 /// `builder` and `paragraph` must be live handles (or null, a no-op).
@@ -245,16 +315,14 @@ pub unsafe extern "C" fn valo_builder_draw_paragraph(
     handle.builder.draw_paragraph(&paragraph.paragraph, (x, y));
 }
 
-/// Draw a laid-out paragraph with `paint` overriding every run's own fill —
-/// the entry point for stroked or blended text. `paint`'s colour, style,
-/// stroke, blend mode, mask blur and colour filter all apply; shadows and
-/// decorations still come from the paragraph's styles.
+/// `valo_builder_draw_paragraph_with` draws a laid-out paragraph with `paint`
+/// overriding every run's own fill.
 ///
-/// `ValoPaint` carries no shader, so gradient-filled text is not reachable
-/// from C. Use the Rust `DrawGlyphRunExt::draw_paragraph_with` for that.
-///
-/// A stroke width of 0 is a hairline (one device pixel), matching
-/// `SkStrokeRec`; only a negative width draws nothing.
+/// Use it for stroked or blended text. Colour, style, stroke, blend mode,
+/// mask blur and colour filter all apply; shadows and decorations still
+/// come from the paragraph's styles. [`ValoPaint`] carries no shader, so
+/// gradient-filled text is not reachable from C. A stroke width of 0 is a
+/// hairline (one device pixel); only a negative width draws nothing.
 ///
 /// # Safety
 /// `builder` and `paragraph` must be live handles (or null, a no-op).

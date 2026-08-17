@@ -91,8 +91,11 @@ pub struct RenderStats {
     pub encode_ms: f32,
 }
 
-/// Replays display lists. Owns the frame-scoped and variant caches; holds no
-/// content state (retention lives in content-keyed caches, not here).
+/// `RendererCore` replays display lists on a host-owned wgpu device.
+///
+/// Hosts normally use the `valo` crate's `Context` instead. This type is the
+/// GPU core that context wraps: it owns caches and pipelines, and holds no
+/// application content of its own.
 pub struct RendererCore {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -111,6 +114,7 @@ pub struct RendererCore {
 }
 
 impl RendererCore {
+    /// `new` creates a renderer from a host-owned device and queue.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let host = HostBuffer::new(&device);
         let pipelines = PipelineCache::new(&device, host.bind_group_layout());
@@ -135,36 +139,54 @@ impl RendererCore {
         }
     }
 
+    /// `images` returns the image store used for uploads and sampling.
     pub fn images(&mut self) -> &mut ImageStore {
         &mut self.images
     }
 
+    /// `device` returns the device used by this renderer.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    /// Override the text tier thresholds (see [`crate::TextTiers`]).
+    /// `set_text_tiers` controls how text is rendered across font-size ranges.
+    ///
+    /// Valo uses bitmap masks below `sdf_min`, SDF below `path_min`, and
+    /// outlines above it. The defaults suit normal use; override them only for
+    /// specialized scaling or zoom behavior.
     pub fn set_text_tiers(&mut self, tiers: crate::TextTiers) {
         self.glyphs.tiers = tiers;
     }
 
-    /// Blank instead of tofu for unresolved chars, opt-in.
+    /// `set_hide_missing_glyphs` controls whether unresolved characters render blank.
+    ///
+    /// By default, unresolved characters render the font's `.notdef` glyph,
+    /// usually a "tofu" box. This is common when CJK fallback fonts are missing.
+    /// Use [`valo_text::FontDemand`] to detect characters hidden by this option.
     pub fn set_hide_missing_glyphs(&mut self, hide: bool) {
         self.glyphs.set_hide_missing_glyphs(hide);
     }
 
-    /// The host's gesture switch for SDF rasters.
+    /// `set_text_raster_hold` allows existing text rasters to stand in for missing sizes.
+    ///
+    /// This applies to bitmap-mask and SDF text, not vector outlines. It is
+    /// useful during rapid zooming: enable it while the gesture is active and
+    /// clear it afterward so the next frame renders sharply.
     pub fn set_text_raster_hold(&mut self, held: bool) {
         self.glyphs.set_text_raster_hold(held);
     }
 
-    /// A camera gesture is in flight: the raster cache prefers reusing
-    /// existing textures (at any scale ratio) over refilling — the host
-    /// clears this on gesture settle and crisp refills follow.
+    /// `set_raster_hold` allows cached display-list textures to be reused at any scale.
+    ///
+    /// This is useful during rapid zooming: enable it when the gesture starts
+    /// and clear it when the view settles so caches refill at the final scale.
     pub fn set_raster_hold(&mut self, held: bool) {
         self.rasters.set_hold(held);
     }
 
+    /// `render` draws a display list into a target and returns frame statistics.
+    ///
+    /// Each call submits one command buffer.
     pub fn render(&mut self, dl: &DisplayList, target: &RenderTarget) -> RenderStats {
         #[cfg(feature = "trace")]
         let _span = tracing::info_span!("valo.render", draws = dl.draw_count()).entered();
@@ -196,8 +218,9 @@ impl RendererCore {
         stats
     }
 
-    /// Resource totals on demand (Skia's getResourceCacheUsage tier); each
-    /// subsystem reports itself.
+    /// `memory_report` returns resource counts and estimated GPU memory usage.
+    ///
+    /// The `counters` feature adds the counters reported by wgpu.
     pub fn memory_report(&self) -> crate::MemoryReport {
         crate::MemoryReport {
             images: self.images.report(),

@@ -2,19 +2,22 @@ use rustc_hash::FxHashMap;
 
 use valo_dl::BlendMode;
 
-/// Every content pipeline is ×4 MSAA (Impeller's kCount4 default) —
-/// surfaces render into an MSAA target and resolve at pass end.
+/// `SAMPLE_COUNT` is the MSAA sample count used by content pipelines.
+///
+/// Surfaces render into a 4-sample scratch and resolve at pass end. Filter
+/// passes use 1 sample.
 pub const SAMPLE_COUNT: u32 = 4;
-/// One combined buffer serves depth clips and stencil-then-cover.
+/// `DEPTH_FORMAT` is the combined depth/stencil format used by content pipelines.
+///
+/// One buffer serves depth clips and stencil-then-cover.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
-/// The fragment family — what colors a covered pixel.
+/// `Frag` selects the fragment shader that colors a covered pixel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Frag {
     Solid,
     Image,
-    /// Direct-image color filters run after texture sampling, matching
-    /// Impeller's ColorFilterAtlas draw-image fast paths.
+    /// Direct-image color filters run after texture sampling.
     ImageMatrix,
     ImageBlend,
     Linear,
@@ -38,8 +41,7 @@ pub enum Frag {
     /// Mask layer composite: texture → coverage in alpha
     /// (luminance or alpha per payload flag), drawn with DstIn.
     MaskComposite,
-    /// Gradients past 8 stops sampling a baked 1D ramp texture (Impeller's
-    /// texture-gradient path).
+    /// Gradients past 8 stops sampling a baked 1D ramp texture.
     LinearRamp,
     RadialRamp,
     SweepRamp,
@@ -48,7 +50,7 @@ pub enum Frag {
     ColorMatrix,
     ColorBlend,
     /// An image tiled across the shape, sampled through the paint's own
-    /// local matrix — Canvas2D's pattern, Skia's SkImageShader.
+    /// local matrix — Canvas2D's pattern.
     Pattern,
 }
 
@@ -79,9 +81,10 @@ impl Frag {
     }
 }
 
-/// What a pipeline DOES — vertex source, color/depth/stencil role. Any fragment
-/// family composes with either color role (a gradient fills a path's cover quad
-/// as readily as a rect — stencil-then-cover composes for free).
+/// `PipelineKind` selects the vertex source and the color, depth, and stencil role.
+///
+/// Any fragment family composes with either color role: a gradient can fill a
+/// path cover quad as readily as a rectangle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PipelineKind {
     /// Plain colored quad draw (rects, images, gradients).
@@ -108,7 +111,7 @@ pub enum PipelineKind {
     Text { mode: TextMode },
 }
 
-/// How a glyph quad reads its atlas page.
+/// `TextMode` selects how a glyph quad reads its atlas page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextMode {
     /// R8 coverage × tint (the pixel-aligned bitmap tier).
@@ -169,6 +172,7 @@ impl PipelineKind {
         self.frag().map_or("fs_solid", Frag::entry_point)
     }
 
+    /// `sample_count` returns 1 for filter passes and [`SAMPLE_COUNT`] otherwise.
     pub fn sample_count(self) -> u32 {
         match self {
             PipelineKind::Filter(_) => 1,
@@ -195,6 +199,10 @@ impl PipelineKind {
     }
 }
 
+/// `PipelineKey` identifies one compiled render pipeline variant.
+///
+/// The cache keys on surface format, blend mode, and [`PipelineKind`]. Blend
+/// is normalized for kinds that do not blend, so those entries are shared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PipelineKey {
     pub format: wgpu::TextureFormat,
@@ -203,6 +211,7 @@ pub struct PipelineKey {
 }
 
 impl PipelineKey {
+    /// `new` builds a cache key, normalizing `blend` for kinds that replace the destination.
     pub fn new(format: wgpu::TextureFormat, blend: BlendMode, kind: PipelineKind) -> Self {
         Self {
             format,
@@ -212,8 +221,9 @@ impl PipelineKey {
     }
 }
 
-/// Grow-only variant cache. Misses compile synchronously (pre-warm is an
-/// explicitly deferred decision).
+/// `PipelineCache` holds compiled render-pipeline variants.
+///
+/// The cache grows only. Misses compile synchronously on first use.
 pub struct PipelineCache {
     shader: wgpu::ShaderModule,
     plain_layout: wgpu::PipelineLayout,
@@ -225,6 +235,7 @@ pub struct PipelineCache {
 }
 
 impl PipelineCache {
+    /// `new` compiles the shader module and pipeline layouts for `device`.
     pub fn new(device: &wgpu::Device, uniforms_layout: &wgpu::BindGroupLayout) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("valo.solid"),
@@ -258,16 +269,21 @@ impl PipelineCache {
         }
     }
 
-    /// Group-1 layout for advanced-blend bind groups (dst + sampler + src).
+    /// `blend_bind_layout` returns the group-1 layout for advanced-blend bind groups.
+    ///
+    /// Bindings are destination, sampler, and source.
     pub fn blend_bind_layout(&self) -> &wgpu::BindGroupLayout {
         &self.blend_bind_layout
     }
 
-    /// Group-1 layout for image bind groups (texture + sampler).
+    /// `texture_bind_layout` returns the group-1 layout for image bind groups.
+    ///
+    /// Bindings are texture and sampler.
     pub fn texture_bind_layout(&self) -> &wgpu::BindGroupLayout {
         &self.texture_bind_layout
     }
 
+    /// `ensure` compiles the pipeline for `key` if it is not already cached.
     pub fn ensure(&mut self, device: &wgpu::Device, key: PipelineKey) {
         if !self.map.contains_key(&key) {
             let pipeline = self.create(device, key);
@@ -275,6 +291,9 @@ impl PipelineCache {
         }
     }
 
+    /// `get` returns a pipeline previously compiled by [`Self::ensure`].
+    ///
+    /// Panics if `key` was never ensured.
     pub fn get(&self, key: &PipelineKey) -> &wgpu::RenderPipeline {
         &self.map[key]
     }
@@ -386,7 +405,8 @@ fn blend_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
-/// The WGSL blur-style switch (fs_rrect_blur / fs_mask_combine mode ids).
+/// `blur_style_id` maps a blur style to the shader switch used by rounded-rect
+/// blur and mask-combine passes.
 pub fn blur_style_id(style: valo_dl::BlurStyle) -> u32 {
     match style {
         valo_dl::BlurStyle::Normal => 0,
@@ -396,9 +416,10 @@ pub fn blur_style_id(style: valo_dl::BlurStyle) -> u32 {
     }
 }
 
-/// The mode id `fs_color_blend` switches on: Porter-Duff and the two
-/// separable pipeline modes keep Skia's numbering, and the dst-reading modes
-/// follow at +15 so one uniform covers the whole blend set.
+/// `blend_filter_id` maps a blend mode to the switch used by `fs_color_blend`.
+///
+/// Porter-Duff and the two separable modes occupy 0–14. Destination-reading
+/// (advanced) modes follow at 15 plus [`advanced_mode_id`].
 pub fn blend_filter_id(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Clear => 0,
@@ -420,7 +441,9 @@ pub fn blend_filter_id(mode: BlendMode) -> u32 {
     }
 }
 
-/// The WGSL `blend_advanced` mode switch (payload[2].x).
+/// `advanced_mode_id` maps a destination-reading blend mode to the shader switch.
+///
+/// Panics if `mode` is a pipeline-blendable (Porter-Duff / separable) mode.
 pub fn advanced_mode_id(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Multiply => 0,

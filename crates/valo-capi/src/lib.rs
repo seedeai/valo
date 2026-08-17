@@ -12,7 +12,8 @@
 //! - Geometry and paint travel BY VALUE as `#[repr(C)]` structs — no
 //!   retained paint objects, matching valo's paint-per-op display lists.
 //! - Strings are UTF-8 (pointer, byte length) — never NUL-terminated.
-//! - Angles are radians; colors are straight-alpha floats in [0, 1].
+//! - Angles are radians; colors are straight-alpha floats in [0, 1];
+//!   text offsets are UTF-8 byte offsets.
 
 mod builder;
 mod color_filter;

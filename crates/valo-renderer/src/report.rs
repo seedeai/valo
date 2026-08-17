@@ -1,8 +1,8 @@
-//! On-demand resource accounting — Skia's two-tier model
-//! (`getResourceCacheUsage` totals cheap and always available; the per-pool
-//! breakdown here is the `SkTraceMemoryDump` analog). Numbers are computed
-//! from descriptors, not queried from the driver; `wgpu` gives the driver's
-//! own view when the `counters` feature is on.
+//! `report` accounts for resources retained between frames.
+//!
+//! Pool byte counts are estimates derived from resource descriptors, not
+//! queried from the driver. wgpu's own counters are included when the
+//! `counters` feature is on.
 
 /// `PoolReport` summarizes one resource pool or cache.
 #[derive(Clone, Copy, Debug, Default)]

@@ -14,17 +14,17 @@ const SLOTS_PER_BLOCK: u64 = 1024;
 /// dedicated block).
 const VERTEX_BLOCK_SIZE: u64 = 256 * 1024;
 
-/// Per-frame transient allocator, production-shaped:
-/// a ring of `FRAMES` arenas of persistent `wgpu::Buffer` blocks, one family for
-/// per-draw UNIFORMS (bound once per block via a dynamic offset) and one for
-/// transient VERTEX data (stencil fans). Draws bump-allocate into CPU scratch;
-/// `flush` lands each touched block with ONE `queue.write_buffer` (wgpu stages
-/// and orders those, so the ring needs no fences).
+/// `HostBuffer` bump-allocates per-draw uniforms and transient vertex data.
 ///
-/// Blocks and their bind groups are created only on first growth — warm frames
-/// do zero creates, the per-frame cost that matters most on the wasm backend.
-/// All uploads funnel through `alloc*`/`flush`: the seam a mapped StagingBelt
-/// backend can replace without touching call sites.
+/// Each frame writes into CPU scratch; [`Self::flush`] copies touched blocks
+/// with one `queue.write_buffer` each. wgpu stages those writes, so the ring
+/// needs no fences. A 3-frame ring of persistent buffers means warm frames
+/// create nothing — the cost that matters most on wasm.
+///
+/// Uniforms bind once per block via a dynamic offset. Vertex data (stencil
+/// fans, stroke strips) lands in a second family of blocks. All uploads go
+/// through the alloc/`flush` seam so a mapped staging backend can replace
+/// this implementation without touching call sites.
 pub struct HostBuffer {
     device: wgpu::Device,
     layout: wgpu::BindGroupLayout,
@@ -76,6 +76,10 @@ pub(crate) struct VertexSlot {
 }
 
 impl HostBuffer {
+    /// `new` creates an empty host buffer for `device`.
+    ///
+    /// Uniform stride is at least the per-draw record size and at least the
+    /// device's `min_uniform_buffer_offset_alignment`.
     pub fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("valo.host_buffer"),
@@ -102,15 +106,19 @@ impl HostBuffer {
         }
     }
 
+    /// `bind_group_layout` returns the group-0 layout for per-draw uniforms.
+    ///
+    /// Binding 0 is a dynamic-offset uniform buffer. Pipeline layouts are
+    /// built from this layout.
     pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.layout
     }
 
-    /// Rotate to the next arena and reset its cursors. Blocks are retained
-    /// so warm frames never create buffers — but a spike frame's TRAILING
-    /// blocks drain once idle (Impeller instead never retains oversized
-    /// buffers; valo keeps them briefly so a recurring big mesh doesn't
-    /// re-create one every frame, then lets go).
+    /// `begin_frame` rotates to the next arena and resets its cursors.
+    ///
+    /// Blocks are retained so warm frames never create buffers. Trailing
+    /// unused blocks from a spike drain after a few idle ring passes so a
+    /// recurring large mesh does not recreate them every frame.
     pub fn begin_frame(&mut self) {
         self.frame = (self.frame + 1) % FRAMES;
         let arena = &mut self.frames[self.frame];
@@ -177,8 +185,10 @@ impl HostBuffer {
         }
     }
 
-    /// One `write_buffer` per touched block — the whole frame's transients
-    /// land here. Returns (uniform, vertex) bytes written, for the stats.
+    /// `flush` uploads this frame's used scratch to the GPU.
+    ///
+    /// One `write_buffer` runs per touched block. Returns
+    /// `(uniform_bytes, vertex_bytes)` written, for frame statistics.
     pub fn flush(&mut self, queue: &wgpu::Queue) -> (u64, u64) {
         let arena = &self.frames[self.frame];
         let mut written = (0u64, 0u64);

@@ -6,14 +6,22 @@ use valo::ColorFilter;
 
 use crate::{blend_mode, dispose_handle, into_handle, ValoColor};
 
+/// `ValoColorFilter` is an immutable colour-transform handle borrowed by [`crate::ValoPaint`].
+///
+/// Create it with [`valo_color_filter_matrix`] or [`valo_color_filter_blend`].
+/// The handle only has to outlive the draw or `save_layer` call that copies
+/// it. Dispose with [`valo_color_filter_dispose`].
 pub struct ValoColorFilter(ColorFilter);
 
-/// Build a 4×5 colour matrix filter from 20 row-major floats over
-/// UNPREMULTIPLIED colour in 0..1.
+/// `valo_color_filter_matrix` builds a 4×5 colour matrix filter from 20 row-major
+/// floats over unpremultiplied colour in 0..1.
 ///
-/// Flutter's `ColorFilter.matrix` gives the translation column (entries 4, 9,
-/// 14 and 19) in unnormalized 0..255 space instead — divide those four by 255
-/// before calling, or every offset comes out 255× too strong.
+/// Each output channel is `clamp(row · [r, g, b, a, 1])`. Flutter's
+/// `ColorFilter.matrix` gives the translation column (entries 4, 9, 14 and
+/// 19) in unnormalized 0..255 space instead — divide those four by 255
+/// before calling, or every offset comes out 255× too strong. Null `matrix`
+/// returns null. Non-finite entries become 0 so a garbage matrix cannot
+/// poison the layer.
 ///
 /// # Safety
 /// `matrix` must point at 20 readable floats (null returns null).
@@ -34,9 +42,10 @@ pub unsafe extern "C" fn valo_color_filter_matrix(matrix: *const f32) -> *mut Va
     into_handle(ValoColorFilter(ColorFilter::Matrix(rows)))
 }
 
-/// Blend `color` AS THE SOURCE over what was drawn — Flutter's
-/// `ColorFilter.mode`. `mode` indexes the same 29 blend modes as
-/// [`crate::ValoPaint::blend_mode`].
+/// `valo_color_filter_blend` blends `color` as the source over what was drawn.
+///
+/// This is Flutter's `ColorFilter.mode`. `mode` indexes the same 29 blend
+/// modes as [`crate::ValoPaint::blend_mode`].
 #[no_mangle]
 pub extern "C" fn valo_color_filter_blend(color: ValoColor, mode: i32) -> *mut ValoColorFilter {
     into_handle(ValoColorFilter(ColorFilter::Blend(
@@ -45,6 +54,8 @@ pub extern "C" fn valo_color_filter_blend(color: ValoColor, mode: i32) -> *mut V
     )))
 }
 
+/// `valo_color_filter_dispose` releases a colour-filter handle. Null is a no-op.
+///
 /// # Safety
 /// `filter` must be a live handle (or null).
 #[no_mangle]

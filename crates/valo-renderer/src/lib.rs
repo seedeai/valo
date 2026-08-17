@@ -1,12 +1,14 @@
-//! The wgpu core: replays a recorded `DisplayList` into render passes. Directly on
-//! wgpu — WebGPU is already a portable encoder, so there is no HAL layer here.
+//! `valo-renderer` replays a recorded display list into wgpu render passes.
 //!
-//! Memory model: the renderer is **stateless with respect to content** —
-//! everything it holds is a content-keyed or frame-scoped cache:
-//! - [`HostBuffer`]: per-frame bump arena for transient uniforms, a 3-frame ring of
-//!   persistent buffers + bind groups (creates happen only on first growth; warm
-//!   frames create nothing — on wasm every create is a JS-boundary hop).
-//! - [`PipelineCache`]: grow-only map of pipeline variants (format × blend × samples).
+//! Hosts normally use the `valo` crate's `Context`. This crate is the GPU core
+//! that context wraps: it plans, encodes, and submits, and it owns only caches —
+//! not application content. It talks to wgpu directly; there is no second GPU
+//! abstraction.
+//!
+//! - [`HostBuffer`]: per-frame bump arena for transient uniforms and vertices.
+//!   A 3-frame ring of persistent buffers means warm frames create nothing —
+//!   the cost that matters most on wasm, where every create crosses into JS.
+//! - [`PipelineCache`]: grow-only map of pipeline variants (format × blend × kind).
 
 mod contours;
 mod glyphs;

@@ -9,13 +9,23 @@ use valo_system_fonts::SystemFonts;
 use crate::text::utf8;
 use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoFontCollection};
 
+/// `ValoSystemFonts` is a scan of the platform's installed fonts.
+///
+/// Create it with [`valo_system_fonts_new`] (the expensive directory walk —
+/// keep the handle; creating it lazily on the first demand is the intended
+/// pattern). Use [`valo_fonts_satisfy_demand`] or
+/// [`valo_fonts_add_system_family`] to register faces into a
+/// [`ValoFontCollection`]. Dispose with [`valo_system_fonts_dispose`].
+/// Not available as a wasm dependency.
 pub struct ValoSystemFonts {
     fonts: SystemFonts,
 }
 
-/// Scan the platform's font directories — the expensive step, so keep the
-/// handle (creating it lazily on the first demand is the intended
-/// pattern). Check [`valo_system_fonts_face_count`] for an empty scan.
+/// `valo_system_fonts_new` scans the platform's font directories.
+///
+/// This is the expensive step, so keep the handle (creating it lazily on
+/// the first demand is the intended pattern). Check
+/// [`valo_system_fonts_face_count`] for an empty scan.
 #[no_mangle]
 pub extern "C" fn valo_system_fonts_new() -> *mut ValoSystemFonts {
     into_handle(ValoSystemFonts {
@@ -23,6 +33,8 @@ pub extern "C" fn valo_system_fonts_new() -> *mut ValoSystemFonts {
     })
 }
 
+/// `valo_system_fonts_dispose` releases a system-fonts handle. Null is a no-op.
+///
 /// # Safety
 /// `system_fonts` must be a live [`valo_system_fonts_new`] handle (or null).
 #[no_mangle]
@@ -30,7 +42,9 @@ pub unsafe extern "C" fn valo_system_fonts_dispose(system_fonts: *mut ValoSystem
     unsafe { dispose_handle(system_fonts) }
 }
 
-/// Installed faces the scan found (0 = nothing to answer with).
+/// `valo_system_fonts_face_count` returns how many installed faces the scan found.
+///
+/// Zero means nothing to answer with. Null handle returns 0.
 ///
 /// # Safety
 /// `system_fonts` must be a live handle (or null → 0).
@@ -41,9 +55,11 @@ pub unsafe extern "C" fn valo_system_fonts_face_count(
     unsafe { borrow(system_fonts) }.map_or(0, |handle| handle.fonts.face_count())
 }
 
-/// Register every installed face of the named family (all weights and
-/// styles — nearest-variant matching picks per span). Returns the number
-/// of faces added; 0 when the family is not installed.
+/// `valo_fonts_add_system_family` registers every installed face of the named family.
+///
+/// All weights and styles are added — nearest-variant matching picks per
+/// span. Returns the number of faces added; 0 when the family is not
+/// installed, the name is not valid UTF-8, or a handle is null.
 ///
 /// # Safety
 /// `fonts` and `system_fonts` must be live handles; `name_utf8` must point
@@ -74,14 +90,13 @@ pub unsafe extern "C" fn valo_fonts_add_system_family(
     count
 }
 
-/// Answer whatever the last builds could NOT resolve from the installed
-/// system fonts: missing families register under their own names,
-/// still-uncovered codepoints extend the fallback chain. True when the
-/// collection grew — rebuild the affected paragraphs to pick it up.
+/// `valo_fonts_satisfy_demand` answers unanswered font requests from installed fonts.
 ///
-/// (A host can skip this entirely by installing a source on the
-/// collection: then resolution happens mid-shape and nothing is left
-/// unanswered.)
+/// Missing families register under their own names; still-uncovered
+/// codepoints extend the fallback chain. Returns true when the collection
+/// grew — rebuild the affected paragraphs to pick it up. Hosts that install
+/// a source on the collection need none of this: resolution happens during
+/// [`crate::valo_paragraph_builder_build`].
 ///
 /// # Safety
 /// Both must be live handles (or null → false).

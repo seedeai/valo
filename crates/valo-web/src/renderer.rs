@@ -8,6 +8,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::recording::WebDisplayList;
 
+/// `WebImage` is a handle to an immutable GPU image uploaded through a renderer.
+///
+/// Display lists retain the image; dropping every JavaScript handle releases the
+/// texture after in-flight GPU use finishes. Dimensions are integer pixels.
 #[wasm_bindgen(js_name = Image)]
 pub struct WebImage {
     pub(crate) inner: Image,
@@ -15,17 +19,20 @@ pub struct WebImage {
 
 #[wasm_bindgen(js_class = Image)]
 impl WebImage {
+    /// `width` is the image width in pixels.
     #[wasm_bindgen(getter)]
     pub fn width(&self) -> u32 {
         self.inner.size()[0]
     }
 
+    /// `height` is the image height in pixels.
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.inner.size()[1]
     }
 }
 
+/// `WebRenderStats` reports the work performed by one [`WebRenderer::render`] call.
 #[wasm_bindgen(js_name = RenderStats)]
 pub struct WebRenderStats {
     inner: RenderStats,
@@ -33,50 +40,62 @@ pub struct WebRenderStats {
 
 #[wasm_bindgen(js_class = RenderStats)]
 impl WebRenderStats {
+    /// `cpuMilliseconds` is CPU time spent rendering and submitting, in milliseconds.
     #[wasm_bindgen(getter, js_name = cpuMilliseconds)]
     pub fn cpu_milliseconds(&self) -> f32 {
         self.inner.cpu_ms
     }
 
+    /// `gpuMilliseconds` is the previous resolved frame's GPU time in milliseconds.
+    ///
+    /// It is zero until a timestamp resolves, or when timestamps are unavailable.
     #[wasm_bindgen(getter, js_name = gpuMilliseconds)]
     pub fn gpu_milliseconds(&self) -> f32 {
         self.inner.gpu_ms
     }
 
+    /// `draws` is the number of logical draws remaining after culling.
     #[wasm_bindgen(getter)]
     pub fn draws(&self) -> u32 {
         self.inner.draws
     }
 
+    /// `drawCalls` is the number of encoded GPU draw commands.
+    ///
+    /// One logical draw may require several commands, while batched glyphs may
+    /// share one.
     #[wasm_bindgen(getter, js_name = drawCalls)]
     pub fn draw_calls(&self) -> u32 {
         self.inner.draw_calls
     }
 
+    /// `renderPasses` is the number of encoded render passes.
     #[wasm_bindgen(getter, js_name = renderPasses)]
     pub fn render_passes(&self) -> u32 {
         self.inner.render_passes
     }
 
+    /// `filterPasses` is the number of encoded image-filter passes.
     #[wasm_bindgen(getter, js_name = filterPasses)]
     pub fn filter_passes(&self) -> u32 {
         self.inner.filter_passes
     }
 
+    /// `culled` is the number of draws skipped because their bounds miss the target.
     #[wasm_bindgen(getter)]
     pub fn culled(&self) -> u32 {
         self.inner.culled
     }
 }
 
-/// One GPU device, shared by every canvas attached to it.
+/// `WebDevice` is one GPU device shared by every canvas attached to it.
 ///
 /// This is the whole reason valo is worth putting on a page full of live
 /// demos. A traditional 2D context carries its own device, and browsers cap
 /// those at around 16 — so a dozen animated cards is close to the ceiling
 /// before anything is drawn. Here the expensive things live on the device:
-/// [`Context`] owns the glyph atlas, the image cache, the contour cache and
-/// the render-target pool, and twelve canvases share ONE of each.
+/// the glyph atlas, the image cache, the contour cache and the render-target
+/// pool, and twelve canvases share one of each.
 ///
 /// The device is refcounted rather than owned by a canvas, so canvases come
 /// and go — a card scrolled out of the DOM frees its surface and its backing
@@ -92,14 +111,12 @@ pub struct WebDevice {
     unrestricted_external_copies: bool,
 }
 
-/// One canvas on a [`WebDevice`]. Owns only what is genuinely per-canvas: the
-/// swapchain and the persistent backing its pixels live in.
-/// What one device holds, summed across every canvas on it.
+/// `WebMemoryReport` summarizes GPU resources retained by one [`WebDevice`].
 ///
-/// The shared-device claim is a memory claim, so it needs a number a page can
-/// actually print. `atlasBytes` is the one that matters most: the glyph atlas
-/// is per-device, so twelve canvases drawing the same typeface pay for it
-/// once.
+/// Totals cover every canvas attached to that device. Byte counts are estimates
+/// from resource descriptors. `atlasBytes` is the figure the shared-device
+/// claim rests on: the glyph atlas is per-device, so twelve canvases drawing
+/// the same typeface pay for it once.
 #[wasm_bindgen(js_name = MemoryReport)]
 pub struct WebMemoryReport {
     inner: MemoryReport,
@@ -107,36 +124,48 @@ pub struct WebMemoryReport {
 
 #[wasm_bindgen(js_class = MemoryReport)]
 impl WebMemoryReport {
-    /// Everything valo accounts for itself, in bytes.
+    /// `totalBytes` is everything Valo accounts for itself, in bytes.
+    ///
+    /// Separate wgpu object counters are not included.
     #[wasm_bindgen(getter, js_name = totalBytes)]
     pub fn total_bytes(&self) -> u64 {
         self.inner.total_bytes()
     }
 
-    /// Glyph atlas pages across both families — shared by every canvas.
+    /// `atlasBytes` is glyph-atlas GPU memory across mask, SDF, and color pages.
+    ///
+    /// Every canvas on the device shares this storage.
     #[wasm_bindgen(getter, js_name = atlasBytes)]
     pub fn atlas_bytes(&self) -> u64 {
         self.inner.atlas.iter().map(|family| family.bytes).sum()
     }
 
-    /// Uploaded images, deduped across canvases.
+    /// `imageBytes` is uploaded image GPU memory, including mip levels.
+    ///
+    /// Images live on the device, so every attached canvas can draw the same handle.
     #[wasm_bindgen(getter, js_name = imageBytes)]
     pub fn image_bytes(&self) -> u64 {
         self.inner.images.bytes
     }
 
-    /// Pooled render targets: layer, snapshot and filter scratch, shared.
+    /// `targetBytes` is pooled layer, snapshot, filter, and scratch target memory.
     #[wasm_bindgen(getter, js_name = targetBytes)]
     pub fn target_bytes(&self) -> u64 {
         self.inner.targets.bytes
     }
 
+    /// `targetCount` is the number of live pooled render targets.
     #[wasm_bindgen(getter, js_name = targetCount)]
     pub fn target_count(&self) -> u32 {
         self.inner.targets.count
     }
 }
 
+/// `WebRenderer` is one canvas attached to a [`WebDevice`].
+///
+/// It owns only what is genuinely per-canvas: the swapchain and the persistent
+/// backing its pixels live in. Atlases, image caches, and target pools stay on
+/// the device.
 #[wasm_bindgen(js_name = Renderer)]
 pub struct WebRenderer {
     context: Rc<RefCell<Context>>,
@@ -182,7 +211,10 @@ fn external_image_source(source: &JsValue) -> Result<wgpu::ExternalImageSource, 
     ))
 }
 
-/// Acquire one GPU device. Attach as many canvases to it as the page has.
+/// `create_device` acquires one GPU device for the page.
+///
+/// Attach as many canvases to it as the page has. Throws if no WebGPU adapter
+/// or device can be created.
 #[wasm_bindgen(js_name = createDevice)]
 pub async fn create_device() -> Result<WebDevice, JsValue> {
     console_error_panic_hook::set_once();
@@ -214,7 +246,7 @@ pub async fn create_device() -> Result<WebDevice, JsValue> {
     })
 }
 
-/// One device, one canvas — the single-canvas shorthand.
+/// `create_renderer` creates one device and attaches `canvas` to it.
 ///
 /// A page with several live canvases should call [`create_device`] once and
 /// [`WebDevice::attach`] per canvas instead; this exists for the common case
@@ -253,7 +285,9 @@ async fn create_renderer_fallback(
         })
         .await
         .map_err(|error| {
-            JsValue::from_str(&format!("neither WebGPU nor WebGL2 is available: {error:?}"))
+            JsValue::from_str(&format!(
+                "neither WebGPU nor WebGL2 is available: {error:?}"
+            ))
         })?;
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
@@ -295,10 +329,12 @@ async fn create_renderer_fallback(
 
 #[wasm_bindgen(js_class = Device)]
 impl WebDevice {
-    /// Give `canvas` a renderer on this device.
+    /// `attach` gives `canvas` a renderer on this device.
     ///
     /// Only the swapchain and the persistent backing are allocated here — the
-    /// atlases, caches and pools stay shared, which is the point.
+    /// atlases, caches and pools stay shared, which is the point. A WebGL
+    /// device throws if a second canvas is attached; create another device
+    /// instead. Canvas width and height of zero are treated as one pixel.
     pub fn attach(&self, canvas: web_sys::HtmlCanvasElement) -> Result<WebRenderer, JsValue> {
         // WebGL is one context per canvas by design, and wgpu's GL backend
         // renders every surface into the last one created (gfx-rs/wgpu#2343).
@@ -327,7 +363,7 @@ impl WebDevice {
         })
     }
 
-    /// How many canvases are still attached, this one aside.
+    /// `attachedCanvases` is how many canvases are still attached to this device.
     ///
     /// The device outlives its canvases: dropping a renderer releases only
     /// that canvas's swapchain and backing, and the shared caches survive for
@@ -338,8 +374,9 @@ impl WebDevice {
         Rc::strong_count(&self.context) - 1
     }
 
-    /// What this device holds across EVERY canvas on it — the number the
-    /// shared-device claim rests on.
+    /// `memoryReport` returns resource counts and estimated GPU memory usage.
+    ///
+    /// The totals cover every canvas still attached to this device.
     #[wasm_bindgen(js_name = memoryReport)]
     pub fn memory_report(&self) -> WebMemoryReport {
         WebMemoryReport {
@@ -350,33 +387,40 @@ impl WebDevice {
 
 #[wasm_bindgen(js_class = Renderer)]
 impl WebRenderer {
-    /// Resize the swapchain and the canvas backing together. The backing's
-    /// contents are dropped: Canvas2D specifies that setting `width` or
-    /// `height` clears the canvas, so there is nothing to carry over.
+    /// `resize` resizes the swapchain and the canvas backing together.
+    ///
+    /// The backing's contents are dropped: Canvas2D specifies that setting
+    /// `width` or `height` clears the canvas, so there is nothing to carry
+    /// over. A zero extent is treated as one pixel.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.surface.resize([width, height]);
         self.canvas
             .resize(&mut self.context.borrow_mut(), [width, height]);
     }
 
+    /// `width` is the canvas backing width in pixels.
     #[wasm_bindgen(getter)]
     pub fn width(&self) -> u32 {
         self.surface.size()[0]
     }
 
+    /// `height` is the canvas backing height in pixels.
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.surface.size()[1]
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Draw one frame's DELTA onto the persistent canvas, then show it.
+    /// `render` draws one frame's delta onto the persistent canvas, then shows it.
     ///
     /// `discard` throws away what was on the canvas and starts from the given
     /// colour — `reset`, `beginFrame`, or a full-surface `clearRect`. Without
     /// it the previous pixels are restored first, which is what makes N
     /// incremental frames cost O(N) instead of the O(N²) that replaying every
-    /// past display list did.
+    /// past display list did. Color components are straight-alpha sRGB.
+    ///
+    /// A failed swapchain acquire skips only this frame's presentation; the
+    /// pixels remain in the backing. Stats are always returned.
     pub fn render(
         &mut self,
         list: &WebDisplayList,
@@ -407,6 +451,10 @@ impl WebRenderer {
         Some(WebRenderStats { inner })
     }
 
+    /// `uploadImageBitmap` copies a decoded `ImageBitmap` into a retained image.
+    ///
+    /// Pixels go directly to the GPU without passing through WebAssembly memory.
+    /// Set `mipmaps` when the image will be drawn smaller than its source size.
     #[wasm_bindgen(js_name = uploadImageBitmap)]
     pub fn upload_image_bitmap(
         &mut self,
@@ -421,6 +469,12 @@ impl WebRenderer {
         }
     }
 
+    /// `uploadRgba` uploads RGBA8 pixels and returns a retained image.
+    ///
+    /// `pixels` must contain exactly `width × height × 4` bytes, and both
+    /// extents must be nonzero. When `premultiplied` is false, Valo
+    /// premultiplies RGB during upload. Set `mipmaps` when the image may be
+    /// drawn smaller than its source size.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = uploadRgba)]
     pub fn upload_rgba(
@@ -454,7 +508,8 @@ impl WebRenderer {
         })
     }
 
-    /// Whether `OffscreenCanvas` is a legal copy source on this adapter.
+    /// `supportsOffscreenCanvasSource` reports whether `OffscreenCanvas` is a legal copy source.
+    ///
     /// Without it the caller has to route through an `ImageBitmap`, so this
     /// is a capability question rather than an error to discover mid-frame.
     #[wasm_bindgen(getter, js_name = supportsOffscreenCanvasSource)]
@@ -462,9 +517,16 @@ impl WebRenderer {
         self.unrestricted_external_copies
     }
 
-    /// A DOM image source copied straight into a texture. `width`/`height`
-    /// are the source's PIXEL dimensions; the browser throws if they do not
-    /// match, so the caller reads them from the source it passes.
+    /// `uploadExternalImage` copies a DOM image source straight into a texture.
+    ///
+    /// Supported sources are `HTMLImageElement`, `HTMLCanvasElement`,
+    /// `HTMLVideoElement`, `ImageBitmap`, `OffscreenCanvas`, `ImageData`, and
+    /// `VideoFrame`. `width` and `height` are the source's pixel dimensions;
+    /// the browser throws if they do not match, so the caller reads them from
+    /// the source it passes. Zero size throws. The source must be ready;
+    /// unlike Canvas2D, an undecoded image is not silently ignored.
+    /// `OffscreenCanvas` throws up front when [`Self::supports_offscreen_canvas_source`]
+    /// is false.
     #[wasm_bindgen(js_name = uploadExternalImage)]
     pub fn upload_external_image(
         &mut self,
@@ -486,9 +548,13 @@ impl WebRenderer {
         })
     }
 
-    /// A rectangle of a DOM source, copied into an image of exactly that
-    /// size. `putImageData` uses it so a dirty rectangle costs its own area
-    /// rather than the whole `ImageData`.
+    /// `uploadExternalImageRegion` copies a rectangle of a DOM source into a new image.
+    ///
+    /// `sourceX` and `sourceY` are the region's top-left in source pixels.
+    /// `width` and `height` are both the copied region and the returned image
+    /// size. Zero size throws. Mipmaps are not generated. `putImageData` uses
+    /// this so a dirty rectangle costs its own area rather than the whole
+    /// `ImageData`.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = uploadExternalImageRegion)]
     pub fn upload_external_image_region(
@@ -513,9 +579,11 @@ impl WebRenderer {
         })
     }
 
-    /// Re-copy a source whose pixels changed into the SAME image, keeping
-    /// its texture and cached bind groups. `false` = the size changed and
-    /// the caller must upload again.
+    /// `refreshExternalImage` re-copies a source whose pixels changed into the same image.
+    ///
+    /// Use it for changing canvas or video frames to keep the image handle and
+    /// its cached bind groups. Returns `false` without copying when `width` or
+    /// `height` differs from the existing image; the caller must upload again.
     #[wasm_bindgen(js_name = refreshExternalImage)]
     pub fn refresh_external_image(
         &mut self,
@@ -531,6 +599,11 @@ impl WebRenderer {
             .refresh_external_image(&image.inner, source, [width, height]))
     }
 
+    /// `setGestureHold` lets existing rasters stand in while a zoom or pan gesture is active.
+    ///
+    /// Enable it when the gesture starts and clear it when the view settles so
+    /// text and display-list caches refill at the final scale. Bitmap-mask and
+    /// SDF text can reuse a resident size; vector outlines are unaffected.
     #[wasm_bindgen(js_name = setGestureHold)]
     pub fn set_gesture_hold(&mut self, held: bool) {
         let mut context = self.context.borrow_mut();

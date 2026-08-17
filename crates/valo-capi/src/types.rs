@@ -6,78 +6,128 @@
 
 use valo::{BlendMode, BlurStyle, Color, MaskBlur, Matrix, Paint, PaintStyle, Rect, Stroke};
 
+/// `ValoColor` is a straight-alpha sRGB color passed by value.
+///
+/// Components conventionally range from 0 to 1 and are not clamped here.
+/// Valo premultiplies at the GPU boundary and blends in sRGB.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoColor {
+    /// `red` is the straight red component.
     pub red: f32,
+    /// `green` is the straight green component.
     pub green: f32,
+    /// `blue` is the straight blue component.
     pub blue: f32,
+    /// `alpha` is the opacity.
     pub alpha: f32,
 }
 
+/// `ValoRect` is an axis-aligned rectangle in Valo's y-down coordinates, passed by value.
+///
+/// Origin is the top-left; `width` and `height` are extents in logical pixels.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoRect {
+    /// `x` is the left edge in logical pixels.
     pub x: f32,
+    /// `y` is the top edge in logical pixels.
     pub y: f32,
+    /// `width` is the horizontal extent in logical pixels.
     pub width: f32,
+    /// `height` is the vertical extent in logical pixels.
     pub height: f32,
 }
 
+/// `ValoPoint` is a 2D position or vector in logical pixels, passed by value.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoPoint {
+    /// `x` is the horizontal component.
     pub x: f32,
+    /// `y` is the vertical component (down is positive).
     pub y: f32,
 }
 
-/// Row-major 2×3 affine transform (the CSS/Skia 6-tuple).
+/// `ValoTransform` is a row-major 2×3 affine transform (the CSS/Skia 6-tuple).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoTransform {
+    /// `a` is the horizontal scaling component (`xx`).
     pub a: f32,
+    /// `b` is the vertical skew component (`xy`).
     pub b: f32,
+    /// `c` is the horizontal skew component (`yx`).
     pub c: f32,
+    /// `d` is the vertical scaling component (`yy`).
     pub d: f32,
+    /// `translate_x` is the horizontal translation in logical pixels.
     pub translate_x: f32,
+    /// `translate_y` is the vertical translation in logical pixels.
     pub translate_y: f32,
 }
 
-/// Per-corner elliptical radii, clockwise from top-left — the full
-/// CSS/Flutter rounded rect. Circular corners are `x == y`.
+/// `ValoCornerRadii` holds per-corner elliptical radii, clockwise from top-left.
+///
+/// Circular corners are `x == y`. Radii that would overlap are reduced
+/// proportionally when the rounded rect is built.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoCornerRadii {
+    /// `top_left_x` is the top-left horizontal radius.
     pub top_left_x: f32,
+    /// `top_left_y` is the top-left vertical radius.
     pub top_left_y: f32,
+    /// `top_right_x` is the top-right horizontal radius.
     pub top_right_x: f32,
+    /// `top_right_y` is the top-right vertical radius.
     pub top_right_y: f32,
+    /// `bottom_right_x` is the bottom-right horizontal radius.
     pub bottom_right_x: f32,
+    /// `bottom_right_y` is the bottom-right vertical radius.
     pub bottom_right_y: f32,
+    /// `bottom_left_x` is the bottom-left horizontal radius.
     pub bottom_left_x: f32,
+    /// `bottom_left_y` is the bottom-left vertical radius.
     pub bottom_left_y: f32,
 }
 
-/// One draw's paint, by value. `style`: 0 fill, 1 stroke. `blend_mode`:
-/// the 29 Skia modes in valo's order (header lists them). `mask_blur_sigma
-/// <= 0` means no mask blur; `mask_blur_style`: 0 normal, 1 solid,
-/// 2 inner, 3 outer.
+/// `ValoPaint` describes one draw's paint, passed by value.
+///
+/// There is no retained paint object and no shader field — C paints are
+/// solid color, stroke, blend, mask blur, and an optional borrowed color
+/// filter. Unknown integer enums take the valo default (fill, srcOver,
+/// butt, miter, normal blur) rather than trapping. The 29 blend modes
+/// are numbered in `include/valo.h`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ValoPaint {
+    /// `color` is the solid-draw color.
+    ///
+    /// Shader and image draws use only its alpha and ignore its RGB channels.
     pub color: ValoColor,
+    /// `blend_mode` indexes the 29 Skia modes: 0 clear … 3 srcOver (default) … 28 luminosity.
     pub blend_mode: i32,
+    /// `style` is 0 fill (default) or 1 stroke.
     pub style: i32,
+    /// `stroke_width` is the stroke thickness in local units.
+    ///
+    /// Zero is a hairline (one device pixel); only a negative width draws nothing.
     pub stroke_width: f32,
-    /// 0 butt, 1 round, 2 square.
+    /// `stroke_cap` is 0 butt (default), 1 round, or 2 square.
     pub stroke_cap: i32,
-    /// 0 miter, 1 round, 2 bevel.
+    /// `stroke_join` is 0 miter (default), 1 round, or 2 bevel.
     pub stroke_join: i32,
+    /// `stroke_miter_limit` caps miter joins; values `<= 0` become 4.
     pub stroke_miter_limit: f32,
+    /// `mask_blur_style` is 0 normal (default), 1 solid, 2 inner, or 3 outer.
     pub mask_blur_style: i32,
+    /// `mask_blur_sigma` is the Gaussian sigma in local units; `<= 0` means no mask blur.
     pub mask_blur_sigma: f32,
-    /// Borrowed [`crate::ValoColorFilter`], or null. The handle only has to
-    /// outlive the call — the draw copies what it needs.
+    /// `color_filter` is a borrowed [`crate::ValoColorFilter`], or null.
+    ///
+    /// Recolours what this paint drew, before mask blur spreads it. The handle
+    /// only has to outlive the call — the draw copies what it needs.
     pub color_filter: *const crate::ValoColorFilter,
 }
 

@@ -6,6 +6,13 @@ use valo::{Color, ImageDesc};
 
 use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoDisplayList};
 
+/// `ValoContext` is the GPU renderer handle for C embedders.
+///
+/// Create it with [`valo_context_new`] (null when no adapter exists) and
+/// release it with [`valo_context_dispose`]. It owns the wgpu device and an
+/// optional presentable surface. Handles are not thread-safe. Pair it with
+/// [`valo_context_attach_metal_layer`] to present, or render headless with
+/// [`valo_context_render_to_pixels`].
 pub struct ValoContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -14,13 +21,21 @@ pub struct ValoContext {
     surface: Option<valo::Surface>,
 }
 
+/// `ValoImage` is a drawable GPU image handle.
+///
+/// Create it with [`valo_context_create_image`] (uploads RGBA8 pixels) or,
+/// on macOS, by wrapping a caller-owned Metal texture. Dispose with
+/// [`valo_image_dispose`]. Recorded display lists retain the image independently
+/// of this C handle.
 pub struct ValoImage {
     pub(crate) image: valo::Image,
 }
 
-/// Bring up the GPU (instance → adapter → device) and a valo context, with
-/// no window attached — pair with [`valo_context_attach_metal_layer`] to
-/// present, or render headless. Null when no adapter exists.
+/// `valo_context_new` brings up the GPU and a valo context with no window attached.
+///
+/// Bring-up is blocking (instance → adapter → device) and happens once.
+/// Pair with [`valo_context_attach_metal_layer`] to present, or render
+/// headless. Returns null when no adapter exists.
 #[no_mangle]
 pub extern "C" fn valo_context_new() -> *mut ValoContext {
     let Some((instance, adapter, device, queue)) = request_gpu() else {
@@ -36,6 +51,8 @@ pub extern "C" fn valo_context_new() -> *mut ValoContext {
     })
 }
 
+/// `valo_context_dispose` releases a context handle. Null is a no-op.
+///
 /// # Safety
 /// `context` must be a live [`valo_context_new`] handle (or null).
 #[no_mangle]
@@ -43,9 +60,10 @@ pub unsafe extern "C" fn valo_context_dispose(context: *mut ValoContext) {
     unsafe { dispose_handle(context) }
 }
 
-/// Attach a presentable surface over a raw `CAMetalLayer*` (macOS/iOS).
-/// Returns false when surface creation fails; a previous surface is
-/// replaced.
+/// `valo_context_attach_metal_layer` attaches a presentable surface over a raw
+/// `CAMetalLayer*` (macOS/iOS).
+///
+/// Returns false when surface creation fails; a previous surface is replaced.
 ///
 /// # Safety
 /// `context` must be a live handle; `metal_layer` must be a valid
@@ -82,7 +100,7 @@ pub unsafe extern "C" fn valo_context_attach_metal_layer(
     }
 }
 
-/// Resize the attached surface (no-op without one).
+/// `valo_context_resize` resizes the attached surface (no-op without one).
 ///
 /// # Safety
 /// `context` must be a live handle (or null, a no-op).
@@ -95,9 +113,11 @@ pub unsafe extern "C" fn valo_context_resize(context: *mut ValoContext, width: u
     }
 }
 
-/// The Metal device the context renders with (macOS) — hand it to a
-/// `CAMetalLayer` so externally-owned swapchain textures live on the same
-/// GPU device. Borrowed: valid while the context lives, not retained.
+/// `valo_context_metal_device` returns the Metal device the context renders with (macOS).
+///
+/// Hand it to a `CAMetalLayer` so externally-owned swapchain textures live
+/// on the same GPU device. Borrowed: valid while the context lives, not
+/// retained. Null context returns null.
 ///
 /// # Safety
 /// `context` must be a live handle (or null → null).
@@ -112,10 +132,12 @@ pub unsafe extern "C" fn valo_context_metal_device(
     valo::metal_device_of(&ctx.device).map_or(std::ptr::null_mut(), |device| device.as_ptr())
 }
 
-/// Render one frame into a caller-owned `MTLTexture*` (macOS) — the
-/// external-swapchain route: the embedder drives the drawable cycle, valo
-/// only draws. `format`: 0 bgra8unorm · 1 rgba8unorm, matching the
-/// texture. The texture must allow copies (set the layer's
+/// `valo_context_render_to_metal_texture` draws one frame into a caller-owned
+/// `MTLTexture*` (macOS).
+///
+/// This is the external-swapchain route: the embedder drives the drawable
+/// cycle, valo only draws. `format`: 0 bgra8unorm · 1 rgba8unorm, matching
+/// the texture. The texture must allow copies (set the layer's
 /// `framebufferOnly` to false) — dst-reading blends snapshot the target.
 /// Returns after SUBMISSION: presenting a drawable right after is safe
 /// (the display waits for the drawable's GPU writes on its own), but call
@@ -163,9 +185,11 @@ fn reclaim(ctx: &mut ValoContext) {
     let _ = ctx.device.poll(wgpu::PollType::Poll);
 }
 
-/// Block until every submitted frame has finished on the GPU — needed
-/// only before CPU reads of a rendered texture (tests, exports); frame
-/// loops must NOT call this (it serializes the pipeline).
+/// `valo_context_wait_for_gpu` blocks until every submitted frame has finished on the GPU.
+///
+/// Needed only before CPU reads of a rendered texture (tests, exports);
+/// frame loops must NOT call this (it serializes the pipeline). Null is a
+/// no-op.
 ///
 /// # Safety
 /// `context` must be a live handle (or null, a no-op).
@@ -177,15 +201,18 @@ pub unsafe extern "C" fn valo_context_wait_for_gpu(context: *mut ValoContext) {
     }
 }
 
-/// Wrap a caller-owned `MTLTexture*` as a drawable image, zero-copy
-/// (macOS) — external renderers (a 3D pass, a video frame) draw straight
-/// into valo frames without a readback. The texture must be created with
-/// shader-read usage and stay alive while the image is drawn.
+/// `valo_context_import_metal_texture` wraps a caller-owned `MTLTexture*` as a
+/// drawable image, zero-copy (macOS).
+///
+/// External renderers (a 3D pass, a video frame) draw straight into valo
+/// frames without a readback. The texture must be created with shader-read
+/// usage and stay alive while the image is drawn. `format`: 0 bgra8unorm ·
+/// 1 rgba8unorm. Returns null on a null handle, null texture, or zero size.
 ///
 /// # Safety
 /// `context` must be a live handle; `texture` must be a valid
-/// `MTLTexture*` of exactly `width` × `height` in `format` (0 bgra8unorm
-/// · 1 rgba8unorm), created on [`valo_context_metal_device`]'s device.
+/// `MTLTexture*` of exactly `width` × `height` in `format`, created on
+/// [`valo_context_metal_device`]'s device.
 #[cfg(target_os = "macos")]
 #[no_mangle]
 pub unsafe extern "C" fn valo_context_import_metal_texture(
@@ -225,14 +252,11 @@ fn metal_texture_format(format: i32) -> wgpu::TextureFormat {
     }
 }
 
-/// Register the font collection glyph runs rasterize through — without it
-/// paragraphs lay out but draw nothing. Each collection change is a new
-/// snapshot, so call again after adding faces; rendering uses the
-/// collection registered at render time.
+/// `valo_context_render` draws one frame onto the attached surface and presents it.
 ///
-/// Render one frame onto the attached surface and present it. Returns
-/// false without a surface or when the swapchain skipped the frame
-/// (occluded window) — both are recoverable, try next frame.
+/// Returns false without a surface or when the swapchain skipped the frame
+/// (occluded window) — both are recoverable, try next frame. Null handles
+/// return false.
 ///
 /// # Safety
 /// `context` and `list` must be live handles (or null → false).
@@ -258,8 +282,11 @@ pub unsafe extern "C" fn valo_context_render(
     true
 }
 
-/// Render headless into caller-allocated straight-alpha RGBA8 pixels
-/// (`width * height * 4` bytes). The export/golden route.
+/// `valo_context_render_to_pixels` renders headless into caller-allocated
+/// straight-alpha RGBA8 pixels (`width * height * 4` bytes).
+///
+/// This is the export and golden-test route. Returns false on a null handle,
+/// null buffer, or zero size.
 ///
 /// # Safety
 /// `context` and `list` must be live handles; `out_pixels` must point to
@@ -286,7 +313,11 @@ pub unsafe extern "C" fn valo_context_render_to_pixels(
     true
 }
 
-/// Upload straight-alpha RGBA8 pixels as a drawable image (mipmapped).
+/// `valo_context_create_image` uploads straight-alpha RGBA8 pixels as a drawable
+/// image (mipmapped).
+///
+/// The pixel buffer is copied; it only has to outlive this call. Returns
+/// null on a null handle, null pixels, or zero size.
 ///
 /// # Safety
 /// `context` must be a live handle; `pixels` must point to
@@ -316,8 +347,11 @@ pub unsafe extern "C" fn valo_context_create_image(
     into_handle(ValoImage { image })
 }
 
+/// `valo_image_dispose` releases an image handle. Null is a no-op.
+///
 /// # Safety
-/// `image` must be a live [`valo_context_create_image`] handle (or null).
+/// `image` must be a live image handle (from [`valo_context_create_image`]
+/// or a Metal import) or null.
 #[no_mangle]
 pub unsafe extern "C" fn valo_image_dispose(image: *mut ValoImage) {
     unsafe { dispose_handle(image) }
