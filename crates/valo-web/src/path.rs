@@ -100,6 +100,19 @@ impl WebPath {
         });
     }
 
+    /// `reset` clears every contour so the path can be rebuilt.
+    pub fn reset(&mut self) {
+        self.builder = PathBuilder::new();
+        self.cached = None;
+    }
+
+    /// `circle` adds a closed circular contour.
+    pub fn circle(&mut self, center_x: f32, center_y: f32, radius: f32) {
+        self.change(|path| {
+            path.circle((center_x, center_y), radius);
+        });
+    }
+
     /// `rect` adds a closed rectangular contour.
     pub fn rect(&mut self, x: f32, y: f32, width: f32, height: f32) {
         self.change(|path| {

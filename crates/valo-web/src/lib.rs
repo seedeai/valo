@@ -31,4 +31,4 @@ pub use path::WebPath;
 pub use recording::{WebDisplayList, WebDisplayListBuilder};
 pub use renderer::{create_renderer, WebImage, WebRenderStats, WebRenderer};
 pub use style::{WebColorFilter, WebImageFilter, WebPaint, WebShader};
-pub use text::{WebFontCollection, WebParagraph};
+pub use text::{WebFontCollection, WebParagraph, WebParagraphBuilder, WebTextStyle};

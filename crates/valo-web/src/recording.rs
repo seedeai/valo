@@ -170,6 +170,29 @@ impl WebDisplayListBuilder {
         Ok(())
     }
 
+    /// `clipRoundedRect` applies a rounded-rectangle clip until the current scope ends.
+    ///
+    /// `radii` follows [`Self::draw_rounded_rect`]. `operation` is `0` intersect
+    /// or `1` difference; any other value uses intersect.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = clipRoundedRect)]
+    pub fn clip_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radii: &[f32],
+        operation: u32,
+    ) -> Result<(), JsValue> {
+        self.builder()?.clip_rrect_radii_elliptical(
+            Rect::new(x, y, width, height),
+            elliptical_radii(radii)?,
+            types::clip_op(operation),
+        );
+        Ok(())
+    }
+
     /// `drawRect` records a filled or stroked rectangle.
     ///
     /// Fill versus stroke comes from `paint`.
@@ -185,6 +208,20 @@ impl WebDisplayListBuilder {
     ) -> Result<(), JsValue> {
         self.builder()?
             .draw_rect(Rect::new(x, y, width, height), &paint.inner);
+        Ok(())
+    }
+
+    /// `drawCircle` records a filled or stroked circle.
+    #[wasm_bindgen(js_name = drawCircle)]
+    pub fn draw_circle(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        paint: &WebPaint,
+    ) -> Result<(), JsValue> {
+        self.builder()?
+            .draw_circle((center_x, center_y), radius, &paint.inner);
         Ok(())
     }
 
@@ -297,8 +334,7 @@ impl WebDisplayListBuilder {
     ///
     /// Glyph runs, shadows, and decorations are lowered into the list. Later
     /// layout or style changes do not affect the recorded commands. Call
-    /// [`crate::WebParagraph`] layout before drawing; the paragraph constructor already
-    /// lays out once.
+    /// [`crate::WebParagraph::layout`] before drawing.
     #[wasm_bindgen(js_name = drawParagraph)]
     pub fn draw_paragraph(
         &mut self,
