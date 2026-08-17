@@ -9,55 +9,62 @@ use crate::shape::{shape_runs, ShapedRun};
 use crate::style::{ParagraphStyle, TextDirection, TextStyle};
 use crate::wrap::{place_lines, wrap_lines, Wrapped};
 
-/// One positioned glyph: `x`/`y` in paragraph-local px, `y` on the baseline.
+/// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
 #[derive(Clone, Copy, Debug)]
 pub struct PlacedGlyph {
+    /// `id` is the font-specific glyph identifier.
     pub id: u32,
+    /// `x` is the paragraph-local horizontal origin in logical pixels.
     pub x: f32,
+    /// `y` is the paragraph-local baseline origin in logical pixels.
     pub y: f32,
-    /// Byte offset of this glyph's cluster in the paragraph text.
+    /// `cluster` is the UTF-8 byte offset of the glyph's text cluster.
     pub cluster: usize,
-    /// The cursor delta this glyph consumed (justify stretch included).
+    /// `advance` is the signed cursor movement, including justification.
     pub advance: f32,
 }
 
-/// A line's worth of one font+size+color — exactly what one `GlyphRun`
-/// display-list op carries.
+/// `PlacedRun` groups positioned glyphs sharing one font and paint style.
 #[derive(Clone, Debug)]
 pub struct PlacedRun {
+    /// `font` identifies the font within the paragraph's [`FaceSet`].
     pub font: FontId,
+    /// `size` is the font size in logical pixels.
     pub size: f32,
+    /// `color` is the glyph fill color.
     pub color: Color,
+    /// `decoration` optionally adds a line relative to the run.
     pub decoration: Option<crate::style::Decoration>,
+    /// `shadows` are painted back-to-front beneath the glyphs.
     pub shadows: Vec<crate::style::Shadow>,
+    /// `glyphs` contains the run's glyphs in visual order.
     pub glyphs: Vec<PlacedGlyph>,
-    /// The run reads right-to-left: a glyph's LOGICAL start is its visual
-    /// right edge (`x + advance`), its end the left (skparagraph's
-    /// `Run::leftToRight()` from the bidi level).
+    /// `rtl` indicates that logical text order runs from right to left.
     pub rtl: bool,
-    /// Paragraph-local ADVANCE box: x from the cursor, y from ascent/
-    /// descent. Decorations and selection geometry live here.
+    /// `bounds` is the paragraph-local advance box used for layout geometry.
     pub bounds: Rect,
-    /// Paragraph-local INK bounds: the advance box widened by the font's
-    /// ink box (bearings, italic overhang, mark excursions) — what the
-    /// renderer must treat as the run's pixel extent (culling, layer
-    /// sizing, the opacity-elision disjointness proof).
+    /// `ink` conservatively bounds visible glyph pixels in paragraph coordinates.
     pub ink: Rect,
 }
 
+/// `Line` contains the visually ordered runs and metrics of one laid-out line.
 #[derive(Clone, Debug)]
 pub struct Line {
+    /// `runs` contains the line's visually ordered glyph runs.
     pub runs: Vec<PlacedRun>,
-    /// y of the baseline, paragraph-local.
+    /// `baseline` is the paragraph-local y coordinate of the text baseline.
     pub baseline: f32,
-    /// Max ascent/descent over the line's runs (px above/below baseline).
+    /// `ascent` is the maximum distance above the baseline in logical pixels.
     pub ascent: f32,
+    /// `descent` is the maximum distance below the baseline in logical pixels.
     pub descent: f32,
-    /// x where content starts (alignment shift included).
+    /// `left` is the paragraph-local x coordinate after alignment.
     pub left: f32,
-    /// Content width (trailing whitespace excluded).
+    /// `width` is the signed content advance in logical pixels.
+    ///
+    /// Trailing whitespace contributes only when requested by [`ParagraphStyle`].
     pub width: f32,
-    /// Byte range of the paragraph text this line covers.
+    /// `range` is the UTF-8 byte range of paragraph text covered by the line.
     pub range: Range<usize>,
 }
 
@@ -75,17 +82,13 @@ pub(crate) struct Layout {
     pub wrapped: Wrapped,
 }
 
-/// The retained paragraph, with Skia's state tiers made explicit
-/// (SkParagraph's kShaped/kWrapped/kFormatted ladder):
-/// - `ParagraphBuilder::build()` runs the EXPENSIVE tier once — fallback
-///   segmentation + harfrust shaping — and retains it.
-/// - `layout(width)` re-wraps and places from the retained shaping (cheap;
-///   cached when the width doesn't change).
-/// - `update_color(span, color)` re-places only (no reshape, no rewrap) —
-///   the text-editing hot path.
+/// `Paragraph` is the primary API for laying out and drawing text.
 ///
-/// Cloning duplicates the shaped and laid-out data (no re-shaping) — a cheap
-/// way for hosts to snapshot a layout before re-wrapping in place.
+/// [`ParagraphBuilder::build`] shapes the text, selecting fonts and converting
+/// characters into positioned glyph sequences. [`Self::layout`] then wraps
+/// those glyphs into lines and positions them within a width. Call `layout`
+/// before drawing or reading layout metrics. It can be called again at another
+/// width without repeating shaping.
 #[derive(Clone)]
 pub struct Paragraph {
     faces: FaceSet,
@@ -103,8 +106,12 @@ pub struct Paragraph {
 }
 
 impl Paragraph {
-    /// Wrap and place against `max_width` (`f32::INFINITY` = never wrap).
-    /// Same width twice = cache hit; shaping is NEVER redone here.
+    /// `layout` prepares the paragraph for drawing within `max_width`.
+    ///
+    /// It wraps the shaped glyphs into lines and computes their positions and
+    /// metrics. Call it before drawing the paragraph. Use `f32::INFINITY` to
+    /// disable soft wrapping. Repeating the same width reuses the existing
+    /// layout; shaping is never repeated.
     pub fn layout(&mut self, max_width: f32) {
         if self
             .layout
@@ -124,8 +131,9 @@ impl Paragraph {
         self.layout = Some(self.place(&bidi, wrapped, max_width));
     }
 
-    /// The repaint tier: recolor one styled span and re-place — shaping and
-    /// line breaks are untouched (color never moves a glyph).
+    /// `update_color` changes one added span without reshaping or rewrapping.
+    ///
+    /// An out-of-range span index has no effect.
     pub fn update_color(&mut self, span: usize, color: Color) {
         let Some((range, style)) = self.spans.get_mut(span) else {
             return;
@@ -162,17 +170,21 @@ impl Paragraph {
         self.empty_metrics
     }
 
-    /// Placed lines of the most recent `layout` (empty before one).
+    /// `lines` returns the most recently laid-out lines.
+    ///
+    /// It is empty before [`Self::layout`] is called.
     pub fn lines(&self) -> &[Line] {
         self.layout.as_ref().map_or(&[], |l| &l.lines)
     }
 
-    /// Widest line's content width after `layout`.
+    /// `width` returns the nonnegative width of the widest laid-out line.
+    ///
+    /// It is zero before [`Self::layout`] is called.
     pub fn width(&self) -> f32 {
         self.layout.as_ref().map_or(0.0, |l| l.width)
     }
 
-    /// How far the pen actually travelled — the widest line's signed advance.
+    /// `advance` returns the greatest signed line advance.
     ///
     /// This is NOT [`Paragraph::width`]. A width is a layout box, so it has a
     /// floor at zero: wrapping, alignment and `bounds()` are all defined on a
@@ -188,9 +200,9 @@ impl Paragraph {
             .unwrap_or(0.0)
     }
 
-    /// Paragraph-local pen x of the last glyph placed, or `None` when nothing
-    /// was placed at all. Distinct from the advance whenever that last glyph
-    /// carries one of its own.
+    /// `last_glyph_origin` returns the paragraph-local x origin of the final glyph.
+    ///
+    /// It returns `None` before layout or when no glyph was placed.
     pub fn last_glyph_origin(&self) -> Option<f32> {
         self.lines()
             .iter()
@@ -200,14 +212,17 @@ impl Paragraph {
             .map(|glyph| glyph.x)
     }
 
+    /// `height` returns the laid-out paragraph height in logical pixels.
+    ///
+    /// It is zero before [`Self::layout`] is called.
     pub fn height(&self) -> f32 {
         self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 
-    /// Tight visible ink bounds in paragraph coordinates. Vector glyphs use
-    /// Bézier extrema; color/bitmap glyphs use their non-transparent pixels.
-    /// This deliberate slower query path is for Canvas-style text metrics;
-    /// frame recording keeps using precomputed conservative run bounds.
+    /// `ink_bounds` returns tight visible glyph bounds in paragraph coordinates.
+    ///
+    /// It returns `None` before layout or when the paragraph has no visible
+    /// glyphs. This query may rasterize color glyphs.
     pub fn ink_bounds(&self) -> Option<Rect> {
         let mut result: Option<Rect> = None;
         let mut rasterizer = crate::raster::Rasterizer::new();
@@ -238,7 +253,10 @@ impl Paragraph {
         result
     }
 
-    /// Primary face and size even when the paragraph contains no glyphs.
+    /// `primary_font` returns the first run's font and size.
+    ///
+    /// For glyphless text it resolves the first styled span instead. It returns
+    /// `None` when no span or font is available.
     pub fn primary_font(&self) -> Option<(&crate::font::Font, f32)> {
         if let Some(run) = self.lines().first().and_then(|line| line.runs.first()) {
             return Some((self.faces.get(run.font), run.size));
@@ -252,37 +270,44 @@ impl Paragraph {
         Some((self.faces.get(identifier), style.size))
     }
 
+    /// `bounds` returns the paragraph's layout box at the origin.
     pub fn bounds(&self) -> Rect {
         Rect::new(0.0, 0.0, self.width(), self.height())
     }
 
-    /// `max_lines` dropped content (what an ellipsis marks).
+    /// `truncated` reports whether the line limit omitted content.
     pub fn truncated(&self) -> bool {
         self.layout.as_ref().is_some_and(|l| l.truncated)
     }
 
-    /// Widest unbreakable segment — the narrowest useful layout width.
+    /// `min_intrinsic_width` returns the widest unbreakable segment.
+    ///
+    /// It is zero before [`Self::layout`] is called.
     pub fn min_intrinsic_width(&self) -> f32 {
         self.layout
             .as_ref()
             .map_or(0.0, |l| l.wrapped.min_intrinsic)
     }
 
-    /// Width when nothing wraps (widest hard-break line).
+    /// `max_intrinsic_width` returns the width required to avoid soft wrapping.
+    ///
+    /// It is zero before [`Self::layout`] is called.
     pub fn max_intrinsic_width(&self) -> f32 {
         self.layout
             .as_ref()
             .map_or(0.0, |l| l.wrapped.max_intrinsic)
     }
 
-    /// Widest laid-out line's content width.
+    /// `longest_line` returns the width of the widest laid-out line.
     pub fn longest_line(&self) -> f32 {
         self.width()
     }
 }
 
-/// Collects styled spans; `build()` runs fallback segmentation + shaping
-/// once and hands back the retained [`Paragraph`].
+/// `ParagraphBuilder` assembles styled text into a [`Paragraph`] for layout and drawing.
+///
+/// Each added span can use a different [`TextStyle`]. Building selects fonts
+/// from the borrowed [`FontCollection`] and shapes the text into glyphs.
 pub struct ParagraphBuilder<'a> {
     fonts: &'a mut FontCollection,
     style: ParagraphStyle,
@@ -291,8 +316,7 @@ pub struct ParagraphBuilder<'a> {
 }
 
 impl<'a> ParagraphBuilder<'a> {
-    /// Skia's `ParagraphBuilder::make(style, fontCollection, unicode)`:
-    /// the collection comes in at construction and answers misses itself.
+    /// `new` creates an empty builder with the default [`ParagraphStyle`].
     pub fn new(fonts: &'a mut FontCollection) -> Self {
         Self {
             fonts,
@@ -302,11 +326,16 @@ impl<'a> ParagraphBuilder<'a> {
         }
     }
 
+    /// `style` replaces the paragraph-level layout style.
     pub fn style(&mut self, style: ParagraphStyle) -> &mut Self {
         self.style = style;
         self
     }
 
+    /// `add_text` appends a UTF-8 text span with its own style.
+    ///
+    /// The zero-based call order defines indices accepted by
+    /// [`Paragraph::update_color`].
     pub fn add_text(&mut self, text: &str, style: &TextStyle) -> &mut Self {
         let start = self.text.len();
         self.text.push_str(text);
@@ -314,10 +343,11 @@ impl<'a> ParagraphBuilder<'a> {
         self
     }
 
-    /// The expensive tier: segment + shape, consulting the collection's
-    /// sources at every miss (Skia's one `build()`; what no source could
-    /// answer waits on the collection as `take_unanswered`). The paragraph
-    /// keeps the faces it resolved, so it is self-contained afterwards.
+    /// `build` shapes the accumulated spans and drains the builder.
+    ///
+    /// Font sources are consulted for missing text. The returned paragraph
+    /// snapshots resolved faces and no longer borrows the collection. The empty
+    /// builder can be reused afterward.
     pub fn build(&mut self) -> Paragraph {
         let bidi = BidiInfo::new(&self.text, base_level(&self.style));
         let mut demand = FontDemand::default();
@@ -339,43 +369,59 @@ impl<'a> ParagraphBuilder<'a> {
 
 // ── the editor surface (skparagraph's Paragraph.h queries) ─────────────────
 
-/// A byte offset plus which side of it the position leans (SkParagraph's
-/// PositionWithAffinity): `downstream` = the caret belongs to the glyph
-/// AFTER the offset.
+/// `PositionWithAffinity` identifies where to place a caret in editable text.
+///
+/// It is returned by [`Paragraph::glyph_position_at`] when mapping a pointer
+/// position back to text. At line wraps and bidirectional boundaries, one text
+/// offset can have two visual caret positions. Affinity selects whether the
+/// caret belongs with the text before or after that offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PositionWithAffinity {
+    /// `offset` is a UTF-8 byte offset in paragraph text.
     pub offset: usize,
+    /// `downstream` selects the text after the offset when true, or before it when false.
     pub downstream: bool,
 }
 
-/// Per-line metrics for caret/selection UIs (skparagraph's LineMetrics).
+/// `LineMetrics` describes one laid-out line for caret and selection geometry.
 #[derive(Clone, Debug)]
 pub struct LineMetrics {
+    /// `range` is the UTF-8 byte range covered by the line.
     pub range: Range<usize>,
+    /// `baseline` is the paragraph-local y coordinate of the baseline.
     pub baseline: f32,
+    /// `ascent` is the logical-pixel distance above the baseline.
     pub ascent: f32,
+    /// `descent` is the logical-pixel distance below the baseline.
     pub descent: f32,
+    /// `left` is the paragraph-local x coordinate after alignment.
     pub left: f32,
+    /// `width` is the line's signed content advance in logical pixels.
     pub width: f32,
 }
 
 impl Paragraph {
+    /// `text` returns the complete UTF-8 paragraph text.
     pub fn text(&self) -> &str {
         &self.text
     }
 
-    /// What this paragraph could not resolve (families and codepoints no
-    /// source answered) — a host fetches them and re-registers.
+    /// `demand` returns font requests unresolved while building this paragraph.
+    ///
+    /// A host can load matching fonts, register them with [`FontCollection`],
+    /// and rebuild the paragraph to replace missing-glyph boxes.
     pub fn demand(&self) -> &FontDemand {
         &self.demand
     }
 
-    /// The faces this paragraph resolved (decoration metrics, glyph
-    /// lookup at record time).
+    /// `faces` returns the font snapshot retained for glyph lookup and drawing.
     pub fn faces(&self) -> &FaceSet {
         &self.faces
     }
 
+    /// `line_metrics` returns measurements for every laid-out line.
+    ///
+    /// It is empty before [`Self::layout`] is called.
     pub fn line_metrics(&self) -> Vec<LineMetrics> {
         self.lines()
             .iter()
@@ -390,9 +436,10 @@ impl Paragraph {
             .collect()
     }
 
-    /// The caret rectangle (zero width) for a byte offset — the leading
-    /// edge of the cluster at `offset`, or the trailing edge of the last
-    /// cluster before it.
+    /// `caret_for_offset` returns a zero-width caret rectangle for a UTF-8 offset.
+    ///
+    /// The offset snaps to a cluster edge. It returns [`Rect::default`] before
+    /// layout or when no line exists.
     pub fn caret_for_offset(&self, offset: usize) -> Rect {
         let Some(line) = self.line_for_offset(offset) else {
             return Rect::default();
@@ -406,9 +453,11 @@ impl Paragraph {
         )
     }
 
-    /// The text position under a point (SkParagraph's
-    /// getGlyphPositionAtCoordinate): nearest line by y, nearest cluster
-    /// edge by x.
+    /// `glyph_position_at` maps a paragraph-local point to an editable text position.
+    ///
+    /// Use it to place a caret from a pointer press. It chooses the nearest line
+    /// and glyph-cluster edge. An unlaid-out or empty paragraph returns offset
+    /// zero with downstream affinity.
     pub fn glyph_position_at(&self, p: valo_geometry::Point) -> PositionWithAffinity {
         let Some(line) = self.line_at_y(p.y) else {
             return PositionWithAffinity {
@@ -450,9 +499,10 @@ impl Paragraph {
         best
     }
 
-    /// Selection boxes for a byte range: one rect per (line, run) span —
-    /// bidi ranges yield multiple boxes naturally, like SkParagraph's
-    /// getRectsForRange.
+    /// `rects_for_range` returns boxes for painting a selected UTF-8 byte range.
+    ///
+    /// It returns one box per intersecting line and visual run, so bidirectional
+    /// text may produce multiple boxes on one line.
     pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Rect> {
         let mut out = Vec::new();
         for line in self.lines() {
@@ -484,7 +534,11 @@ impl Paragraph {
         out
     }
 
-    /// The word containing `offset` (UAX #29 word boundaries).
+    /// `word_boundary` returns the text segment selected as a word at an offset.
+    ///
+    /// It follows Unicode word boundaries, making it suitable for word selection
+    /// from a double click. Offsets at or beyond the text end return an empty
+    /// range at the end.
     pub fn word_boundary(&self, offset: usize) -> Range<usize> {
         use unicode_segmentation::UnicodeSegmentation;
         for (start, word) in self.text.split_word_bound_indices() {
@@ -511,7 +565,9 @@ impl Paragraph {
             .or(lines.last())
     }
 
-    /// The cluster's trailing offset: the NEXT shaped cluster on the same
+    /// `cluster_end` returns the cluster's trailing UTF-8 offset.
+    ///
+    /// It uses the next shaped cluster on the same
     /// line (shaping already groups combining marks — one char would land
     /// a caret INSIDE `e + U+0301`), else the next grapheme boundary.
     fn cluster_end(&self, cluster: usize) -> usize {
@@ -535,7 +591,9 @@ impl Paragraph {
     }
 }
 
-/// Leading edge of the cluster at `offset`, else the nearest trailing edge
+/// `caret_x` returns the leading edge at an offset or the nearest prior edge.
+///
+/// It uses the leading edge of the cluster at `offset`, else the nearest trailing edge
 /// before it, else the line's left edge. Edges flip per run direction.
 fn caret_x(line: &Line, offset: usize) -> f32 {
     let mut before: Option<(usize, f32)> = None;
@@ -557,7 +615,7 @@ fn caret_x(line: &Line, offset: usize) -> f32 {
     before.map_or(line.left, |(_, x)| x)
 }
 
-/// The paragraph's bidi base level, or `None` to let the content pick it.
+/// `base_level` returns an explicit bidi level or leaves content to choose it.
 fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
     style.direction.map(|direction| match direction {
         TextDirection::Ltr => unicode_bidi::Level::ltr(),
@@ -565,9 +623,7 @@ fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
     })
 }
 
-/// skparagraph's computeEmptyMetrics, resolved once at build: glyphless
-/// lines (blank first line, trailing newline, empty paragraph) measure as
-/// the FIRST span's style.
+/// `empty_line_metrics` resolves glyphless line metrics from the first span.
 fn empty_line_metrics(
     faces: &FaceSet,
     first_span: Option<&(std::ops::Range<usize>, TextStyle)>,

@@ -10,87 +10,84 @@ use crate::pipelines::PipelineCache;
 use crate::plan::{FramePlan, PassColor, PlannedPass, Planner};
 use crate::pool::TargetPool;
 
-/// Where one frame goes. Caller-owned — a swapchain view, an offscreen
-/// texture, an export target; the renderer allocates only pooled scratch.
-/// `texture` is the resolved image behind `view`: advanced blends snapshot
-/// it mid-frame, so it needs `COPY_SRC` usage.
+/// `RenderTarget` is the destination for one render operation.
+///
+/// `texture` must be the resource behind `view` and match `format` and `size`.
+/// Advanced blends and backdrop filters require `COPY_SRC` texture usage.
 pub struct RenderTarget<'a> {
+    /// `view` is the attachment into which Valo renders.
     pub view: &'a wgpu::TextureView,
+    /// `texture` is the resource behind `view`.
     pub texture: &'a wgpu::Texture,
+    /// `format` is the pixel format exposed by `view`.
     pub format: wgpu::TextureFormat,
+    /// `size` is the renderable area in pixels.
     pub size: [u32; 2],
-    /// `Some` clears before drawing; `None` loads existing contents.
+    /// `clear` replaces existing pixels when set and preserves them when `None`.
     pub clear: Option<Color>,
 }
 
-/// Per-frame counters — the stats line. Cheap enough to always collect.
+/// `RenderStats` reports the work performed by one render operation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
-    /// Ops replayed (nested lists included).
+    /// `ops` is the number of replayed operations, including nested lists.
     pub ops: u32,
-    /// Logical draws encoded after culling (a path fill counts once).
+    /// `draws` is the number of logical draws remaining after culling.
     pub draws: u32,
-    /// Clips encoded.
+    /// `clips` is the number of encoded clip operations.
     pub clips: u32,
-    /// Draws skipped by record-time bounds vs. the viewport.
+    /// `culled` is the number of draws skipped because their bounds miss the target.
     pub culled: u32,
-    /// Offscreen layer passes actually rendered (incl. implicit ones that
-    /// desugar advanced-blend draws).
+    /// `layers_rendered` is the number of offscreen layers actually rendered.
     pub layers_rendered: u32,
-    /// Save layers that never became a texture — alpha rode the children
-    /// (the best layer is the one never allocated).
+    /// `layers_elided` is the number of save layers applied without an offscreen target.
     pub layers_elided: u32,
-    /// Pass breaks for dst-reading blends and backdrops (each = one region
-    /// copy of the target).
+    /// `snapshots` is the number of target-region copies used by destination reads.
     pub snapshots: u32,
-    /// Backdrop tiles that ran a blur chain (each = one pass break).
+    /// `backdrops` is the number of backdrop regions that ran a blur chain.
     pub backdrops: u32,
-    /// Backdrop tiles that REUSED a shared blur — no break, no filter work.
+    /// `shared_backdrops` is the number of backdrop regions that reused a shared blur.
     pub shared_backdrops: u32,
-    /// Gaussian filter passes this frame (downsample + H + V per blur).
+    /// `filter_passes` is the number of encoded image-filter passes.
     pub filter_passes: u32,
-    /// Glyph runs per text tier this frame: [mask, sdf, path].
+    /// `text_tiers` contains glyph-run counts for `[bitmap mask, SDF, outline]`.
     pub text_tiers: [u32; 3],
-    /// Glyph-cache misses this frame (each = one swash raster). Warm
-    /// frames read 0; sustained nonzero at a still camera is a cache bug.
+    /// `glyph_rasters` is the number of glyphs rasterized after cache misses.
     pub glyph_rasters: u32,
-    /// Cached sub-lists drawn as ONE sampled quad this frame —
-    /// the raster cache's payoff column.
+    /// `raster_quads` is the number of cached display lists drawn as image quads.
     pub raster_quads: u32,
-    /// Sub-lists rendered into cache textures this frame (extra passes;
-    /// bounded by the per-frame fill quota).
+    /// `raster_fills` is the number of display lists rendered into cache textures.
     pub raster_fills: u32,
-    /// Wholesale atlas GCs this frame; nonzero on warm frames means the
-    /// live glyph set no longer fits the pages (thrash).
+    /// `atlas_gcs` is the number of full glyph-atlas collections.
     pub atlas_gcs: u32,
-    /// SDF rasters skipped by the host's text-raster hold this frame (each
-    /// drew a scaled stand-in instead). Nonzero while idle = a stuck hold.
+    /// `held_rasters` is the number of bitmap or SDF misses served by a resident size.
     pub held_rasters: u32,
-    /// Opaque draw units hoisted out of painter order to the front of their
-    /// segment chunk — each is overdraw early-z now culls.
+    /// `opaque_reordered` is the number of opaque draws moved earlier for depth culling.
     pub opaque_reordered: u32,
-    /// GPU time of the PREVIOUS frame, ms (0 until one resolves, or when
-    /// the device lacks TIMESTAMP_QUERY).
+    /// `gpu_ms` is the previous resolved frame's GPU time in milliseconds.
+    ///
+    /// It is zero until a timestamp resolves or when timestamps are unavailable.
     pub gpu_ms: f32,
-    /// HostBuffer blocks created THIS frame (0 on warm frames).
+    /// `blocks_created` is the number of transient upload blocks allocated this frame.
     pub blocks_created: u32,
-    /// CPU time in `render` (replay + encode + submit), milliseconds.
+    /// `cpu_ms` is total CPU time spent in rendering and submission.
     pub cpu_ms: f32,
-    /// GPU `draw()` invocations encoded (≠ `draws`: a stencil-then-cover
-    /// fill is one logical draw but two calls; batched text is many glyphs
-    /// in one call).
+    /// `draw_calls` is the number of encoded GPU draw commands.
+    ///
+    /// One logical draw may require several commands, while batched glyphs may
+    /// share one.
     pub draw_calls: u32,
-    /// Render passes encoded: main-target segments + layer + filter passes.
+    /// `render_passes` is the number of encoded render passes.
     pub render_passes: u32,
-    /// `set_pipeline` binds — the state changes the GPU actually pays for.
+    /// `pipeline_switches` is the number of encoded pipeline changes.
     pub pipeline_switches: u32,
-    /// Transient bytes uploaded this frame (Impeller's per-frame HostBuffer
-    /// pressure, split by use).
+    /// `vertex_bytes` is the number of transient vertex bytes uploaded.
     pub vertex_bytes: u64,
+    /// `uniform_bytes` is the number of transient uniform bytes uploaded.
     pub uniform_bytes: u64,
-    /// `cpu_ms` split (Impeller's build/raster phases): replay + plan …
+    /// `plan_ms` is the CPU time spent replaying and planning.
     pub plan_ms: f32,
-    /// … then pipeline compile + upload + encode + submit.
+    /// `encode_ms` is the CPU time spent compiling, uploading, encoding, and submitting.
     pub encode_ms: f32,
 }
 

@@ -10,16 +10,16 @@ use valo_text::{FontCollection, ParagraphBuilder, TextStyle};
 
 use crate::text::DrawParagraphExt;
 
-/// Renders [`RenderStats`] (+ optionally a [`MemoryReport`]) as an overlay.
-/// Use a MONOSPACE family — the columns only hold still in one.
+/// `Hud` records renderer statistics as an in-frame overlay.
+///
+/// Use a registered monospace font so its columns remain aligned.
 pub struct Hud {
     family: String,
     size: f32,
 }
 
 impl Hud {
-    /// A HUD drawn in `family`, which must name a registered MONOSPACE
-    /// font — the stats columns only hold still in one.
+    /// `new` creates a HUD using a registered monospace font family.
     pub fn new(family: impl Into<String>) -> Self {
         Self {
             family: family.into(),
@@ -27,17 +27,18 @@ impl Hud {
         }
     }
 
-    /// Override the text size (default 15 px).
+    /// `with_size` sets the text size in pixels.
+    ///
+    /// The default is 15 pixels.
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
-    /// Record the overlay at the top of the frame: glass strip + stats
-    /// lines. `note` prefixes the first line (the host's own state — zoom,
-    /// tool, scene name); `memory` adds a third line when given (pull it
-    /// every N frames, not every frame). Returns the strip's height so the
-    /// host can stack its own UI below.
+    /// `draw` records the overlay at the top of a frame.
+    ///
+    /// `note` adds host state to the first line, and `memory` adds an optional
+    /// resource line. The returned height can position other UI below the HUD.
     pub fn draw(
         &self,
         b: &mut DisplayListBuilder,

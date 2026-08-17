@@ -1,16 +1,21 @@
 use crate::{Point, Size};
 
-/// Axis-aligned rectangle, `(x, y)` = top-left, y-down.
+/// `Rect` is an axis-aligned rectangle in Valo's y-down coordinate system.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rect {
+    /// `x` is the left edge.
     pub x: f32,
+    /// `y` is the top edge.
     pub y: f32,
+    /// `width` is the horizontal extent.
     pub width: f32,
+    /// `height` is the vertical extent.
     pub height: f32,
 }
 
 impl Rect {
+    /// `new` creates a rectangle from its top-left origin and size.
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -20,6 +25,7 @@ impl Rect {
         }
     }
 
+    /// `from_ltrb` creates a rectangle from its left, top, right, and bottom edges.
     pub fn from_ltrb(l: f32, t: f32, r: f32, b: f32) -> Self {
         Self {
             x: l,
@@ -29,6 +35,7 @@ impl Rect {
         }
     }
 
+    /// `from_origin_size` creates a rectangle from an origin and size.
     pub fn from_origin_size(origin: Point, size: Size) -> Self {
         Self {
             x: origin.x,
@@ -38,27 +45,34 @@ impl Rect {
         }
     }
 
+    /// `right` returns the x-coordinate of the right edge.
     pub fn right(&self) -> f32 {
         self.x + self.width
     }
 
+    /// `bottom` returns the y-coordinate of the bottom edge.
     pub fn bottom(&self) -> f32 {
         self.y + self.height
     }
 
+    /// `origin` returns the top-left point.
     pub fn origin(&self) -> Point {
         Point::new(self.x, self.y)
     }
 
+    /// `size` returns the rectangle's width and height.
     pub fn size(&self) -> Size {
         Size::new(self.width, self.height)
     }
 
+    /// `is_empty` reports whether either extent is nonpositive.
     pub fn is_empty(&self) -> bool {
         self.width <= 0.0 || self.height <= 0.0
     }
 
-    /// Smallest rect containing both (empty rects are identity).
+    /// `union` returns the smallest rectangle containing both rectangles.
+    ///
+    /// Empty rectangles act as the identity.
     pub fn union(&self, other: &Rect) -> Rect {
         if self.is_empty() {
             return *other;
@@ -74,7 +88,7 @@ impl Rect {
         )
     }
 
-    /// `None` when disjoint (or either is empty).
+    /// `intersect` returns the overlapping area or `None` when there is none.
     pub fn intersect(&self, other: &Rect) -> Option<Rect> {
         let r = Rect::from_ltrb(
             self.x.max(other.x),
@@ -85,6 +99,7 @@ impl Rect {
         (!r.is_empty()).then_some(r)
     }
 
+    /// `intersects` reports whether the rectangles overlap with positive area.
     pub fn intersects(&self, other: &Rect) -> bool {
         !self.is_empty()
             && !other.is_empty()
@@ -94,17 +109,21 @@ impl Rect {
             && other.y < self.bottom()
     }
 
+    /// `contains` reports whether a point lies within the half-open rectangle.
+    ///
+    /// Left and top edges are included; right and bottom edges are excluded.
     pub fn contains(&self, p: Point) -> bool {
         p.x >= self.x && p.x < self.right() && p.y >= self.y && p.y < self.bottom()
     }
 
-    /// Like [`Self::contains`] but with the far edges included — Skia's
-    /// `contains_inclusive`. Hit-testing wants this: a rect path's bounds ARE
-    /// its outline, and a point on the outline counts as inside.
+    /// `contains_inclusive` reports whether a point lies within or on every edge.
     pub fn contains_inclusive(&self, p: Point) -> bool {
         p.x >= self.x && p.x <= self.right() && p.y >= self.y && p.y <= self.bottom()
     }
 
+    /// `expand` moves every edge outward by `d`.
+    ///
+    /// Negative values contract the rectangle.
     pub fn expand(&self, d: f32) -> Rect {
         Rect::new(
             self.x - d,
@@ -114,9 +133,7 @@ impl Rect {
         )
     }
 
-    /// The conservative "cannot bound this" rect: content whose transform
-    /// reaches the eye plane maps here — culling never rejects it, layers
-    /// clamp to their clip instead.
+    /// `EVERYTHING` is the conservative bound used when content cannot be bounded.
     pub const EVERYTHING: Rect = Rect {
         x: -1.0e9,
         y: -1.0e9,
@@ -124,6 +141,7 @@ impl Rect {
         height: 2.0e9,
     };
 
+    /// `corners` returns corners clockwise from the top-left.
     pub fn corners(&self) -> [Point; 4] {
         [
             Point::new(self.x, self.y),

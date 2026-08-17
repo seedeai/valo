@@ -4,11 +4,11 @@ use valo_geometry::{FillRule, Matrix, Path, PathBuilder, Rect};
 
 use crate::{ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling};
 
-/// Records ops and computes the record-time oracle: device bounds intersected
-/// with the live clip stack, depth-slot assignment, clip expiry, and — for
-/// save layers — the scope bounds and opacity-compatibility that let the
-/// renderer size (or entirely elide) the offscreen texture without
-/// ever looking ahead. Single-use; GPU-free; any thread.
+/// `DisplayListBuilder` records drawing commands into an immutable display list.
+///
+/// Recording is GPU-free and may run on any thread. The builder resolves bounds,
+/// clips, layer extents, and ordering metadata so rendering does not need to
+/// rediscover them.
 pub struct DisplayListBuilder {
     ops: Vec<Op>,
     scopes: Vec<Scope>,
@@ -60,6 +60,7 @@ impl Default for DisplayListBuilder {
 }
 
 impl DisplayListBuilder {
+    /// `new` creates an empty display-list builder.
     pub fn new() -> Self {
         Self {
             ops: Vec::new(),
@@ -79,6 +80,7 @@ impl DisplayListBuilder {
 
     // ── transform stack (canvas semantics) ─────────────────────────────────
 
+    /// `save` preserves the current transform and clip until the matching `restore`.
     pub fn save(&mut self) {
         self.scopes.push(Scope {
             is_layer: false,
@@ -88,23 +90,20 @@ impl DisplayListBuilder {
         self.ops.push(Op::Save);
     }
 
-    /// Render everything until the matching `restore` into an offscreen
-    /// texture, then composite it with `paint` (alpha, blend). `bounds_hint`
-    /// (local space) crops the layer — smaller hint, smaller texture.
+    /// `save_layer` begins an offscreen layer composited with `paint` at `restore`.
     ///
-    /// The oracle records at the layer's restore: its children's union
-    /// bounds (how big a texture), where its slot span starts and ends on
-    /// the shared depth line, and whether the whole layer can be ELIDED —
-    /// plain-alpha composite + alpha-linear, pairwise-disjoint children
-    /// means the alpha rides each child draw and no texture ever exists.
+    /// `bounds_hint` is a local-space crop, not merely an allocation hint;
+    /// content outside it is discarded. Pass `None` to derive bounds from the
+    /// recorded children and active clip.
     pub fn save_layer(&mut self, bounds_hint: Option<Rect>, paint: &Paint) {
         self.save_layer_inner(bounds_hint, paint, None);
     }
 
-    /// Open a MASK scope: children render offscreen like any
-    /// layer, but the restore composites them as COVERAGE (`kind`) with
-    /// DstIn over the whole enclosing layer — its content survives only
-    /// where the mask has ink. SVG's `<mask>`.
+    /// `save_layer_mask` begins a mask layer closed by `restore`.
+    ///
+    /// The layer's pixels become luminance or alpha coverage according to
+    /// `kind`, retaining enclosing content only where the mask has coverage.
+    /// `bounds_hint` crops the mask in local space.
     pub fn save_layer_mask(&mut self, bounds_hint: Option<Rect>, kind: MaskKind) {
         let paint = Paint {
             blend_mode: crate::BlendMode::DstIn,
@@ -167,6 +166,9 @@ impl DisplayListBuilder {
         });
     }
 
+    /// `restore` closes the most recent save, layer, or mask scope.
+    ///
+    /// An unmatched restore is ignored in release builds and triggers a debug assertion.
     pub fn restore(&mut self) {
         if self.scopes.len() == 1 {
             debug_assert!(false, "restore() without matching save()");
@@ -180,18 +182,24 @@ impl DisplayListBuilder {
         self.ops.push(Op::Restore);
     }
 
+    /// `translate` offsets subsequent drawing and clipping operations.
     pub fn translate(&mut self, tx: f32, ty: f32) {
         self.concat(&Matrix::translation(tx, ty));
     }
 
+    /// `scale` scales subsequent drawing and clipping operations.
     pub fn scale(&mut self, sx: f32, sy: f32) {
         self.concat(&Matrix::scale(sx, sy));
     }
 
+    /// `rotate` rotates subsequent drawing and clipping operations clockwise.
+    ///
+    /// Positive angles rotate clockwise in Valo's y-down coordinate system.
     pub fn rotate(&mut self, radians: f32) {
         self.concat(&Matrix::rotation(radians));
     }
 
+    /// `concat` appends a transform for subsequent drawing and clipping operations.
     pub fn concat(&mut self, local: &Matrix) {
         let top = self.top_mut();
         top.transform = top.transform.then(local);
@@ -200,17 +208,21 @@ impl DisplayListBuilder {
 
     // ── clips (depth slots; expiry backpatched when the scope closes) ──────
 
+    /// `clip_rect` applies a rectangular clip until the current scope ends.
     pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp) {
         let rect = rect.into();
         self.clip_path(&rect_path(rect), FillRule::NonZero, op);
     }
 
+    /// `clip_rrect` applies a rounded-rectangle clip with one corner radius.
     pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp) {
         let rect = rect.into();
         self.clip_rrect_radii(rect, [radius; 4], op);
     }
 
-    /// Per-corner radii, clockwise from top-left: `[tl, tr, br, bl]`.
+    /// `clip_rrect_radii` applies a rounded-rectangle clip with per-corner radii.
+    ///
+    /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn clip_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], op: ClipOp) {
         let rect = rect.into();
         let mut p = PathBuilder::new();
@@ -218,7 +230,9 @@ impl DisplayListBuilder {
         self.clip_path(&p.build(), FillRule::NonZero, op);
     }
 
-    /// [`Self::clip_rrect_radii`] with per-corner elliptical radii.
+    /// `clip_rrect_radii_elliptical` applies per-corner elliptical radii.
+    ///
+    /// Each clockwise corner is `[x_radius, y_radius]`, starting at the top-left.
     pub fn clip_rrect_radii_elliptical(
         &mut self,
         rect: impl Into<Rect>,
@@ -234,6 +248,7 @@ impl DisplayListBuilder {
         self.clip_path(&p.build(), FillRule::NonZero, op);
     }
 
+    /// `clip_path` applies a path clip until the current scope ends.
     pub fn clip_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, op: ClipOp) {
         let bounds = self.top().transform.map_rect(&path.bounds());
         self.shrink_clip(op, bounds);
@@ -258,6 +273,7 @@ impl DisplayListBuilder {
 
     // ── draws (one slot each; bounds pre-clipped for the culling oracle) ───
 
+    /// `draw_rect` records a filled or stroked rectangle.
     pub fn draw_rect(&mut self, rect: impl Into<Rect>, paint: &Paint) {
         let rect = rect.into();
         if paint.is_nop() {
@@ -287,6 +303,7 @@ impl DisplayListBuilder {
         });
     }
 
+    /// `draw_path` records a filled or stroked path.
     pub fn draw_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, paint: &Paint) {
         if path.is_empty() || paint.is_nop() {
             return;
@@ -306,6 +323,7 @@ impl DisplayListBuilder {
         });
     }
 
+    /// `draw_circle` records a filled or stroked circle.
     pub fn draw_circle(
         &mut self,
         center: impl Into<valo_geometry::Point>,
@@ -317,12 +335,15 @@ impl DisplayListBuilder {
         self.draw_path(&p.build(), FillRule::NonZero, paint);
     }
 
+    /// `draw_rrect` records a rounded rectangle with one corner radius.
     pub fn draw_rrect(&mut self, rect: impl Into<Rect>, radius: f32, paint: &Paint) {
         let rect = rect.into();
         self.draw_rrect_radii(rect, [radius; 4], paint);
     }
 
-    /// Per-corner radii, clockwise from top-left: `[tl, tr, br, bl]`.
+    /// `draw_rrect_radii` records a rounded rectangle with per-corner radii.
+    ///
+    /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
         let rect = rect.into();
         if rect.is_empty() || paint.is_nop() {
@@ -337,10 +358,9 @@ impl DisplayListBuilder {
         self.draw_path(&p.build(), FillRule::NonZero, paint);
     }
 
-    /// Per-corner ELLIPTICAL radii (`[[rx, ry]; 4]`, clockwise from
-    /// top-left) — the full CSS/Flutter rounded-rect. Circular corners
-    /// (every `rx == ry`) keep the analytic fast paths; genuinely
-    /// elliptical corners draw through the path pipeline.
+    /// `draw_rrect_radii_elliptical` records per-corner elliptical radii.
+    ///
+    /// Each clockwise corner is `[x_radius, y_radius]`, starting at the top-left.
     pub fn draw_rrect_radii_elliptical(
         &mut self,
         rect: impl Into<Rect>,
@@ -359,29 +379,35 @@ impl DisplayListBuilder {
         self.draw_path(&p.build(), FillRule::NonZero, paint);
     }
 
-    /// Blur what's already under `rect` and composite the blurred tile back —
-    /// frosted glass. Later draws land on top; the current clip applies (put
-    /// a `clip_rrect` around it for a glass panel). σ is in local units.
+    /// `backdrop_blur` blurs existing target pixels beneath `rect`.
+    ///
+    /// `sigma` is measured in local units. The active clip shapes the result;
+    /// later draws appear above it.
     pub fn backdrop_blur(&mut self, rect: Rect, sigma: f32) {
         self.record_backdrop(rect, sigma, None);
     }
 
-    /// Same, but every tile with one `key` shares ONE blur of their union
-    /// region — the frame's glass panels cost one filter chain. Trade-off:
-    /// later tiles show the scene as of the FIRST tile (Flutter backdropKey
-    /// semantics); share only across tiles on the same background.
+    /// `backdrop_blur_shared` shares one blur across regions with the same key.
+    ///
+    /// Sharing reduces filter work but snapshots the background when the first
+    /// keyed region is reached. Use one key only for regions over the same
+    /// background.
     pub fn backdrop_blur_shared(&mut self, rect: Rect, sigma: f32, key: u64) {
         self.record_backdrop(rect, sigma, Some(key));
     }
 
-    /// Draw the whole image into `dst` (linear sampling, clamped).
+    /// `draw_image` records the whole image into `dst`.
+    ///
+    /// It uses linear filtering and clamps at the image edges.
     pub fn draw_image(&mut self, image: &Image, dst: Rect, paint: &Paint) {
         let src = Rect::new(0.0, 0.0, image.width(), image.height());
         self.draw_image_rect(image, src, dst, Sampling::default(), paint);
     }
 
-    /// Draw `src` (texture px) into `dst` with explicit sampling — tiling
-    /// comes from `sampling.tile_*` plus a `src` larger than the texture.
+    /// `draw_image_rect` records a source region into `dst` with explicit sampling.
+    ///
+    /// `src` is measured in source pixels. Tiling applies when `src` extends
+    /// beyond the image bounds.
     pub fn draw_image_rect(
         &mut self,
         image: &Image,
@@ -408,10 +434,10 @@ impl DisplayListBuilder {
         });
     }
 
-    /// One placed run of glyphs (a line's worth of one font/size/style from
-    /// valo-text). `local_bounds` comes from the layout's run metrics — the
-    /// oracle can't derive glyph extents without font access — and gets the
-    /// paint's mask-blur padding (text shadows spread like any blurred draw).
+    /// `draw_glyph_run` records positioned glyphs from one font and size.
+    ///
+    /// `local_bounds` must enclose the glyph ink in local coordinates. Valo
+    /// retains the supplied font and glyph positions in the display list.
     pub fn draw_glyph_run(
         &mut self,
         font: std::sync::Arc<valo_text::Font>,
@@ -442,17 +468,15 @@ impl DisplayListBuilder {
         });
     }
 
-    /// Embed a retained list. Its oracle folds into this list's totals here,
-    /// at record time — replay never counts.
+    /// `draw_display_list` records a nested display list by shared reference.
     pub fn draw_display_list(&mut self, list: &Arc<DisplayList>) {
         self.embed_display_list(list, false);
     }
 
-    /// Embed a retained list the renderer MAY raster-cache: the
-    /// caller vouches that the subtree is stable across frames and heavy
-    /// enough to be worth a texture; the renderer still applies its own
-    /// admission (size, backdrop reads, churn) and silently falls back to
-    /// inline replay.
+    /// `draw_display_list_cached` records a nested list as a raster-cache candidate.
+    ///
+    /// Use it for stable, repeatedly drawn lists whose recording is expensive.
+    /// The renderer may still replay the list directly when caching is unsuitable.
     pub fn draw_display_list_cached(&mut self, list: &Arc<DisplayList>) {
         self.embed_display_list(list, true);
     }
@@ -480,6 +504,9 @@ impl DisplayListBuilder {
 
     // ── build ──────────────────────────────────────────────────────────────
 
+    /// `build` consumes the builder and returns its immutable display list.
+    ///
+    /// Any unmatched save scopes are closed before the list is finalized.
     pub fn build(mut self) -> DisplayList {
         // Unbalanced saves are a recording bug, but a recoverable one: close
         // them so replay's stack discipline holds.

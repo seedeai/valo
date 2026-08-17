@@ -17,9 +17,10 @@ use crate::Context;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Context {
-    /// Render `dl` at `size` over `clear` and return tightly-packed,
-    /// straight-alpha RGBA8 rows. Blocks on the GPU readback (native);
-    /// web export goes through the canvas.
+    /// `render_to_rgba` renders a display list into straight-alpha RGBA8 pixels.
+    ///
+    /// The returned rows are tightly packed. This native-only operation blocks
+    /// until GPU readback completes.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_to_rgba(
         &mut self,
@@ -40,8 +41,11 @@ impl Context {
     }
 }
 
-/// Premultiplied → straight: c / α, rounded, with fully-transparent pixels
-/// zeroed (their color is undefined and compresses better as black).
+/// `unpremultiply` converts premultiplied RGBA8 pixels to straight alpha in place.
+///
+/// Fully transparent pixels are set to transparent black because their color
+/// channels are undefined. `pixels` must contain complete four-byte pixels;
+/// any trailing bytes are left unchanged.
 pub fn unpremultiply(pixels: &mut [u8]) {
     for px in pixels.chunks_exact_mut(4) {
         let a = px[3] as u32;

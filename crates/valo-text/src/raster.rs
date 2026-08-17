@@ -7,36 +7,49 @@ use valo_geometry::{Cap, Join, Path, PathBuilder, Rect};
 
 use crate::font::Font;
 
-/// SDF spread in texels: distance saturates ±this many pixels from the edge
-/// (0.5 = on the edge). Also the raster padding so the field has room.
+/// `SDF_PAD` is the padding and maximum encoded distance around an SDF glyph.
+///
+/// Distances saturate this many pixels inside or outside the glyph edge.
 pub const SDF_PAD: u32 = 8;
 
-/// The stroke a glyph raster can carry: [`valo_geometry::Stroke`] without
-/// its dashes, which a fixed-size atlas key has nowhere to put. Impeller's
-/// `StrokeParameters` carries the same four fields for the same reason.
-/// `width` is in the raster's own pixels, like `px`.
+/// `GlyphStroke` describes an outline applied before rasterizing a glyph.
+///
+/// It is equivalent to [`valo_geometry::Stroke`] without a dash pattern.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphStroke {
+    /// `width` is the full stroke width in raster pixels.
     pub width: f32,
+    /// `cap` controls the ends of open outline contours.
     pub cap: Cap,
+    /// `join` controls how consecutive outline segments meet.
     pub join: Join,
-    /// Miter length ÷ half-width beyond which a join bevels (SVG default 4).
+    /// `miter_limit` is the maximum miter length divided by half the stroke width.
     pub miter_limit: f32,
 }
 
-/// A rasterized glyph: A8 coverage (or normalized distance for SDF), plus
-/// the placement of the bitmap's top-left relative to the glyph origin
-/// (`left` right of origin, `top` above the baseline — swash conventions).
+/// `GlyphImage` contains rasterized glyph pixels and baseline-relative placement.
+///
+/// Alpha and SDF images store one byte per pixel. Color images store
+/// premultiplied RGBA8. To place the bitmap at glyph origin `(x, y)`, draw its
+/// top-left at `(x + left, y - top)`.
 pub struct GlyphImage {
+    /// `width` is the bitmap width in pixels.
     pub width: u32,
+    /// `height` is the bitmap height in pixels.
     pub height: u32,
+    /// `left` is the bitmap's horizontal offset from the glyph origin.
     pub left: i32,
+    /// `top` is the bitmap's upward offset from the baseline.
     pub top: i32,
+    /// `data` contains tightly packed rows in the format produced by the raster method.
     pub data: Vec<u8>,
 }
 
-/// CPU glyph rasterization, on swash. One per renderer — swash's context
-/// caches scaling state, and the stroker its segment buffers.
+/// `Rasterizer` converts font glyphs into CPU bitmap or distance-field images.
+///
+/// Valo's renderer owns one internally. Hosts need this type only when building
+/// a custom glyph cache or text renderer. Reuse an instance to retain scaling
+/// and stroking scratch state; its methods require mutable access.
 #[derive(Default)]
 pub struct Rasterizer {
     context: swash::scale::ScaleContext,
@@ -44,13 +57,17 @@ pub struct Rasterizer {
 }
 
 impl Rasterizer {
+    /// `new` creates an empty CPU glyph rasterizer.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Plain alpha coverage at `px` — the mask tier. `dx` is the subpixel
-    /// x-phase (0/¼/½/¾ px) baked into the raster, Skia/Impeller's
-    /// quarter-pixel positioning.
+    /// `alpha` rasterizes a glyph into one-byte alpha coverage.
+    ///
+    /// `px` is the font size in raster pixels. `dx` shifts the outline
+    /// horizontally for subpixel positioning and is usually one of
+    /// `0.0`, `0.25`, `0.5`, or `0.75`. It returns `None` when the glyph has no
+    /// rasterizable monochrome outline.
     pub fn alpha(&mut self, font: &Font, glyph: u32, px: f32, dx: f32) -> Option<GlyphImage> {
         let image = self.render(font, glyph, px, dx)?;
         Some(GlyphImage {
@@ -62,21 +79,10 @@ impl Rasterizer {
         })
     }
 
-    /// Alpha coverage of the glyph's STROKED outline — the stroked mask
-    /// tier. Stroking happens before rasterizing, which is what lets the
-    /// result be an ordinary cached atlas entry (Skia's scaler strokes
-    /// inside the strike for the same reason).
+    /// `stroked` rasterizes a stroked glyph outline into one-byte alpha coverage.
     ///
-    /// This does NOT go through swash. swash rasterizes with zeno, and
-    /// zeno's miter join short-circuits to a bevel whenever the two segment
-    /// normals point apart (`stroke.rs`'s `dot < 0.0`), which caps its miter
-    /// ratio at √2 and silently flattens every join sharper than a right
-    /// angle — the apex of `A`, `M`, `W`, and most of what a stroked
-    /// headline is made of. tiny-skia, already here for COLRv1, ports
-    /// Skia's stroker and honours `miter_limit`, and it hands back a real
-    /// path whose tight bounds size the atlas cell. That measurement is the
-    /// point: Impeller sizes its slot the same way, by handing the stroking
-    /// paint to `SkFont::getBounds`.
+    /// `px`, `dx`, and stroke dimensions are in raster pixels. It returns
+    /// `None` when the glyph has no outline or the stroked path cannot be built.
     pub fn stroked(
         &mut self,
         font: &Font,
@@ -90,10 +96,12 @@ impl Rasterizer {
         mask_of(&stroked)
     }
 
-    /// Signed distance field at `px`: the 1× AA coverage seeds the exact
-    /// EDT directly (mapbox TinySDF's shape — partial alpha carries the
-    /// sub-pixel edge, so no supersample; ~7× the old
-    /// 2×-8SSEDT pipeline). 128 = edge, ±[`SDF_PAD`] px span the range.
+    /// `sdf` rasterizes a glyph into a one-byte signed distance field.
+    ///
+    /// `px` is the font size in raster pixels. A value near 128 marks the edge;
+    /// larger values are inside and smaller values are outside. The image is
+    /// padded by [`SDF_PAD`] pixels. It returns `None` when no monochrome
+    /// outline can be rasterized.
     pub fn sdf(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
         let alpha = self.render(font, glyph, px, 0.0)?;
         let pad = SDF_PAD;
@@ -116,10 +124,11 @@ impl Rasterizer {
         })
     }
 
-    /// Color glyph (COLR outlines / CBDT-sbix bitmaps) at `px`: premultiplied
-    /// RGBA, or `None` when the glyph has no color form — the caller falls
-    /// back to the mask tiers. Mini rendered emoji through Canvas2D; swash
-    /// is the native replacement.
+    /// `color` rasterizes a color glyph into premultiplied RGBA8 pixels.
+    ///
+    /// `px` is the font size in raster pixels. It supports color outlines and
+    /// embedded color bitmaps. It returns `None` when the glyph has no supported
+    /// color representation, allowing callers to fall back to alpha rendering.
     pub fn color(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
         let font_ref = swash::FontRef::from_index(font.data(), font.face_index() as usize)?;
         let mut scaler = self
@@ -273,8 +282,11 @@ fn mask_of(path: &tiny_skia::Path) -> Option<GlyphImage> {
     })
 }
 
-/// The glyph as a valo `Path` at `px`, baseline-origin, y-down — the huge-
-/// text tier: stencil-then-cover handles it like any shape.
+/// `glyph_path` returns a glyph outline as a baseline-relative Valo path.
+///
+/// `px` is the font size in logical pixels. The path uses Valo's y-down
+/// coordinates with its origin on the baseline. It returns `None` when the
+/// glyph has no nonempty monochrome outline.
 pub fn glyph_path(font: &Font, glyph: u32, px: f32) -> Option<Arc<Path>> {
     let font_ref = skrifa::FontRef::from_index(font.data(), font.face_index()).ok()?;
     let outline = font_ref.outline_glyphs().get(skrifa::GlyphId::new(glyph))?;

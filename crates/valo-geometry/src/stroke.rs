@@ -1,50 +1,63 @@
-//! Stroke geometry: flattened polylines → one triangle strip (Impeller's
-//! StrokePathGeometry shape — CPU strips, joins fanned around the pivot,
-//! caps at open ends; drawn directly, no stencil). Translucent strokes
-//! double-blend where join fans overlap the segment quads — the same
-//! accepted artifact Impeller carries. Stencil-then-cover over the strip is
-//! the escape hatch if that overlap ever has to go.
+//! Stroke expansion, dashing, and hit-testing for flattened path contours.
 
 use crate::{Contour, Point};
 
+/// `Cap` determines how a stroke ends at an open contour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Cap {
+    /// `Butt` ends the stroke at the endpoint.
     #[default]
     Butt,
+    /// `Round` extends the stroke with a semicircle.
     Round,
+    /// `Square` extends the stroke by half its width with a square edge.
     Square,
 }
 
+/// `Join` determines how consecutive stroke segments meet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Join {
+    /// `Miter` extends outer edges until they meet, subject to the miter limit.
     #[default]
     Miter,
+    /// `Round` connects outer edges with a circular arc.
     Round,
+    /// `Bevel` connects outer edges with a straight cut.
     Bevel,
 }
 
-/// On/off intervals cycled along each contour, `phase` px into the cycle.
+/// `Dash` defines alternating painted and skipped lengths along each contour.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Dash {
+    /// `intervals` alternates painted and skipped lengths, starting with painted.
     pub intervals: Vec<f32>,
+    /// `phase` offsets the start into the repeating interval cycle.
     pub phase: f32,
 }
 
+/// `Stroke` describes the width, ends, joins, and optional dash pattern of a line.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Stroke {
+    /// `width` is the full stroke width in path coordinates.
     pub width: f32,
+    /// `cap` controls the ends of open contours and dashes.
     pub cap: Cap,
+    /// `join` controls how consecutive segments meet.
     pub join: Join,
-    /// Miter length ÷ half-width beyond which a join bevels (SVG default 4).
+    /// `miter_limit` is the maximum miter length divided by half the stroke width.
+    ///
+    /// Longer miters fall back to bevel joins. The default is `4.0`.
     pub miter_limit: f32,
+    /// `dash` optionally divides contours into alternating painted and skipped lengths.
     pub dash: Option<Dash>,
 }
 
 impl Stroke {
+    /// `new` creates a solid butt-capped, miter-joined stroke.
     pub fn new(width: f32) -> Self {
         Self {
             width,
@@ -56,9 +69,11 @@ impl Stroke {
     }
 }
 
-/// Strip vertices (x,y pairs) stroking `contours`; contours stitch with
-/// degenerate triangles. `tolerance` sizes round join/cap arcs, like the
-/// flattener sizes curves.
+/// `stroke_strip` expands contours into triangle-strip vertices.
+///
+/// The returned vector stores interleaved x and y coordinates. `tolerance`
+/// controls the maximum deviation of round caps and joins. Dashes must first be
+/// expanded with [`dash_contours`].
 pub fn stroke_strip(contours: &[Contour], stroke: &Stroke, tolerance: f32) -> Vec<f32> {
     let half = stroke.width * 0.5;
     if half <= 0.0 {
@@ -88,13 +103,10 @@ pub fn stroke_strip(contours: &[Contour], stroke: &Stroke, tolerance: f32) -> Ve
     strip.out
 }
 
-/// Whether `point` lands on the ink `stroke_strip` would produce — Canvas2D's
-/// `isPointInStroke`.
+/// `stroke_contains` reports whether a point lies inside expanded stroke geometry.
 ///
-/// This hit-tests the very triangles the renderer draws, so the answer can
-/// never disagree with the pixels. The alternative, converting a stroke into
-/// an outline PATH and filling it, is a genuinely hard problem (offset
-/// curves, self-intersection removal) and buys nothing here.
+/// It uses the same triangle strip as [`stroke_strip`], including caps and joins.
+/// Dashes must first be expanded with [`dash_contours`].
 pub fn stroke_contains(
     contours: &[Contour],
     stroke: &Stroke,
@@ -107,7 +119,7 @@ pub fn stroke_contains(
     (2..vertices).any(|i| in_triangle(point, vertex(i - 2), vertex(i - 1), vertex(i)))
 }
 
-/// Point-in-triangle for one strip triple.
+/// `in_triangle` tests one triangle-strip triple.
 ///
 /// Two rules, and both are load-bearing:
 ///
@@ -136,9 +148,10 @@ fn in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
     !(negative && positive)
 }
 
-/// Split contours into the dash pattern's ON stretches (each stroked with
-/// its own caps, always open — a closed contour starts dashing at its seam).
-/// Invalid patterns disable dashing, like Skia's SkDashPathEffect.
+/// `dash_contours` splits contours into the painted stretches of a dash pattern.
+///
+/// Each returned stretch is open and receives its own caps. Invalid patterns
+/// leave the input contours unchanged.
 pub fn dash_contours(contours: &[Contour], dash: &Dash) -> Vec<Contour> {
     let Some(dash) = normalize_dash(dash) else {
         return contours.to_vec();
@@ -150,7 +163,9 @@ pub fn dash_contours(contours: &[Contour], dash: &Dash) -> Vec<Contour> {
     out
 }
 
-/// SVG rules: an odd interval count repeats the list so on/off alternate
+/// `normalize_dash` applies SVG rules and rejects unusable patterns.
+///
+/// An odd interval count repeats the list so on/off alternate
 /// across the doubled cycle; negative or zero-total patterns mean no dash.
 fn normalize_dash(dash: &Dash) -> Option<Dash> {
     let sum: f32 = dash.intervals.iter().sum();
@@ -179,7 +194,7 @@ impl Strip {
         self.out.extend_from_slice(&[p.x, p.y]);
     }
 
-    /// Degenerate stitch: repeat the last vertex, then the next one twice.
+    /// `stitch` joins strips with degenerate triangles.
     fn stitch(&mut self, next: Point) {
         if self.out.is_empty() {
             self.emit(next);
@@ -236,8 +251,7 @@ fn stroke_contour(
     }
 }
 
-/// Join at pivot `p` between incoming (from `a`) and outgoing (to `c`)
-/// segments: fan triangles on the OUTER side of the turn.
+/// `join` fans triangles around the outside of a segment junction.
 fn join(
     strip: &mut Strip,
     p: Point,
@@ -281,8 +295,7 @@ fn join(
     }
 }
 
-/// Fan around `pivot` through `rim` points, as strip triangles
-/// (rim₀, pivot, rim₁), (pivot, rim₁, pivot), … — overlaps are fine.
+/// `fan` appends a triangle fan to a strip.
 fn fan(strip: &mut Strip, pivot: Point, rim: &[Point]) {
     for &q in rim {
         strip.emit(q);
@@ -332,7 +345,9 @@ fn end_cap(strip: &mut Strip, from: Point, p: Point, cap: Cap, half: f32, tolera
     }
 }
 
-/// A lone point strokes as its cap shape. A BUTT cap draws nothing, which is
+/// `lone_point` strokes an explicit zero-length contour as its cap shape.
+///
+/// A butt cap draws nothing, which is
 /// what the cap definitions give with no special case: butt terminates
 /// exactly at the endpoint, so two coincident endpoints enclose no area,
 /// while round and square extend half a width past it and enclose area even
@@ -373,8 +388,7 @@ fn lone_point(strip: &mut Strip, p: Point, stroke: &Stroke, half: f32, tolerance
     }
 }
 
-/// Points along the arc from offset `from` to offset `to` around `center`
-/// (radius = |offset|), stepping by the flattener's angle-for-tolerance.
+/// `arc_points` approximates an arc with points at the requested tolerance.
 fn arc_points(center: Point, from: Point, to: Point, radius: f32, tolerance: f32) -> Vec<Point> {
     let a0 = from.y.atan2(from.x);
     let mut a1 = to.y.atan2(to.x);
@@ -443,7 +457,9 @@ fn dash_contour(out: &mut Vec<Contour>, contour: &[Point], dash: &Dash) {
     }
 }
 
-/// One ON stretch of a dash pattern. Always `has_segments`: a dash is cut
+/// `open_contour` creates one painted stretch of a dash pattern.
+///
+/// It always has segments: a dash is cut
 /// from real geometry, and a ZERO-LENGTH on interval is the case that depends
 /// on it — it reduces to a single point and still has to paint its caps.
 fn open_contour(points: Vec<Point>) -> Contour {
@@ -454,8 +470,7 @@ fn open_contour(points: Vec<Point>) -> Contour {
     }
 }
 
-/// (interval index, remaining length in it) at `offset` into the cycle.
-/// The interval `offset` falls in, and how much of it remains.
+/// `interval_at` finds the interval and remaining length at a cycle offset.
 ///
 /// A ZERO-LENGTH interval can never satisfy `left < len`, but the dash
 /// algorithm still has to enter it: `[0, 6]` at phase 0 opens in WHATWG's
@@ -717,7 +732,7 @@ mod tests {
         );
     }
 
-    /// The zero-length clause must not fire at ordinary boundaries: at    /// The zero-length clause must not fire at ordinary boundaries: at
+    /// The zero-length clause must not fire at ordinary boundaries: at
     /// offset 10 of `[10, 6]` the walk is exactly at the start of the OFF
     /// interval, not sitting on a zero-length one.
     #[test]

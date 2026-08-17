@@ -5,20 +5,21 @@ use valo_geometry::{FillRule, Matrix, Path, Rect};
 
 use crate::{Image, Paint, Sampling};
 
-/// How a clip combines with the scene: keep the inside, or keep the outside.
+/// `ClipOp` controls how a clip shape changes the current clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClipOp {
+    /// `Intersect` retains pixels inside the clip shape.
     #[default]
     Intersect,
+    /// `Difference` retains pixels outside the clip shape.
     Difference,
 }
 
-/// One recorded command. Draw/clip ops carry the **record-time oracle** inline:
-/// device bounds (list-root space, already intersected with the clip stack) and
-/// the depth slot the builder assigned — the renderer replays without counting
-/// or re-deriving anything, and clips arrive KNOWING their expiry — the
-/// renderer never patches anything at restore.
+/// `Op` is one recorded display-list command.
+///
+/// Draw and clip operations include the bounds and ordering metadata resolved
+/// by [`crate::DisplayListBuilder`] at record time.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Op {
@@ -149,21 +150,22 @@ pub enum Op {
     },
 }
 
-/// How a mask layer's texture becomes coverage at composite (SVG's
-/// mask-type): luminance of the premultiplied pixels (the SVG default) or
-/// their alpha alone.
+/// `MaskKind` controls how a mask layer converts pixels into coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum MaskKind {
+    /// `Luminance` derives coverage from premultiplied pixel luminance.
     Luminance,
+    /// `Alpha` uses only the pixel alpha channel as coverage.
     Alpha,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// An immutable, retained recording. Cheap to clone (`Arc` it), free-threaded,
-/// nestable. `id` is process-unique and stable for the value's lifetime —
-/// identity-keyed caches (future raster cache, damage diffing) hang off it.
+/// `DisplayList` is an immutable recording of drawing commands.
+///
+/// Display lists are GPU-free, thread-safe, and nestable. Wrap a list in
+/// [`Arc`] to share or replay it without copying its commands.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DisplayList {
@@ -181,26 +183,32 @@ pub struct DisplayList {
     pub(crate) backdrop_groups: Vec<BackdropGroup>,
 }
 
-/// One glyph of a `GlyphRun`: id in the run's font, position in local px.
+/// `GlyphPos` identifies and positions one glyph within a glyph run.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GlyphPos {
+    /// `id` is the glyph identifier in the run's font.
     pub id: u32,
+    /// `x` is the glyph's local horizontal position in pixels.
     pub x: f32,
+    /// `y` is the glyph's local baseline position in pixels.
     pub y: f32,
 }
 
-/// Record-time summary of one shared backdrop key (see `Op::BackdropBlur`).
+/// `BackdropGroup` summarizes regions sharing one backdrop-blur key.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BackdropGroup {
+    /// `key` identifies the shared backdrop group.
     pub key: u64,
+    /// `union_bounds` encloses every region in the group.
     pub union_bounds: Rect,
+    /// `tiles` is the number of regions in the group.
     pub tiles: u32,
-    /// `Some(σ)` while every tile of this key agrees — Impeller's
-    /// `BackdropData::all_filters_equal` (its record pre-pass is
-    /// `FirstPassDispatcher`; valo's is the recording itself). Mixed keys
-    /// don't share: each tile blurs independently.
+    /// `sigma` is the shared blur radius when every region agrees.
+    ///
+    /// It is `None` when regions with this key use different radii and cannot
+    /// share one blur result.
     pub sigma: Option<f32>,
 }
 
@@ -226,35 +234,42 @@ impl DisplayList {
         }
     }
 
-    /// Process-unique identity (a deserialized list gets a fresh one: identity
-    /// is about live values, not content).
+    /// `id` returns the process-unique identity of this live display list.
+    ///
+    /// Deserialization creates a fresh identity; equal content does not imply
+    /// equal identity.
     pub fn id(&self) -> u64 {
         self.id
     }
 
+    /// `ops` returns the recorded commands in replay order.
     pub fn ops(&self) -> &[Op] {
         &self.ops
     }
 
+    /// `bounds` returns the union of visible draw bounds in list coordinates.
+    ///
+    /// It returns `None` when the list draws nothing.
     pub fn bounds(&self) -> Option<Rect> {
         self.bounds
     }
 
+    /// `draw_count` returns the number of draws, including nested lists.
     pub fn draw_count(&self) -> u32 {
         self.draw_count
     }
 
+    /// `depth_slots` returns the ordering slots required to replay this list.
     pub fn depth_slots(&self) -> u32 {
         self.depth_slots
     }
 
-    /// How many shared-backdrop groups this list records — a raster cache
-    /// admission input: any backdrop read makes a list uncacheable
-    /// standalone (it samples what is BEHIND it).
+    /// `backdrop_group_count` returns the number of shared backdrop groups.
     pub fn backdrop_group_count(&self) -> usize {
         self.backdrop_groups.len()
     }
 
+    /// `backdrop_group` returns the group recorded for `key`, if present.
     pub fn backdrop_group(&self, key: u64) -> Option<&BackdropGroup> {
         self.backdrop_groups.iter().find(|g| g.key == key)
     }

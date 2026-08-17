@@ -1,24 +1,21 @@
-//! Arc-length measurement along a path — Skia's `SkContourMeasure`, Flutter's
-//! `PathMetric`. What text-on-a-path, dashed strokes and "animate along this
-//! curve" all need: how long is this contour, and where is the point a given
-//! distance into it.
+//! Arc-length measurement and sampling along flattened path contours.
 //!
-//! Measurement runs on the FLATTENED contour, so its accuracy is the
-//! flattening tolerance's. That is the same trade the renderer already makes
-//! (it draws the flattening, not the ideal curve), which keeps a sampled point
-//! on the line that actually gets drawn.
+//! Accuracy follows the flattening tolerance supplied to [`crate::Path::measure`].
 
 use crate::{Contour, Point};
 
-/// A point on a contour and the direction the contour runs there.
+/// `PathSample` contains a position and direction along a measured contour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathSample {
+    /// `position` is the sampled point on the contour.
     pub position: Point,
-    /// Unit vector along the contour, pointing towards increasing distance.
+    /// `tangent` is the unit direction toward increasing distance.
     pub tangent: Point,
 }
 
-/// One contour, measured. Build these with [`crate::Path::measure`].
+/// `ContourMeasure` finds positions, tangents, and segments by distance along a contour.
+///
+/// Create measurements with [`crate::Path::measure`].
 #[derive(Clone, Debug)]
 pub struct ContourMeasure {
     points: Vec<Point>,
@@ -30,9 +27,9 @@ pub struct ContourMeasure {
 }
 
 impl ContourMeasure {
-    /// Measure a flattened contour. Zero-length segments are dropped so the
-    /// distance table stays strictly increasing and sampling can't divide by
-    /// a zero span.
+    /// `of` measures a flattened contour with positive length.
+    ///
+    /// Zero-length segments are discarded.
     pub(crate) fn of(contour: &Contour) -> Option<Self> {
         let mut points = Vec::with_capacity(contour.points.len());
         let mut distances = Vec::with_capacity(contour.points.len());
@@ -60,6 +57,7 @@ impl ContourMeasure {
         })
     }
 
+    /// `length` returns the contour's total arc length.
     pub fn length(&self) -> f32 {
         *self
             .distances
@@ -67,13 +65,14 @@ impl ContourMeasure {
             .expect("measured contours have length")
     }
 
+    /// `is_closed` reports whether the source contour was explicitly closed.
     pub fn is_closed(&self) -> bool {
         self.closed
     }
 
-    /// Position and tangent `distance` along the contour. Distances outside
-    /// the contour clamp to its ends, matching Skia — a caller animating past
-    /// the end gets the final point, not a wrapped or missing one.
+    /// `sample` returns the position and tangent at a contour distance.
+    ///
+    /// Distances clamp to the contour's ends. `NaN` samples the start.
     pub fn sample(&self, distance: f32) -> PathSample {
         // NaN would reach the comparator and take the binary search down with
         // it; the start is the honest answer. Infinities need no special case
@@ -90,8 +89,10 @@ impl ContourMeasure {
         }
     }
 
-    /// The stretch between two distances as its own contour — Skia's
-    /// `getSegment`. `None` when the range is empty after clamping.
+    /// `segment` extracts the open contour between two distances.
+    ///
+    /// Distances clamp to the measured contour. Empty, reversed, or `NaN`
+    /// ranges return `None`.
     pub fn segment(&self, start: f32, end: f32) -> Option<Contour> {
         if start.is_nan() || end.is_nan() {
             return None;
@@ -117,9 +118,7 @@ impl ContourMeasure {
         })
     }
 
-    /// The index of the segment `distance` falls in — the last point whose
-    /// cumulative distance does not exceed it, capped so `index + 1` is
-    /// always a real point.
+    /// `segment_containing` returns the line segment containing `distance`.
     fn segment_containing(&self, distance: f32) -> usize {
         match self
             .distances

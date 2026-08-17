@@ -69,7 +69,13 @@ Single Level of Abstraction per function: a function either orchestrates or does
 
 No abbreviations in public names or fields. Full words — `composition`, not `comp`; `effect`, not `fx`.
 
-Comments explain **why**, never what the code already says. A comment that names an external design (Impeller's `DrawOrderResolver`, Skia's `SubRunControl`, mapbox's TinySDF) is carrying real information — keep those. Never cite an internal document, plan number, or chapter: this repo has no such documents, and a reader cannot follow the pointer.
+### Comments
+
+- Comments must carry information the code does not: contracts, constraints, rationale, surprising behavior, or external design references.
+- Public rustdoc starts with the exact identifier and a complete sentence: `Context is ...`, `` `render` draws ... ``. Describe correct use, ownership, side effects, defaults, edge cases, and when an option should be changed.
+- Introduce public concepts in ordinary language before specialized terms: say what the API represents, why a caller uses it, and define terms such as shaping or caret affinity. Add a short example when prose alone would still leave correct use unclear.
+- Link public documentation through facade types such as `crate::TextTiers`, not internal implementation crates.
+- Never cite an internal document, plan number, or chapter that a reader cannot follow. Delete stale or misplaced comments instead of adapting them to the wrong item.
 
 ## Pitfalls that cost time
 

@@ -1,28 +1,30 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// An uploaded, immutable image. A cheap-clone `Arc` handle: hosts keep it,
-/// display lists reference it, and DROP is the whole lifetime story — wgpu
-/// keeps the texture alive until in-flight submissions finish.
+/// `Image` is a cheap-to-clone handle to an immutable GPU image.
 ///
-/// Lives in valo-dl so ops can hold it directly (Flutter's DlImage does the
-/// same). Recording stays device-free — you just can't MINT one without a
-/// `Context` (`upload_image`), which is the point.
+/// Display lists retain cloned handles, and the texture is released after the
+/// last handle and in-flight GPU use are gone.
 #[derive(Clone)]
 pub struct Image {
     inner: Arc<ImageInner>,
 }
 
+/// `ImageInner` contains the shared resources and metadata behind an [`Image`].
 pub struct ImageInner {
+    /// `id` is the process-unique identity of this image.
     pub id: u64,
+    /// `size` is the image dimensions in pixels.
     pub size: [u32; 2],
+    /// `texture` stores the image pixels.
     pub texture: wgpu::Texture,
+    /// `view` exposes the complete texture for sampling.
     pub view: wgpu::TextureView,
+    /// `mip_levels` is the number of available mip levels.
     pub mip_levels: u32,
 }
 
-/// Two handles are the same image when they name the same upload — the id is
-/// process-unique, so this never compares texture contents.
+/// `Image` equality compares image identity rather than pixel contents.
 impl PartialEq for Image {
     fn eq(&self, other: &Self) -> bool {
         self.inner.id == other.inner.id
@@ -32,7 +34,10 @@ impl PartialEq for Image {
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Image {
-    /// Called by the renderer's upload path — hosts never construct these.
+    /// `from_texture` creates an image from an existing texture.
+    ///
+    /// Prefer `Context::import_image` through the `valo` facade unless managing
+    /// renderer resources directly.
     pub fn from_texture(texture: wgpu::Texture, size: [u32; 2], mip_levels: u32) -> Self {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
@@ -46,34 +51,42 @@ impl Image {
         }
     }
 
+    /// `id` returns the process-unique identity of this image.
     pub fn id(&self) -> u64 {
         self.inner.id
     }
 
+    /// `size` returns the image dimensions in pixels.
     pub fn size(&self) -> [u32; 2] {
         self.inner.size
     }
 
+    /// `width` returns the image width in pixels.
     pub fn width(&self) -> f32 {
         self.inner.size[0] as f32
     }
 
+    /// `height` returns the image height in pixels.
     pub fn height(&self) -> f32 {
         self.inner.size[1] as f32
     }
 
+    /// `view` returns the texture view used for sampling.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.inner.view
     }
 
+    /// `texture` returns the underlying GPU texture.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.inner.texture
     }
 
+    /// `mip_levels` returns the number of available mip levels.
     pub fn mip_levels(&self) -> u32 {
         self.inner.mip_levels
     }
 
+    /// `downgrade` returns a non-owning handle to this image's resources.
     pub fn downgrade(&self) -> std::sync::Weak<ImageInner> {
         Arc::downgrade(&self.inner)
     }
@@ -102,54 +115,55 @@ impl serde::Serialize for Image {
     }
 }
 
-/// How image draws sample their texture.
+/// `Sampling` controls filtering, mip selection, and behavior outside an image.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Sampling {
+    /// `filter` controls interpolation between neighboring texels.
     pub filter: Filter,
+    /// `mipmap` controls level selection when mipmaps are available.
     pub mipmap: MipmapMode,
+    /// `tile_x` controls sampling outside the horizontal image bounds.
     pub tile_x: TileMode,
+    /// `tile_y` controls sampling outside the vertical image bounds.
     pub tile_y: TileMode,
 }
 
-/// How a minified draw picks between an image's mip levels — the second axis
-/// of Skia's `SkSamplingOptions`, and what Canvas2D's `imageSmoothingQuality`
-/// actually selects.
-///
-/// Skia's top tier is cubic resampling rather than trilinear; valo has no
-/// cubic, so its highest setting is [`MipmapMode::Linear`].
+/// `MipmapMode` controls how minified images select mip levels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MipmapMode {
-    /// Level 0 only: sharpest, and it aliases as soon as the draw minifies.
+    /// `None` always samples level zero.
     None,
-    /// One level, chosen per pixel — cheap, with a visible band at each
-    /// level change.
+    /// `Nearest` samples the closest mip level.
     Nearest,
-    /// Trilinear: blend the two bracketing levels.
+    /// `Linear` blends the two nearest mip levels.
     #[default]
     Linear,
 }
 
+/// `Filter` controls interpolation between neighboring texels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Filter {
-    /// Bilinear + mip selection when the image has mips (downscaled artwork).
+    /// `Linear` uses bilinear interpolation.
     #[default]
     Linear,
-    /// Pixel-art / QR-code mode.
+    /// `Nearest` selects the nearest texel without interpolation.
     Nearest,
 }
 
+/// `TileMode` controls samples outside an image's bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TileMode {
+    /// `Clamp` extends the nearest edge texel.
     #[default]
     Clamp,
+    /// `Repeat` repeats the image in the same orientation.
     Repeat,
+    /// `Mirror` repeats the image with alternating orientation.
     Mirror,
-    /// Nothing outside the image — Skia's `SkTileMode::kDecal`, and what
-    /// Canvas2D's `no-repeat` means. Distinct from `Clamp`, which smears the
-    /// edge texels outwards forever.
+    /// `Decal` returns transparent pixels outside the image.
     Decal,
 }

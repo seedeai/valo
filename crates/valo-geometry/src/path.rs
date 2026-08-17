@@ -2,24 +2,29 @@ use std::sync::Arc;
 
 use crate::{Matrix, Point, Rect};
 
+/// `FillRule` determines which regions of overlapping contours are filled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FillRule {
+    /// `NonZero` fills regions whose signed winding count is nonzero.
     #[default]
     NonZero,
+    /// `EvenOdd` fills regions crossed an odd number of times.
     EvenOdd,
 }
 
-/// Which way a closed contour is traversed.
+/// `Winding` selects the traversal direction of a closed contour.
 ///
-/// Observable wherever direction carries meaning: under the NON-ZERO fill
+/// Direction matters wherever traversal carries meaning: under the nonzero fill
 /// rule two overlapping contours cancel when their windings oppose and add
 /// when they agree, and dashing walks a contour in order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Winding {
+    /// `Clockwise` traverses in the clockwise direction on Valo's y-down plane.
     #[default]
     Clockwise,
+    /// `CounterClockwise` traverses in the counterclockwise direction.
     CounterClockwise,
 }
 
@@ -35,44 +40,27 @@ enum Verb {
     Close,
 }
 
-/// One flattened contour. `closed` is METADATA from the path's Close verb
-/// (Impeller's `EndContour(origin, with_close)`) — never inferred from point
-/// coincidence, so an open contour that happens to end at its start keeps
-/// its caps. Closed contours end with the start point repeated: the closing
-/// edge is part of the polyline (dashing and length walks see it); the
-/// stroker drops the duplicate and joins at the seam instead of capping.
+/// `Contour` is one path contour flattened into a polyline.
+///
+/// Closed contours repeat their first point at the end so measurement and
+/// dashing include the closing edge. Closure remains explicit metadata rather
+/// than being inferred from coincident endpoints.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Contour {
+    /// `points` contains the flattened polyline in traversal order.
     pub points: Vec<Point>,
+    /// `closed` indicates whether the source contour ended with `close`.
     pub closed: bool,
-    /// This contour was DRAWN, not merely positioned: some verb after the
-    /// opening `move_to` produced geometry.
+    /// `has_segments` distinguishes drawn zero-length contours from a lone move.
     ///
-    /// `close` counts. That is the subtle part, and it is deliberate: a
-    /// closepath emits the closing edge, so `move_to(p)` + `close()` is an
-    /// explicit zero-length SUBPATH and strokes exactly like `move_to(p)` +
-    /// `line_to(p)`. Only a bare `move_to` with nothing after it paints
-    /// nothing. Impeller frames it the same way — its `Close()` calls
-    /// `SegmentEncountered()` — and Skia converts move+close into a
-    /// zero-length line for every non-butt cap.
-    ///
-    /// Metadata from the path walk, for the same reason `closed` is: point
-    /// coincidence cannot answer it. All three of `move_to(p)`,
-    /// `move_to(p) line_to(p)` and `move_to(p) close()` reduce to the
-    /// identical single point, and the first strokes differently from the
-    /// other two — nothing under any cap, versus a circle under round caps
-    /// and a square under square caps (SVG 2 §13.4; Chrome agrees).
-    ///
-    /// Both references keep the same bit: Skia's `fSegmentCount`, which
-    /// `finishContour` requires to be positive before it emits anything, and
-    /// Impeller's `contour_has_segments_`, which gates `BeginContour`.
+    /// A close or explicit zero-length segment counts; a bare `move_to` does not.
     pub has_segments: bool,
 }
 
-/// An immutable path: verb + point arrays (SoA), built once via [`PathBuilder`],
-/// shared by `Arc` inside display-list ops (cloning a recorded list never copies
-/// point data). Flattening is the CALLER's move because tolerance depends on the
-/// device scale at draw time — a path has no scale of its own.
+/// `Path` is an immutable collection of line and Bézier contours.
+///
+/// Build paths with [`PathBuilder`]. Display lists retain shared [`Arc`] handles,
+/// so recording and nesting do not copy path data.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Path {
@@ -84,14 +72,12 @@ pub struct Path {
 }
 
 impl Path {
+    /// `bounds` returns conservative control-point bounds.
     pub fn bounds(&self) -> Rect {
         self.bounds
     }
 
-    /// Exact axis-aligned bounds of the path's lines and Bézier curves.
-    /// Recording uses the cheaper control-point bounds above; queries such as
-    /// Canvas text metrics use this slower extrema walk when tight ink bounds
-    /// are part of the API contract.
+    /// `tight_bounds` returns exact axis-aligned curve bounds.
     pub fn tight_bounds(&self) -> Rect {
         let mut bounds = TightBounds::default();
         let mut point_index = 0usize;
@@ -134,23 +120,20 @@ impl Path {
         bounds.rect()
     }
 
+    /// `is_empty` reports whether the path contains no commands.
     pub fn is_empty(&self) -> bool {
         self.verbs.is_empty()
     }
 
-    /// Heap footprint estimate (points dominate) — memory reports only.
+    /// `heap_bytes` returns an estimate of owned path storage.
     pub fn heap_bytes(&self) -> usize {
         self.points.len() * std::mem::size_of::<Point>() + self.verbs.len()
     }
 
-    /// Is `point` inside this path under `fill_rule`? The query runs on the
-    /// curves themselves rather than a flattened approximation, so the answer
-    /// does not drift with zoom. Every contour closes implicitly, matching how
-    /// fills are drawn, and a point exactly on the outline counts as inside.
+    /// `contains` reports whether a point lies inside the filled path.
     ///
-    /// "On the outline" is decided with the same ABSOLUTE tolerance Skia uses
-    /// (1/4096 of a unit), so on a path whose coordinates are tiny or enormous
-    /// that band is proportionally wider or narrower than it looks.
+    /// The query evaluates the original curves, implicitly closes open contours,
+    /// and treats points on the outline as inside.
     pub fn contains(&self, point: Point, fill_rule: FillRule) -> bool {
         if !self.bounds.contains_inclusive(point) {
             return false;
@@ -216,10 +199,9 @@ impl Path {
         crossings
     }
 
-    /// Measure each contour for arc length — Skia's `SkContourMeasure`.
-    /// Contours with no length (a lone point) are dropped, so every returned
-    /// measure can be sampled. `tolerance` is the flattening tolerance, and
-    /// bounds the measurement's accuracy with it.
+    /// `measure` returns an arc-length measurement for each nonempty contour.
+    ///
+    /// `tolerance` is the maximum flattening deviation in path coordinates.
     pub fn measure(&self, tolerance: f32) -> Vec<crate::ContourMeasure> {
         self.flatten(tolerance)
             .iter()
@@ -227,9 +209,11 @@ impl Path {
             .collect()
     }
 
-    /// Flatten to polygonal contours at `tolerance` (max deviation, in the
-    /// path's own units). Fills treat last→first as an implicit edge for
-    /// every contour; strokes branch on [`Contour::closed`].
+    /// `flatten` approximates curves with polygonal contours.
+    ///
+    /// `tolerance` is the maximum deviation in path coordinates. Fill
+    /// operations implicitly close every contour; stroke operations use
+    /// [`Contour::closed`].
     pub fn flatten(&self, tolerance: f32) -> Vec<Contour> {
         let mut out = Flattener::new(tolerance.max(1e-4));
         let mut i = 0usize;
@@ -356,7 +340,7 @@ fn unit_root(numerator: f64, denominator: f64) -> Option<f32> {
     (value.is_finite() && value > 0.0 && value < 1.0).then_some(value as f32)
 }
 
-/// Records verbs/points and tracks bounds; `build` freezes into an `Arc<Path>`.
+/// `PathBuilder` records commands used to create an immutable [`Path`].
 #[derive(Clone, Default)]
 pub struct PathBuilder {
     verbs: Vec<Verb>,
@@ -381,10 +365,12 @@ pub struct PathBuilder {
 }
 
 impl PathBuilder {
+    /// `new` creates an empty path builder.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// `move_to` starts a new contour at `p`.
     pub fn move_to(&mut self, p: impl Into<Point>) -> &mut Self {
         let p = p.into();
         self.verbs.push(Verb::Move);
@@ -394,6 +380,7 @@ impl PathBuilder {
         self
     }
 
+    /// `line_to` adds a straight segment to `p`.
     pub fn line_to(&mut self, p: impl Into<Point>) -> &mut Self {
         let p = p.into();
         self.ensure_contour(p);
@@ -402,6 +389,7 @@ impl PathBuilder {
         self
     }
 
+    /// `quad_to` adds a quadratic Bézier through control point `c` to `p`.
     pub fn quad_to(&mut self, c: impl Into<Point>, p: impl Into<Point>) -> &mut Self {
         let (c, p) = (c.into(), p.into());
         self.ensure_contour(c);
@@ -411,6 +399,7 @@ impl PathBuilder {
         self
     }
 
+    /// `cubic_to` adds a cubic Bézier through two control points to `p`.
     pub fn cubic_to(
         &mut self,
         c1: impl Into<Point>,
@@ -426,6 +415,9 @@ impl PathBuilder {
         self
     }
 
+    /// `close` adds a segment back to the current contour's starting point.
+    ///
+    /// It has no effect when no contour is open.
     pub fn close(&mut self) -> &mut Self {
         if self.contour_open {
             self.verbs.push(Verb::Close);
@@ -436,6 +428,7 @@ impl PathBuilder {
 
     // ── shape helpers (the common vocabulary) ──────────────────────────────
 
+    /// `rect` adds a closed rectangular contour.
     pub fn rect(&mut self, r: Rect) -> &mut Self {
         self.move_to((r.x, r.y))
             .line_to((r.right(), r.y))
@@ -449,21 +442,22 @@ impl PathBuilder {
         self
     }
 
-    /// Rounded rect with one radius for all corners (clamped to half-extent).
+    /// `rrect` adds a closed rounded rectangle with one corner radius.
     pub fn rrect(&mut self, r: Rect, radius: f32) -> &mut Self {
         self.rrect_radii(r, [radius; 4])
     }
 
-    /// Per-corner CIRCULAR radii, clockwise from top-left: `[tl, tr, br,
-    /// bl]` — the `rx == ry` case of [`Self::rrect_radii_elliptical`].
+    /// `rrect_radii` adds a rounded rectangle with circular corner radii.
+    ///
+    /// `radii` is ordered clockwise from the top-left.
     pub fn rrect_radii(&mut self, r: Rect, radii: [f32; 4]) -> &mut Self {
         self.rrect_radii_elliptical(r, radii.map(|radius| [radius; 2]))
     }
 
-    /// Per-corner ELLIPTICAL radii, clockwise from top-left: `[[rx, ry];
-    /// 4]` for `[tl, tr, br, bl]` — the full CSS/Flutter rounded-rect
-    /// (8 scalars). Radii are constrained together per axis (see
-    /// [`constrain_radii_elliptical`]).
+    /// `rrect_radii_elliptical` adds per-corner elliptical radii.
+    ///
+    /// Each corner is `[x_radius, y_radius]`, starting at the top-left. Radii
+    /// are proportionally reduced when adjacent corners would overlap.
     pub fn rrect_radii_elliptical(
         &mut self,
         r: impl Into<Rect>,
@@ -472,14 +466,10 @@ impl PathBuilder {
         self.rrect_radii_elliptical_wound(r, radii, Winding::Clockwise)
     }
 
-    /// The same rounded rectangle, traversed in a chosen direction.
+    /// `rrect_radii_elliptical_wound` adds a rounded rectangle with explicit winding.
     ///
-    /// Direction is not cosmetic: two overlapping contours with OPPOSITE
-    /// windings cancel under the non-zero fill rule, and dashing walks a
-    /// contour in order. Canvas2D's `roundRect` reaches this — it is
-    /// specified on SIGNED extents, and mismatched signs mean
-    /// counter-clockwise, so normalizing the box without carrying the
-    /// direction silently turns a subtractive rectangle into an additive one.
+    /// Opposing contours cancel under [`FillRule::NonZero`], and dashing follows
+    /// this traversal order.
     pub fn rrect_radii_elliptical_wound(
         &mut self,
         r: impl Into<Rect>,
@@ -548,10 +538,10 @@ impl PathBuilder {
         self
     }
 
-    /// Circular arc — Canvas2D's `arc`, the equal-radii case of
-    /// [`Self::ellipse`]. Angles are radians from the +x axis, and a
-    /// positive `sweep_angle` turns toward +y (clockwise on screen, since
-    /// valo is y-down).
+    /// `arc` adds a circular arc.
+    ///
+    /// Angles are radians clockwise from +x in Valo's y-down coordinates.
+    /// Sweeps are limited to one full turn.
     pub fn arc(
         &mut self,
         center: impl Into<Point>,
@@ -562,21 +552,14 @@ impl PathBuilder {
         self.ellipse(center, [radius; 2], 0.0, start_angle, sweep_angle)
     }
 
-    /// Elliptical arc — Canvas2D's `ellipse`. A negative radius draws
-    /// NOTHING (Canvas2D throws instead, and Skia takes the absolute value);
-    /// non-finite input is dropped the same way.
+    /// `ellipse` adds an elliptical arc.
     ///
-    /// The ellipse has half-extents
-    /// `radii`, is turned by `x_axis_rotation`, and is swept from
-    /// `start_angle` for `sweep_angle` radians. Canvas2D semantics: an open
-    /// contour is joined to the arc's first point by a straight line, and a
-    /// closed one starts there.
+    /// `radii` are the x and y half-extents, `x_axis_rotation` turns the
+    /// ellipse, and angles are radians clockwise from +x. An active contour is
+    /// connected to the arc's first point. Sweeps are limited to one full turn.
     ///
-    /// Each ≤90° piece is the classic k = 4/3·tan(Δ/4) cubic approximation —
-    /// the same construction [`Self::circle`] and the rounded-rect corners
-    /// already use. Skia represents arcs exactly, with conics; valo has only
-    /// quads and cubics, and the approximation's radial error tops out near
-    /// 2.7e-4 of the radius, under a tenth of a pixel below r ≈ 370.
+    /// Non-finite input is ignored. Negative radii trigger a debug assertion
+    /// and are ignored in release builds.
     pub fn ellipse(
         &mut self,
         center: impl Into<Point>,
@@ -637,12 +620,10 @@ impl PathBuilder {
         self
     }
 
-    /// Canvas2D's `arcTo`: the circle of `radius` tangent to both the segment
-    /// running from the current point to `corner` and the one running from
-    /// `corner` to `next`, reached by a straight line. Degenerate input —
-    /// zero OR NEGATIVE radius, coincident points, a straight-through corner —
-    /// falls back to a line to `corner`, as the spec requires. (Canvas2D
-    /// throws on a negative radius; valo never throws from a path builder.)
+    /// `arc_to` rounds the corner between the current point, `corner`, and `next`.
+    ///
+    /// Zero or negative radius, coincident points, and straight-through corners
+    /// fall back to a line ending at `corner`.
     pub fn arc_to(
         &mut self,
         corner: impl Into<Point>,
@@ -699,6 +680,7 @@ impl PathBuilder {
         self
     }
 
+    /// `circle` adds a closed circular contour.
     pub fn circle(&mut self, center: impl Into<Point>, radius: f32) -> &mut Self {
         let c = center.into();
         let (r, k) = (radius, radius * KAPPA);
@@ -710,11 +692,10 @@ impl PathBuilder {
             .close()
     }
 
-    /// Append a finished path, each point carried through `transform` —
-    /// Canvas2D's `Path2D.addPath` and SVG's `<use>`. Verbs are copied
-    /// verbatim: the source is already flat verb data, so nothing has to be
-    /// re-derived, and a shear that no arc verb could express is harmless
-    /// because arcs became cubics when the source was built.
+    /// `append` adds a transformed copy of another path.
+    ///
+    /// The appended path's final contour becomes the current contour for
+    /// subsequent commands.
     pub fn append(&mut self, path: &Path, transform: &Matrix) -> &mut Self {
         if path.verbs.is_empty() {
             // Appending nothing must change nothing — in particular it must
@@ -767,6 +748,7 @@ impl PathBuilder {
         self
     }
 
+    /// `build` consumes the builder and returns a shared immutable path.
     pub fn build(self) -> Arc<Path> {
         Arc::new(Path {
             verbs: self.verbs,
@@ -777,9 +759,9 @@ impl PathBuilder {
 
     // ── internals ──────────────────────────────────────────────────────────
 
-    /// Walk an arc as ≤90° cubic pieces, assuming the current point already
-    /// sits at its start. `map` carries the unit circle into place, so this
-    /// stays pure angle bookkeeping.
+    /// `push_arc_cubics` approximates an arc with cubic pieces of at most 90°.
+    ///
+    /// The current point must already be at the arc's start.
     fn push_arc_cubics(&mut self, map: &Matrix, start_angle: f32, sweep_angle: f32) {
         let piece_count = (sweep_angle.abs() / std::f32::consts::FRAC_PI_2)
             .ceil()
@@ -803,7 +785,7 @@ impl PathBuilder {
         }
     }
 
-    /// Guarantee an open contour before a segment is recorded.
+    /// `ensure_contour` guarantees an open contour before recording a segment.
     ///
     /// After a `close` the path resumes at the CLOSED contour's origin — the
     /// spec's "new subpath with the last point", and Skia's `ensureMove`.
@@ -836,17 +818,16 @@ impl PathBuilder {
     }
 }
 
-/// Circle-from-cubics constant (4/3·tan(π/8)).
+/// `KAPPA` is the cubic control ratio `4/3 × tan(π/8)` for a quarter circle.
 const KAPPA: f32 = 0.552_284_8;
 
-/// The point at `angle` on the unit circle.
+/// `unit_circle_point` returns the point at `angle` on the unit circle.
 fn unit_circle_point(angle: f32) -> Point {
     let (sine, cosine) = angle.sin_cos();
     Point::new(cosine, sine)
 }
 
-/// Maps the unit circle onto the ellipse at `center` with half-extents
-/// `radii`, turned by `rotation`.
+/// `unit_circle_map` creates the transform from a unit circle to an ellipse.
 fn unit_circle_map(center: Point, radii: [f32; 2], rotation: f32) -> Matrix {
     let [radius_x, radius_y] = radii;
     let (sine, cosine) = rotation.sin_cos();
@@ -860,9 +841,7 @@ fn unit_circle_map(center: Point, radii: [f32; 2], rotation: f32) -> Matrix {
     )
 }
 
-/// The sweep from `start` to `end` that turns in `direction`'s sense and
-/// stays under a full turn — an arc between two tangent points never needs
-/// the long way around.
+/// `shortest_sweep` returns the sub-turn sweep matching `direction`.
 fn shortest_sweep(start: f32, end: f32, direction: f32) -> f32 {
     let mut sweep = end - start;
     let turn = std::f32::consts::TAU;
@@ -875,23 +854,23 @@ fn shortest_sweep(start: f32, end: f32, direction: f32) -> f32 {
     sweep
 }
 
-/// A unit vector, or `None` when the input has no direction.
+/// `normalize` returns a unit vector or `None` when no finite direction exists.
 fn normalize(x: f64, y: f64) -> Option<(f64, f64)> {
     let length = (x * x + y * y).sqrt();
     (length.is_finite() && length > 0.0).then(|| (x / length, y / length))
 }
 
-/// Skia's radii rule: shrink ALL four corners by ONE factor until every
-/// adjacent pair fits its side — corners never overlap and the shape keeps
-/// its proportions. Order is clockwise from top-left: `[tl, tr, br, bl]`.
+/// `constrain_radii` proportionally reduces circular radii to fit a rectangle.
+///
+/// Radii are ordered clockwise from the top-left. Negative values become zero.
 pub fn constrain_radii(r: &Rect, radii: [f32; 4]) -> [f32; 4] {
     constrain_radii_elliptical(r, radii.map(|v| [v; 2])).map(|[x, _]| x)
 }
 
-/// The CSS/Skia overlap rule, per axis: each EDGE compares the two
-/// adjacent radii's component ALONG it (top edge: tl.x + tr.x vs width;
-/// right edge: tr.y + br.y vs height; …) and every radius scales by the
-/// smallest fit so neighbouring arcs never cross.
+/// `constrain_radii_elliptical` proportionally reduces elliptical radii to fit.
+///
+/// Corners are ordered clockwise from the top-left as `[x_radius, y_radius]`.
+/// Negative components become zero.
 pub fn constrain_radii_elliptical(r: &Rect, radii: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
     let [tl, tr, br, bl] = radii.map(|[x, y]| [x.max(0.0), y.max(0.0)]);
     let fit = |side: f32, a: f32, b: f32| if a + b <= side { 1.0 } else { side / (a + b) };
@@ -902,10 +881,7 @@ pub fn constrain_radii_elliptical(r: &Rect, radii: [[f32; 2]; 4]) -> [[f32; 2]; 
     [tl, tr, br, bl].map(|[x, y]| [x * f, y * f])
 }
 
-/// Curve → segments via Wang's formula (segment count from the second
-/// difference of control points — deviation shrinks quadratically), then
-/// uniform parameter steps. Deliberately approximate and cheap — the renderer's
-/// contour cache is what keeps repeat draws from re-flattening.
+/// `Flattener` approximates curves with uniformly parameterized line segments.
 struct Flattener {
     tolerance: f32,
     contours: Vec<Contour>,
@@ -985,7 +961,9 @@ impl Flattener {
         self.contours
     }
 
-    /// Keep EVERYTHING, even lone points — fills fan nothing from <3 points,
+    /// `flush` keeps every contour, even lone points.
+    ///
+    /// Fills fan nothing from <3 points,
     /// but the stroker draws 2-point lines and caps EXPLICIT zero-length
     /// subpaths. A move-only contour is kept too, carrying `has_segments:
     /// false` so the stroker can tell the two apart.
@@ -1028,8 +1006,7 @@ fn eval_cubic(p0: Point, c1: Point, c2: Point, p1: Point, t: f32) -> Point {
     )
 }
 
-/// Device-space flattening tolerance for a draw under `transform`: keep curve
-/// deviation under a quarter pixel wherever the content lands on screen.
+/// `local_tolerance` returns local curve tolerance for quarter-pixel device error.
 pub fn local_tolerance(transform: &Matrix) -> f32 {
     0.25 / transform.max_scale().max(1e-3)
 }

@@ -1,39 +1,38 @@
-//! The OS-installed fonts as a [`FontSource`] — the tier Skia
-//! gets from its platform font managers, kept out of valo-text so wasm
-//! builds never carry it. This crate only LOCATES and PARSES (fontdb:
-//! platform directories, .ttc face indices, memory-mapped bytes); the
-//! growth policy lives in [`FaceSet::grown_by`], so a
-//! platform-native source (CoreText/DirectWrite) can replace this one
-//! without touching policy. valo's own parser reads names and attrs from
-//! the face tables, so faces found here and faces registered from
-//! host-supplied bytes agree.
+//! Native system-font discovery for Valo.
+//!
+//! [`SystemFonts`] implements [`FontSource`] by scanning fonts installed on the
+//! operating system. Keeping discovery in this separate crate prevents
+//! `valo-text` and WebAssembly builds from acquiring platform filesystem code.
 
 use valo_text::{FaceSet, Font, FontAttrs, FontDemand, FontSource};
 
-/// A scan of the platform's installed fonts, held open for answering
-/// demands. Creating one is the expensive step (directory walk + name
-/// tables) — keep it, ideally created lazily on the first demand.
+/// `SystemFonts` is a reusable index of fonts installed on the operating system.
+///
+/// Creating it scans platform font directories and may block, so load it once
+/// and retain it as a [`FontSource`]. Returned [`Font`] values retain shared
+/// mappings of their font data.
 pub struct SystemFonts {
     database: fontdb::Database,
 }
 
 impl SystemFonts {
-    /// Scan the platform font directories.
+    /// `load` synchronously scans platform font directories.
     pub fn load() -> Self {
         let mut database = fontdb::Database::new();
         database.load_system_fonts();
         Self { database }
     }
 
-    /// Installed faces found by the scan (0 = nothing to answer with).
+    /// `face_count` returns the number of installed faces discovered by the scan.
     pub fn face_count(&self) -> usize {
         self.database.len()
     }
 
-    /// [`FaceSet::grown_by`] with this source — the out-of-band helper
-    /// for hosts answering a demand by hand. Live resolution needs none of
-    /// this: add the source to a `FontCollection` and it is consulted
-    /// mid-shape.
+    /// `satisfy` returns a face-set clone extended to answer a font demand.
+    ///
+    /// It returns `None` when no matching system font is found. For automatic
+    /// resolution during paragraph building, add `SystemFonts` directly to a
+    /// [`valo_text::FontCollection`] instead.
     pub fn satisfy(&mut self, faces: &FaceSet, demand: &FontDemand) -> Option<FaceSet> {
         faces.grown_by(self, demand)
     }

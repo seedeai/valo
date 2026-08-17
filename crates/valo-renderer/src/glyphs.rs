@@ -7,14 +7,16 @@ use valo_text::{Font, GlyphImage, GlyphStroke, Rasterizer};
 /// Skia's kMaxMultitexturePages: open pages up to this, then GC.
 const MAX_PAGES: usize = 4;
 
-/// The text tier thresholds (device px), Skia's defaults: direct masks below
-/// `sdf_min` (162, `kLargeDFFontLimit`), SDF up to `path_min` (324,
-/// `glyphsAsPathsFontSize`), outlines beyond. Skia's zoom-heavy mode
-/// (`kUseDeviceIndependentFonts`) is `sdf_min` ≈ 18–64: near raster-free
-/// zoom, softer small text — one knob, no separate mode.
+/// `TextTiers` selects the text rendering method by device-space font size.
+///
+/// Valo uses bitmap masks below `sdf_min`, SDF below `path_min`, and vector
+/// outlines at larger sizes. The defaults follow Skia's static text thresholds;
+/// zoom-heavy applications may lower `sdf_min` to reduce rerasterization.
 #[derive(Clone, Copy, Debug)]
 pub struct TextTiers {
+    /// `sdf_min` is the first device-pixel size rendered with SDF.
     pub sdf_min: f32,
+    /// `path_min` is the first device-pixel size rendered as vector outlines.
     pub path_min: f32,
 }
 

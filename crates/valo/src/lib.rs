@@ -18,8 +18,6 @@
 //! });
 //! # }
 //! ```
-//!
-//! Design principles and the memory model: see AGENTS.md.
 
 #![warn(missing_docs)]
 
@@ -50,8 +48,9 @@ pub use valo_renderer::{
 };
 pub use valo_text::{
     Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
-    FontId, FontSource, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
-    PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
+    FontId, FontSource, FontUid, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle,
+    PlacedRun, PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextDirection, TextStyle,
+    VariantCaps,
 };
 
 mod text;

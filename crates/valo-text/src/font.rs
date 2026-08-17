@@ -5,31 +5,31 @@ use skrifa::metrics::Metrics;
 use skrifa::prelude::Size;
 use skrifa::MetadataProvider;
 
-/// Index into a [`FontCollection`] — stable for the collection's lifetime.
+/// `FontId` identifies a registered font within a [`FaceSet`] or [`FontCollection`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FontId(pub u32);
+pub struct FontId(
+    /// The zero-based registration index.
+    pub u32,
+);
 
-/// Font file bytes however the host owns them: an owned buffer, or a
-/// memory-mapped file from a system-font source — faces only ever read.
+/// `FontData` is shared, immutable font-file storage supplied by the host.
+///
+/// It may wrap owned bytes or memory-mapped data and must remain readable for
+/// the lifetime of every [`Font`] created from it.
 pub type FontData = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
-/// One registered font: immutable bytes + the metrics every layout needs.
-/// Shaping (harfrust), outlines (skrifa), and raster (swash) all re-read
-/// the same bytes — no parsed state is shared across those seams.
-/// A variant's place in its family — CSS-style matching picks by these.
+/// `FontAttrs` describes a face's position within a font family.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FontAttrs {
-    /// CSS weight, 100–900.
+    /// `weight` is the CSS font weight, conventionally from 100 to 900.
     pub weight: u16,
+    /// `italic` indicates whether the face uses an italic or oblique style.
     pub italic: bool,
-    /// CSS `font-width` (legacy `font-stretch`) as a PERCENTAGE: 100 is
-    /// normal, 75 condensed, 125 expanded. A variable font's `wdth` named
-    /// instances register as separate variants and are matched on this, the
-    /// same way weight already picks among a family's faces.
+    /// `stretch` is the CSS font-width percentage, where 100 is normal.
     pub stretch: f32,
 }
 
-/// Neither condensed nor expanded — CSS `font-width: normal`.
+/// `NORMAL_STRETCH` is the CSS normal font-width percentage.
 pub const NORMAL_STRETCH: f32 = 100.0;
 
 impl Default for FontAttrs {
@@ -60,11 +60,15 @@ struct SharedFace {
     shaper_data: harfrust::ShaperData,
 }
 
-/// Stable raster identity of one font INSTANCE (glyph caches key on it:
-/// same uid = same outlines). Assigned at instance construction from a
-/// process counter — Skia's typeface uniqueID role.
+/// `FontUid` is the process-unique identity of one font instance.
+///
+/// Glyph caches may use it as a stable key because equal identifiers imply
+/// equal outlines and variation coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FontUid(pub u64);
+pub struct FontUid(
+    /// The process-unique numeric identity.
+    pub u64,
+);
 
 impl FontUid {
     fn next() -> FontUid {
@@ -74,6 +78,10 @@ impl FontUid {
     }
 }
 
+/// `Font` is one parsed font face or named variable-font instance.
+///
+/// It retains immutable source bytes and exposes the names, attributes,
+/// coverage, and metrics needed for shaping and rendering.
 pub struct Font {
     uid: FontUid,
     shared: Arc<SharedFace>,
@@ -175,19 +183,21 @@ impl Font {
         })
     }
 
-    /// The raw file bytes — possibly a whole .ttc collection; pair every
-    /// face view with [`Self::face_index`].
+    /// `data` returns the source font-file bytes.
+    ///
+    /// For a font collection file, use [`Self::face_index`] to select this face.
     pub fn data(&self) -> &[u8] {
         (*self.shared.data).as_ref()
     }
 
-    /// Which face of [`Self::data`] this font is.
+    /// `face_index` returns this face's index within [`Self::data`].
     pub fn face_index(&self) -> u32 {
         self.shared.face_index
     }
 
-    /// User-space variation coordinates ((axis tag, value)); empty for the
-    /// default instance and for static fonts.
+    /// `variation_coordinates` returns user-space axis tags and values.
+    ///
+    /// It is empty for static fonts and default variable-font instances.
     pub fn variation_coordinates(&self) -> &[([u8; 4], f32)] {
         &self.variation_coordinates
     }
@@ -200,69 +210,77 @@ impl Font {
         self.shaper_instance.as_ref()
     }
 
-    /// The instance's stable raster identity.
+    /// `uid` returns the process-unique identity of this font instance.
     pub fn uid(&self) -> FontUid {
         self.uid
     }
 
+    /// `family` returns the font's primary family name.
     pub fn family(&self) -> &str {
         &self.family
     }
 
+    /// `aliases` returns additional family names recognized for this font.
     pub fn aliases(&self) -> &[String] {
         &self.aliases
     }
 
-    /// Does this face answer to `name`? (its family or any alias —
-    /// ASCII-case-insensitively, the CSS and platform-manager behavior)
+    /// `matches` reports whether `name` matches the family or an alias.
+    ///
+    /// Matching is ASCII case-insensitive.
     pub fn matches(&self, name: &str) -> bool {
         self.family.eq_ignore_ascii_case(name)
             || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
     }
 
-    /// Register one more name for this face (no-op if already answered).
+    /// `add_alias` registers another family name if it is not already recognized.
     pub fn add_alias(&mut self, name: &str) {
         if !self.matches(name) {
             self.aliases.push(name.to_owned());
         }
     }
 
+    /// `attrs` returns the face-selection attributes of this font.
     pub fn attrs(&self) -> FontAttrs {
         self.attrs
     }
 
-    /// Ascent in px at `size` (positive, above the baseline).
+    /// `ascent_px` returns the positive distance above the baseline at `size`.
     pub fn ascent_px(&self, size: f32) -> f32 {
         self.ascent * size / self.units_per_em
     }
 
-    /// Descent in px at `size` (positive, below the baseline).
+    /// `descent_px` returns the positive distance below the baseline at `size`.
     pub fn descent_px(&self, size: f32) -> f32 {
         -self.descent * size / self.units_per_em
     }
 
-    /// Default line height in px at `size`.
+    /// `line_height_px` returns the font's default line height at `size`.
     pub fn line_height_px(&self, size: f32) -> f32 {
         (self.ascent - self.descent + self.line_gap) * size / self.units_per_em
     }
 
+    /// `units_per_em` returns the font's design-space units per em.
     pub fn units_per_em(&self) -> f32 {
         self.units_per_em
     }
 
-    /// The font-wide ink box at `size`, y-UP around the glyph origin:
-    /// (x_min, y_min, x_max, y_max). Any glyph's ink fits inside — the
-    /// cheap way to bound italic overhang and mark excursions per run.
+    /// `ink_box_px` returns the font-wide ink bounds at `size`.
+    ///
+    /// The tuple is `(x_min, y_min, x_max, y_max)` in y-up coordinates around
+    /// the glyph origin. It returns `None` when the font provides no bounds.
     pub fn ink_box_px(&self, size: f32) -> Option<(f32, f32, f32, f32)> {
         let k = size / self.units_per_em;
         self.bounds
             .map(|(x0, y0, x1, y1)| (x0 * k, y0 * k, x1 * k, y1 * k))
     }
 
+    /// `covers` reports whether the font maps a character to a glyph.
     pub fn covers(&self, ch: char) -> bool {
         self.shared.charmap.contains_key(&(ch as u32))
     }
 
+    /// `glyph_for` returns the glyph identifier mapped from a character.
     pub fn glyph_for(&self, ch: char) -> Option<u32> {
         self.shared.charmap.get(&(ch as u32)).copied()
     }
@@ -271,13 +289,18 @@ impl Font {
         &self.shared.shaper_data
     }
 
-    /// Underline (offset below baseline, thickness) in px at `size`, with
-    /// conventional fallbacks when the font omits the post-table values.
+    /// `underline_px` returns underline offset and thickness at `size`.
+    ///
+    /// The offset is positive below the baseline. Conventional values are used
+    /// when the font omits underline metrics.
     pub fn underline_px(&self, size: f32) -> (f32, f32) {
         self.decoration_px(self.underline, size, -0.1, 0.05)
     }
 
-    /// Strikeout (offset ABOVE baseline, thickness) in px at `size`.
+    /// `strikeout_px` returns strikeout offset and thickness at `size`.
+    ///
+    /// The offset is positive above the baseline. Conventional values are used
+    /// when the font omits strikeout metrics.
     pub fn strikeout_px(&self, size: f32) -> (f32, f32) {
         self.decoration_px(self.strikeout, size, 0.3, 0.05)
     }
@@ -300,21 +323,19 @@ impl Font {
     }
 }
 
-/// What shaping could not resolve — the host's font-loading demand signal
-/// (Flutter web's missing-font detection reshaped as an API).
-/// `families`: requested names the collection has NO face for at all.
-/// `codepoints`: chars NO present face covers, each with the attrs of the
-/// span that wanted it — a bold span's missing glyph should be answered
-/// with a bold face (for subset-chunk families this doubles as "which
-/// chunk is missing"). valo detects; the host owns the loading policy —
-/// Google, a mirror, bundled files, the OS, anything.
+/// `FontDemand` describes font requests that no registered face could satisfy.
+///
+/// Hosts can use it to load additional fonts and lay out affected text again.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FontDemand {
+    /// `families` lists requested family names with no registered match.
     pub families: Vec<String>,
+    /// `codepoints` lists uncovered characters and their requested attributes.
     pub codepoints: Vec<(char, FontAttrs)>,
 }
 
 impl FontDemand {
+    /// `is_empty` reports whether every font request was satisfied.
     pub fn is_empty(&self) -> bool {
         self.families.is_empty() && self.codepoints.is_empty()
     }
@@ -332,23 +353,23 @@ impl FontDemand {
     }
 }
 
-/// Somewhere fonts can come FROM when the collection lacks them — the
-/// pluggable half of the demand loop. Implementations only
-/// locate and parse (an installed-fonts scan today; a platform-native
-/// CoreText/DirectWrite lookup can replace it without touching policy);
-/// the growth policy itself lives in [`FaceSet::grown_by`].
+/// `FontSource` locates fonts that are not already registered.
+///
+/// A source may consult installed fonts, downloaded assets, or another
+/// host-owned repository. [`FontCollection`] consults sources in registration
+/// order.
 pub trait FontSource {
-    /// Every face answering to `name` (all weights and styles — the
-    /// collection's nearest-variant matching picks per span).
+    /// `family` returns every available face matching a family name.
     fn family(&mut self, name: &str) -> Vec<Font>;
 
-    /// One face covering `codepoint`, nearest to `attrs`.
+    /// `face_for_codepoint` returns a covering face nearest to `attrs`.
     fn face_for_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> Option<Font>;
 }
 
-/// The host's registered fonts: families for styles to name, plus a global
-/// fallback chain consulted per character. Immutable once built —
-/// register everything, then `Arc` it for builders and the renderer.
+/// `FaceSet` stores registered fonts and their global fallback order.
+///
+/// Cloning a face set shares parsed fonts, allowing callers to grow a snapshot
+/// without modifying existing holders.
 #[derive(Default, Clone)]
 pub struct FaceSet {
     /// `Arc` per face: adding a font clones N pointers, never re-parses
@@ -358,19 +379,21 @@ pub struct FaceSet {
 }
 
 impl FaceSet {
+    /// `new` creates an empty face set.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register font bytes under a family name (regular weight/style).
-    /// Returns `None` when the bytes don't parse as a font.
+    /// `register` adds font bytes under a family using default attributes.
+    ///
+    /// It returns `None` when face zero cannot be parsed.
     pub fn register(&mut self, family: &str, bytes: Vec<u8>) -> Option<FontId> {
         self.register_with(family, FontAttrs::default(), bytes)
     }
 
-    /// Register one variant of a family — `resolve` picks the nearest
-    /// weight with a matching style (CSS §5.2, simplified: style first,
-    /// then minimal weight distance, ties to the first registered).
+    /// `register_with` adds font bytes under a family with explicit attributes.
+    ///
+    /// It returns `None` when face zero cannot be parsed.
     pub fn register_with(
         &mut self,
         family: &str,
@@ -382,47 +405,43 @@ impl FaceSet {
         Some(self.add(font))
     }
 
-    /// Add an already-parsed [`Font`] under ITS OWN name/attrs — the
-    /// `SkTypeface` → `registerTypeface` shape.
+    /// `add` registers an already parsed font under its embedded names and attributes.
     pub fn add(&mut self, font: Font) -> FontId {
         self.fonts.push(Arc::new(font));
         FontId(self.fonts.len() as u32 - 1)
     }
 
-    /// A new collection = this one + `font`. Faces are shared by `Arc`, so
-    /// this is O(faces) pointer clones — no re-parsing, and every existing
-    /// holder of the old collection is untouched.
+    /// `with_font` returns a cloned face set containing one additional font.
+    ///
+    /// Existing fonts remain shared and are not reparsed.
     pub fn with_font(&self, font: Font) -> (FaceSet, FontId) {
         let mut next = self.clone();
         let id = next.add(font);
         (next, id)
     }
 
-    /// A new collection with the fallback chain REPLACED (order matters).
+    /// `with_fallbacks` returns a clone with its global fallback order replaced.
+    ///
+    /// Every identifier must belong to this face set.
     pub fn with_fallbacks(&self, fallbacks: Vec<FontId>) -> FaceSet {
         let mut next = self.clone();
         next.fallbacks = fallbacks;
         next
     }
 
-    /// Append to the global fallback chain (consulted after a style's own
-    /// families: nearest attrs among the faces covering the character,
-    /// ties in chain order).
+    /// `add_fallback` appends a registered font to the global fallback order.
+    ///
+    /// Requested families are searched before this chain. `id` must belong to
+    /// this face set.
     pub fn add_fallback(&mut self, id: FontId) {
         self.fallbacks.push(id);
     }
 
-    /// Grow this collection to answer `demand` from `source`: demanded
-    /// families register under their own names PLUS the demanded name as
-    /// an alias (a localized or differently-spelled request must match on
-    /// the next layout, or a loop around this call could demand forever);
-    /// codepoints still uncovered afterwards extend the fallback chain
-    /// with a face matching the demanding span's attrs. `Some(grown)`
-    /// only when something new was found — the caller's signal to
-    /// re-register the collection and lay out again.
-    /// Grow a COPY of this face set to answer `demand` from `source` — the
-    /// out-of-band path (a host that already knows what it wants). Live
-    /// resolution goes through [`FontCollection`], which owns its sources.
+    /// `grown_by` returns a clone extended with answers from a font source.
+    ///
+    /// Requested families are also registered under the requested name.
+    /// Uncovered codepoints add matching faces to the fallback chain. It returns
+    /// `None` when the source supplies nothing new.
     pub fn grown_by(&self, source: &mut dyn FontSource, demand: &FontDemand) -> Option<FaceSet> {
         let mut next = self.clone();
         let mut grew = false;
@@ -479,61 +498,75 @@ impl FaceSet {
         self.fonts.iter().any(|font| font.covers(codepoint))
     }
 
-    /// True until the first `add`/`register` — building paragraphs against
-    /// an empty collection is a contract violation (`resolve` asserts).
+    /// `is_empty` reports whether no fonts are registered.
     pub fn is_empty(&self) -> bool {
         self.fonts.is_empty()
     }
 
-    /// Faces registered so far. Ids are append-only, so a holder of an older
-    /// collection can name the faces added since: `old.len()..new.len()`.
+    /// `len` returns the number of registered fonts.
     pub fn len(&self) -> usize {
         self.fonts.len()
     }
 
-    /// The shared instance behind `id` — what glyph runs carry to the
-    /// renderer (Skia: blobs hold `sk_sp<SkTypeface>`).
+    /// `get_arc` returns a shared handle to a registered font.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not belong to this face set.
     pub fn get_arc(&self, id: FontId) -> Arc<Font> {
         self.fonts[id.0 as usize].clone()
     }
 
+    /// `get` returns a registered font by identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not belong to this face set.
     pub fn get(&self, id: FontId) -> &Font {
         &self.fonts[id.0 as usize]
     }
 
+    /// `family` returns the first registered font matching a family name or alias.
     pub fn family(&self, name: &str) -> Option<FontId> {
         let at = self.fonts.iter().position(|f| f.matches(name))?;
         Some(FontId(at as u32))
     }
 
-    /// Ids of EVERY face answering to `name`, in registration order. Subset
-    /// families (css2/cn-font-split unicode-range chunks) register many
-    /// faces under one name with disjoint coverage — a fallback chain built
-    /// from [`Self::family`] alone reaches only the first-loaded chunk, so
-    /// hosts expand fallback names with this.
+    /// `faces` iterates over every font matching a family name or alias.
+    ///
+    /// Results follow registration order and include separate subset faces.
     pub fn faces<'a>(&'a self, name: &'a str) -> impl Iterator<Item = FontId> + 'a {
         self.variants(name).map(|(id, _)| id)
     }
 
-    /// The family variant nearest `attrs`: matching style wins, then the
-    /// smallest weight distance (ties to the first registered).
+    /// `family_variant` returns the family face nearest to requested attributes.
+    ///
+    /// Width is matched first, then italic style and weight. Registration order
+    /// breaks ties.
     pub fn family_variant(&self, name: &str, attrs: FontAttrs) -> Option<FontId> {
         self.nearest(self.variants(name), attrs)
     }
 
-    /// The font that renders `ch` for a style: per requested family, the
-    /// nearest variant that COVERS `ch` — subset families (cn-font-split
-    /// chunks) carry one unicode range per face, so coverage must look past
-    /// the best-attrs face. Then the fallback chain, else the first
-    /// candidate.
+    /// `resolve` selects a font for a character and requested style.
+    ///
+    /// It searches requested families in order, then global fallbacks. If no
+    /// font covers the character, it returns a font suitable for rendering
+    /// `.notdef`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the face set is empty.
     pub fn resolve(&self, families: &[String], attrs: FontAttrs, ch: char) -> FontId {
         self.resolve_covered(families, attrs, ch).0
     }
 
-    /// [`Self::resolve`] plus whether ANYTHING actually covers `ch` — false
-    /// means the returned face will shape `.notdef`. The demand signal:
-    /// callers report uncovered chars to the host, which
-    /// decides where fonts come from — valo only detects.
+    /// `resolve_covered` selects a font and reports whether it covers the character.
+    ///
+    /// A `false` flag means the returned font will render `.notdef`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the face set is empty.
     pub fn resolve_covered(
         &self,
         families: &[String],
@@ -624,27 +657,27 @@ impl FaceSet {
 }
 
 impl Font {
-    /// Parse a font file into a queryable object: family and weight/style
-    /// come from the file's own tables (Skia's `SkTypeface::MakeFromData`
-    /// shape — parse once, inspect, then `FontCollection::add`). Every
-    /// localized family name becomes an alias (fontdb keeps them all —
-    /// documents reference `优设标题黑` as readily as `YouSheBiaoTiHei`).
+    /// `from_bytes` parses face zero from owned font-file bytes.
+    ///
+    /// Family names and attributes come from the font. Localized family names
+    /// become aliases. It returns `None` when the bytes cannot be parsed.
     pub fn from_bytes(bytes: Vec<u8>) -> Option<Font> {
         Self::from_data(Arc::new(bytes), 0)
     }
 
-    /// [`Self::from_bytes`] for shared or memory-mapped bytes and for
-    /// collection files: `face_index` picks the face inside a .ttc (0 for
-    /// single-face files).
+    /// `from_data` parses one face from shared font-file storage.
+    ///
+    /// Use face index zero for a single-face file. It returns `None` when the
+    /// index or font data is invalid.
     pub fn from_data(data: FontData, face_index: u32) -> Option<Font> {
         let data = unwrapped(data)?;
         Self::instance(data, face_index, Vec::new())
     }
 
-    /// Every face a file offers for registration: a static font is itself;
-    /// a variable font is its NAMED INSTANCES (fvar), each a [`Font`] with
-    /// the instance's attrs and coordinates — nearest-variant matching
-    /// then picks weights exactly like a static multi-weight family.
+    /// `instances_from_data` parses the registrable instances of one face.
+    ///
+    /// Static fonts produce one item. Variable fonts with named instances
+    /// produce one [`Font`] per instance. Invalid data returns an empty vector.
     pub fn instances_from_data(data: FontData, face_index: u32) -> Vec<Font> {
         let Some(data) = unwrapped(data) else {
             return Vec::new();
@@ -814,12 +847,10 @@ fn is_private_use(codepoint: char) -> bool {
     )
 }
 
-/// Faces plus the sources that can find more — Skia's `FontCollection`
-/// (skparagraph FontCollection.h: the asset/dynamic/default `SkFontMgr`s
-/// live INSIDE the collection, and `findTypefaces`/`defaultFallback` are
-/// its methods). Shaping consults this at every miss; what no source can
-/// answer accumulates as the [`demand`](Self::take_unanswered) a host
-/// fetches asynchronously (Flutter web's `_unprocessedCodePoints`).
+/// `FontCollection` owns registered faces and sources for resolving missing fonts.
+///
+/// Paragraph building consults sources in order and registers their answers.
+/// Unanswered requests accumulate until [`Self::take_unanswered`] is called.
 #[derive(Default)]
 pub struct FontCollection {
     faces: FaceSet,
@@ -831,66 +862,82 @@ pub struct FontCollection {
 }
 
 impl FontCollection {
+    /// `new` creates an empty collection with no font sources.
     pub fn new() -> FontCollection {
         FontCollection::default()
     }
 
-    /// The faces resolved so far — what a built paragraph snapshots.
+    /// `faces` returns the faces currently registered in the collection.
+    ///
+    /// A built paragraph clones this set and remains independent of later changes.
     pub fn faces(&self) -> &FaceSet {
         &self.faces
     }
 
-    /// Registers bytes under a family (Skia `registerTypeface`; Flutter
-    /// `FontLoader.load`). Host-facing: the other half of the async loop.
+    /// `register` adds font bytes under a family using default attributes.
+    ///
+    /// It returns `None` when face zero cannot be parsed.
     pub fn register(&mut self, family: &str, bytes: Vec<u8>) -> Option<FontId> {
         self.faces.register(family, bytes)
     }
 
+    /// `add` registers an already parsed font.
     pub fn add(&mut self, font: Font) -> FontId {
         self.faces.add(font)
     }
 
+    /// `add_fallback` appends a registered font to the global fallback order.
+    ///
+    /// `id` must belong to this collection.
     pub fn add_fallback(&mut self, id: FontId) {
         self.faces.add_fallback(id);
     }
 
+    /// `get` returns a registered font by identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not belong to this collection.
     pub fn get(&self, id: FontId) -> &Font {
         self.faces.get(id)
     }
 
+    /// `len` returns the number of registered fonts.
     pub fn len(&self) -> usize {
         self.faces.len()
     }
 
+    /// `family` returns the first font matching a family name or alias.
     pub fn family(&self, name: &str) -> Option<FontId> {
         self.faces.family(name)
     }
 
-    /// Adds a source consulted on a miss: the OS database, a downloader's
-    /// already-fetched cache, anything.
+    /// `add_source` appends a source consulted when registered fonts cannot satisfy a request.
     pub fn add_source(&mut self, source: impl FontSource + 'static) {
         self.sources.push(Box::new(source));
     }
 
-    /// [`add_source`](Self::add_source) for an already-boxed source — what
-    /// a platform hands the framework through a trait object.
+    /// `add_boxed_source` appends an already boxed font source.
     pub fn add_boxed_source(&mut self, source: Box<dyn FontSource>) {
         self.sources.push(source);
     }
 
+    /// `is_empty` reports whether no fonts are currently registered.
     pub fn is_empty(&self) -> bool {
         self.faces.is_empty()
     }
 
-    /// Replaces the faces with a set grown out of band (a host that
-    /// answered a demand itself — [`FaceSet::grown_by`]).
+    /// `adopt_faces` replaces the registered faces with a prepared set.
+    ///
+    /// This supports hosts that answer [`FontDemand`] using [`FaceSet::grown_by`].
     pub fn adopt_faces(&mut self, faces: FaceSet) {
         self.faces = faces;
     }
 
-    /// Takes the misses no source could answer — the host's cue to fetch
-    /// (and later [`register`](Self::register), which invalidates the text
-    /// that wanted them). Draining is the caller's; nothing here is async.
+    /// `take_unanswered` drains font requests that no source could satisfy.
+    ///
+    /// Hosts may load and [`Self::register`] matching fonts before rebuilding
+    /// affected paragraphs.
     pub fn take_unanswered(&mut self) -> FontDemand {
         std::mem::take(&mut self.unanswered)
     }

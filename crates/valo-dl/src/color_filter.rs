@@ -2,7 +2,7 @@ use valo_geometry::Color;
 
 use crate::paint::{BlendMode, ColorFilter};
 
-/// CPU color-filter evaluation, matching Impeller's straight-color boundary.
+/// `apply` evaluates a color filter against one straight-alpha color.
 pub(crate) fn apply(filter: ColorFilter, destination: Color) -> Color {
     match filter {
         ColorFilter::Matrix(matrix) => apply_matrix(&matrix, destination),
@@ -23,7 +23,7 @@ fn apply_matrix(matrix: &[f32; 20], color: Color) -> Color {
     Color::rgba(channel(0), channel(1), channel(2), channel(3))
 }
 
-/// Impeller's `Color::Blend`: Porter-Duff arithmetic is premultiplied.
+/// `blend` evaluates one blend mode using premultiplied Porter-Duff arithmetic.
 fn blend(destination: Color, source: Color, mode: BlendMode) -> Color {
     let destination_premultiplied = destination.premultiplied();
     let source_premultiplied = source.premultiplied();

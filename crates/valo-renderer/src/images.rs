@@ -3,15 +3,19 @@ use std::sync::Weak;
 
 use valo_dl::{BlendMode, ColorFilter, Filter, Image, ImageInner, MipmapMode, Sampling, TileMode};
 
-/// How pixels arrive at `upload`.
+/// `ImageDesc` describes an RGBA8 image upload.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageDesc {
+    /// `size` is the image dimensions in pixels.
     pub size: [u32; 2],
-    /// `false` = straight alpha: premultiplied on the CPU at the boundary
-    /// (Skia's kPremul convention — everything downstream assumes premul).
+    /// `premultiplied` indicates whether the supplied RGB channels already
+    /// contain alpha multiplication.
+    ///
+    /// When `false`, Valo premultiplies them during upload.
     pub premultiplied: bool,
-    /// Build a full mip chain (posters downscale constantly; mips are the
-    /// difference between shimmer and smooth).
+    /// `mips` controls whether Valo builds a full mip chain.
+    ///
+    /// Enable it when the image may be drawn smaller than its source size.
     pub mips: bool,
 }
 

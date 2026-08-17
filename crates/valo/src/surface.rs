@@ -2,9 +2,11 @@ use valo_dl::{DisplayList, DisplayListBuilder, Image};
 use valo_geometry::{Color, Rect};
 use valo_renderer::{RenderStats, RenderTarget};
 
-/// The raw `MTLDevice*` behind a wgpu device (macOS) — hand it to a
-/// `CAMetalLayer` so externally-owned drawable textures live on the same
-/// GPU device as the renderer. Borrowed: valid while the device lives.
+/// `metal_device_of` returns the raw `MTLDevice*` behind a wgpu device.
+///
+/// Use it to configure a `CAMetalLayer` whose textures Valo will render into.
+/// It returns `None` for non-Metal backends. The pointer is borrowed and
+/// remains valid while `device` lives.
 #[cfg(target_os = "macos")]
 pub fn metal_device_of(device: &wgpu::Device) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
     let hal_device = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }?;
@@ -12,28 +14,29 @@ pub fn metal_device_of(device: &wgpu::Device) -> Option<std::ptr::NonNull<std::f
     std::ptr::NonNull::new(raw.cast_mut().cast())
 }
 
-/// A caller-owned `MTLTexture` as a render target — the external-swapchain
-/// route: the embedder drives the drawable cycle (acquire → render →
-/// present), valo only draws. The `Offscreen` of foreign textures.
+/// `ExternalMetalTexture` wraps a caller-owned `MTLTexture` as a render target.
+///
+/// The embedder remains responsible for acquiring and presenting the texture.
 #[cfg(target_os = "macos")]
 pub struct ExternalMetalTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    /// The wrapped texture's pixel format, as the embedder created it.
+    /// `format` is the wrapped texture's pixel format.
     pub format: wgpu::TextureFormat,
-    /// The wrapped texture's dimensions in pixels.
+    /// `size` is the wrapped texture's dimensions in pixels.
     pub size: [u32; 2],
 }
 
 #[cfg(target_os = "macos")]
 impl ExternalMetalTexture {
-    /// Wrap a raw `MTLTexture*` as a render target. The texture needs copy
-    /// access for dst-reading blends and backdrops (a `CAMetalLayer`
-    /// drawable: `framebufferOnly = false`).
+    /// `wrap` creates a render target from a raw `MTLTexture*`.
+    ///
+    /// Destination-reading blends and backdrop filters require copy access.
+    /// For a `CAMetalLayer` drawable, set `framebufferOnly` to `false`.
     ///
     /// # Safety
-    /// `texture` must be a valid `MTLTexture*` of exactly `size` in
-    /// `format`, created on [`metal_device_of`]'s device.
+    /// `texture` must point to a texture of exactly `size` and `format` created
+    /// by the device returned from [`metal_device_of`].
     pub unsafe fn wrap(
         device: &wgpu::Device,
         texture: std::ptr::NonNull<std::ffi::c_void>,
@@ -58,8 +61,9 @@ impl ExternalMetalTexture {
         }
     }
 
-    /// A render target over the wrapped texture. `clear` of `None` draws
-    /// on top of whatever the embedder left there.
+    /// `target` creates a render target over the wrapped texture.
+    ///
+    /// Pass `None` to preserve the texture's existing pixels.
     pub fn target(&self, clear: Option<Color>) -> RenderTarget<'_> {
         RenderTarget {
             view: &self.view,
@@ -71,13 +75,14 @@ impl ExternalMetalTexture {
     }
 }
 
-/// A raw `MTLTexture*` as a wgpu texture (retained for the wrapper's
-/// lifetime) — the shared plumbing behind render targets and image
-/// imports. `usage` must stay within what the texture was created for.
+/// `wrap_metal_texture` wraps a raw `MTLTexture*` as a wgpu texture.
+///
+/// The returned texture retains the Metal texture. `usage` must not exceed
+/// the usages with which the original texture was created.
 ///
 /// # Safety
-/// `texture` must be a valid `MTLTexture*` of exactly `size` in `format`,
-/// created on [`metal_device_of`]'s device.
+/// `texture` must point to a texture of exactly `size` and `format` created by
+/// the device returned from [`metal_device_of`].
 #[cfg(target_os = "macos")]
 pub unsafe fn wrap_metal_texture(
     device: &wgpu::Device,
@@ -135,14 +140,11 @@ pub unsafe fn wrap_metal_texture(
     }
 }
 
-/// A presentable surface (native window now; the web `<canvas>` constructor joins
-/// in the platform milestone — wgpu's `SurfaceTarget` already speaks both, plan
-/// 001 "Platform integration"). Owns configuration and resize; each frame is
-/// `acquire → render → present`.
+/// `Surface` manages a presentable native window or browser canvas.
 ///
-/// Format choice: prefers a NON-sRGB view format so blending happens in sRGB
-/// space — the CSS/Skia-compatible look (linear blending is the deferred color
-/// decision).
+/// Render each frame by calling `acquire`, [`crate::Context::render`], and
+/// [`crate::Context::present`]. Valo selects a format that preserves its
+/// CSS/Skia-compatible sRGB blending.
 pub struct Surface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -150,8 +152,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Configure a swapchain over a window-like `target`. Picks a non-sRGB
-    /// surface format so blending stays in sRGB space.
+    /// `new` creates and configures a surface over a window or canvas.
     pub fn new(
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
@@ -163,12 +164,13 @@ impl Surface {
         Ok(Self::from_wgpu_surface(surface, adapter, device, size))
     }
 
-    /// [`Surface::new`] over a RAW platform target — the constructor for
-    /// embedders that hold native handles rather than window types (a
-    /// `CAMetalLayer*` from a C API, an `HWND`, …).
+    /// `new_unsafe` creates a surface from raw platform handles.
+    ///
+    /// Use it when the embedder owns handles such as a `CAMetalLayer*` or
+    /// `HWND` instead of a window object.
     ///
     /// # Safety
-    /// The raw handle must be valid and outlive this surface.
+    /// Every raw handle in `target` must remain valid for the surface's lifetime.
     pub unsafe fn new_unsafe(
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
@@ -180,13 +182,10 @@ impl Surface {
         Ok(Self::from_wgpu_surface(surface, adapter, device, size))
     }
 
-    /// [`Surface::new`] over a surface the embedder already created.
+    /// `from_wgpu_surface` configures an existing wgpu surface for Valo.
     ///
-    /// This ordering matters on wgpu's WebGL backend, where the adapter can
-    /// only be requested with a `compatible_surface` — the GL context lives
-    /// on the canvas, so the surface has to exist first. Also the shared tail
-    /// of the other constructors: picks a non-sRGB format (sRGB-space
-    /// blending, the CSS/Skia look) and configures.
+    /// This supports WebGL hosts that must create a canvas surface before
+    /// requesting a compatible adapter.
     pub fn from_wgpu_surface(
         surface: wgpu::Surface<'static>,
         adapter: &wgpu::Adapter,
@@ -229,26 +228,26 @@ impl Surface {
         }
     }
 
-    /// Reconfigure the swapchain after the window changed size.
+    /// `resize` reconfigures the surface after its window or canvas changes size.
     pub fn resize(&mut self, size: [u32; 2]) {
         self.config.width = size[0].max(1);
         self.config.height = size[1].max(1);
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// The configured swapchain size in pixels.
+    /// `size` returns the configured surface dimensions in pixels.
     pub fn size(&self) -> [u32; 2] {
         [self.config.width, self.config.height]
     }
 
-    /// The chosen swapchain format.
+    /// `format` returns the selected surface format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
-    /// Acquire the next swapchain frame. `Outdated`/`Lost` reconfigure and
-    /// retry once (the resize race); `None` means skip this frame (timeout /
-    /// occluded window).
+    /// `acquire` returns the next frame or `None` when this frame should be skipped.
+    ///
+    /// Lost or outdated surfaces are reconfigured and retried once.
     pub fn acquire(&mut self) -> Option<SurfaceFrame> {
         use wgpu::CurrentSurfaceTexture as C;
         for _ in 0..2 {
@@ -272,20 +271,21 @@ impl Surface {
     }
 }
 
-/// One acquired swapchain frame: make a [`RenderTarget`], render, `present`.
+/// `SurfaceFrame` is one acquired surface frame ready for rendering.
 pub struct SurfaceFrame {
     surface_texture: wgpu::SurfaceTexture,
     raw: wgpu::Texture,
     view: wgpu::TextureView,
-    /// This frame's pixel format (the surface's).
+    /// `format` is this frame's pixel format.
     pub format: wgpu::TextureFormat,
-    /// This frame's dimensions in pixels.
+    /// `size` is this frame's dimensions in pixels.
     pub size: [u32; 2],
 }
 
 impl SurfaceFrame {
-    /// A render target over this frame. `clear` of `None` preserves the
-    /// swapchain texture's existing contents.
+    /// `target` creates a render target over this frame.
+    ///
+    /// Pass `None` to preserve the frame's existing pixels.
     pub fn target(&self, clear: Option<Color>) -> RenderTarget<'_> {
         RenderTarget {
             view: &self.view,
@@ -296,31 +296,31 @@ impl SurfaceFrame {
         }
     }
 
-    /// Hand the frame to the compositor, consuming it. wgpu 30 moved
-    /// presentation onto the queue, so the caller passes the one it just
-    /// submitted with.
+    /// `present` hands the frame to the compositor and consumes it.
+    ///
+    /// Use the queue that submitted this frame's rendering commands.
     pub fn present(self, queue: &wgpu::Queue) {
         queue.present(self.surface_texture);
     }
 }
 
-/// An offscreen render target — headless tests, snapshots, and the high-res
-/// export path (render at N× then read back; no special machinery).
+/// `Offscreen` is a copyable render target that does not require a display.
+///
+/// Use it for headless rendering, snapshots, and image export.
 pub struct Offscreen {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    /// Always [`Offscreen::FORMAT`].
+    /// `format` is always [`Offscreen::FORMAT`].
     pub format: wgpu::TextureFormat,
-    /// The target's dimensions in pixels.
+    /// `size` is the target's dimensions in pixels.
     pub size: [u32; 2],
 }
 
 impl Offscreen {
-    /// The format offscreen targets always use — readback and the PNG
-    /// encoders downstream expect it.
+    /// `FORMAT` is the RGBA8 format used by every offscreen target.
     pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    /// Allocate an offscreen target of `size`, renderable and copyable.
+    /// `new` allocates a renderable and copyable offscreen target.
     pub fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("valo.offscreen"),
@@ -345,7 +345,7 @@ impl Offscreen {
         }
     }
 
-    /// A render target over this texture.
+    /// `target` creates a render target over the offscreen texture.
     pub fn target(&self, clear: Option<Color>) -> RenderTarget<'_> {
         RenderTarget {
             view: &self.view,
@@ -356,45 +356,20 @@ impl Offscreen {
         }
     }
 
-    /// The underlying texture, for read-back or further GPU work.
+    /// `texture` returns the underlying texture for readback or further GPU work.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
 }
 
-/// A canvas whose pixels PERSIST between frames, the way Canvas2D promises
-/// and a swapchain cannot deliver.
+/// `PersistentCanvas` retains pixels across incremental frames.
 ///
-/// A swapchain hands out a different texture every frame and guarantees
-/// nothing about what was in it, so a host that wants "what I drew last frame
-/// is still there" has to keep the pixels itself. The alternative — replaying
-/// every display list ever recorded — costs O(N²) over N incremental frames,
-/// which is exactly the workload an annotation or paint tool generates.
-///
-/// # Why two textures
-///
-/// A texture cannot be sampled and written in the same pass, and the restore
-/// samples last frame's pixels while the resolve writes this frame's. So the
-/// two swap roles every frame: `front` holds the authoritative pixels,
-/// `back` receives the resolve, and they exchange once the frame is drawn.
-///
-/// # Why the restore is a DRAW
-///
-/// Skia's Graphite loads a 1× resolve target back into a discardable MSAA
-/// attachment. Portable WebGPU has no such unresolve, so the prior pixels are
-/// re-established with a 1:1 image draw into the fresh 4× scratch instead.
-/// That keeps valo's ×4 MSAA and its final-segment discard intact — only
-/// these two 1-sample textures persist, never a 4× attachment.
-///
-/// The draw must stay EXACT. What makes it exact is the ALIGNMENT: `src` and
-/// `dst` are the same integer rectangle, so every destination pixel centre
-/// lands on its own texel centre and the round trip through an 8-bit UNORM
-/// attachment is lossless. `Nearest` is belt-and-braces — at perfect
-/// alignment a linear tap has weights 1 and 0 and is equally exact — so the
-/// thing to protect is the rectangle, not the filter. A sub-pixel offset or a
-/// scale here would compound every frame, forever, and surface months later
-/// as "the canvas looks soft".
+/// Unlike a swapchain, it preserves previous pixels while applying new display
+/// lists. This avoids replaying the full drawing history in paint, annotation,
+/// and other incremental applications.
 pub struct PersistentCanvas {
+    // Restoring prior pixels samples one texture while rendering into the
+    // other; WebGPU does not allow both roles on one texture in the same pass.
     front: Image,
     back: Image,
     size: [u32; 2],
@@ -404,8 +379,9 @@ pub struct PersistentCanvas {
 }
 
 impl PersistentCanvas {
-    /// Allocate a cleared pair at `size`. `format` should match the eventual
-    /// present target so the blit needs no format conversion.
+    /// `new` creates an empty persistent canvas.
+    ///
+    /// Use the eventual presentation target's `format` to avoid conversion.
     pub fn new(context: &mut crate::Context, size: [u32; 2], format: wgpu::TextureFormat) -> Self {
         let size = [size[0].max(1), size[1].max(1)];
         Self {
@@ -417,27 +393,19 @@ impl PersistentCanvas {
         }
     }
 
-    /// The canvas's dimensions in pixels.
+    /// `size` returns the canvas dimensions in pixels.
     pub fn size(&self) -> [u32; 2] {
         self.size
     }
 
-    /// The authoritative pixels: what a present blits and what a snapshot of
-    /// this canvas would sample.
+    /// `front` returns the image containing the current canvas pixels.
     pub fn front(&self) -> &Image {
         &self.front
     }
 
-    /// Copy the canvas 1:1 onto `target`, filling it exactly — how these
-    /// pixels reach a swapchain image.
+    /// `present_to` copies the current canvas pixels into a render target.
     ///
-    /// The copy is unavoidable rather than a shortcut. WebGPU has no way to
-    /// make an arbitrary texture the one the compositor presents, which is
-    /// precisely what Chrome does when it hands Viz a `SharedImage`. So this
-    /// is the price of portability, not a missing optimisation.
-    ///
-    /// Exact when `target` matches [`Self::size`] — same rectangle,
-    /// `Nearest`, `Src` — so presenting never resamples.
+    /// The copy is pixel-exact when the target matches [`Self::size`].
     pub fn present_to(&self, context: &mut crate::Context, target: &crate::RenderTarget) {
         let image = self.front();
         let source = Rect::new(0.0, 0.0, image.width(), image.height());
@@ -453,14 +421,10 @@ impl PersistentCanvas {
         context.render(&builder.build(), target);
     }
 
-    /// Draw `delta` onto the canvas.
+    /// `draw` applies a display list to the retained canvas pixels.
     ///
-    /// `clear` of `None` PRESERVES what is already there — the Canvas2D
-    /// default, and the case the restore draw exists for. `Some(colour)`
-    /// discards it instead, which is what a `reset`, a `beginFrame` or a
-    /// proven full-surface clear wants; skipping the restore there is the
-    /// analogue of Chrome dropping its copy-on-write when the new record
-    /// replaces everything.
+    /// Pass `None` to preserve previous pixels or `Some(color)` to replace
+    /// them before drawing.
     pub fn draw(
         &mut self,
         context: &mut crate::Context,
@@ -469,6 +433,8 @@ impl PersistentCanvas {
     ) -> RenderStats {
         let mut frame = DisplayListBuilder::new();
         if clear.is_none() && self.painted {
+            // WebGPU cannot unresolve prior pixels into the fresh MSAA target,
+            // so an aligned 1:1 draw restores them without resampling.
             frame.draw_image_rect(
                 &self.front,
                 self.whole(),
@@ -493,9 +459,7 @@ impl PersistentCanvas {
         stats
     }
 
-    /// Reallocate at a new size. The contents are NOT carried over: every
-    /// caller of this also repaints, and a resize that scaled the old pixels
-    /// would be the one place this design could smuggle in resampling.
+    /// `resize` reallocates the canvas and discards its contents.
     pub fn resize(&mut self, context: &mut crate::Context, size: [u32; 2]) {
         let size = [size[0].max(1), size[1].max(1)];
         if size == self.size {

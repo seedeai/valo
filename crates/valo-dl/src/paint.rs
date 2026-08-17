@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use valo_geometry::{Color, Matrix, Point, Rect, Stroke};
 
-/// Porter–Duff + advanced blend modes — the full Skia/Flutter vocabulary, declared
-/// up front so the recorded format never changes. The renderer implements the
-/// pipeline-blendable subset first (M1); the dst-reading advanced modes arrive with
-/// the pass-break machinery (M4) — until then they fall back to `SrcOver` with a
-/// debug warning, never a panic.
+/// `BlendMode` controls how source pixels combine with destination pixels.
+///
+/// [`BlendMode::SrcOver`] is the default. Advanced modes that read destination
+/// pixels may require an additional render-pass break and snapshot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlendMode {
@@ -26,7 +25,7 @@ pub enum BlendMode {
     Plus,
     Modulate,
     Screen,
-    // ── dst-reading "advanced" modes (need a target copy; M4) ──
+    // Destination-reading advanced modes require a target snapshot.
     Overlay,
     Darken,
     Lighten,
@@ -82,10 +81,8 @@ mod tests {
         assert_eq!(filter.padding(), [10.0, 9.0]);
     }
 
-    /// A rotation reaches further than any axis length reports: `max_scale`
-    /// is 1 for a pure rotation, so a scalar padding × max_scale bound would
-    /// leave a diagonal drop shadow short by 4.14 px and the combine pass
-    /// would cut the remainder away as transparent.
+    // A rotation reaches further than any axis length reports: `max_scale`
+    // is 1 for a pure rotation, so scalar padding would clip this shadow.
     #[test]
     fn device_padding_bounds_a_rotated_effect() {
         use valo_geometry::Matrix;
@@ -138,9 +135,8 @@ mod tests {
 }
 
 impl BlendMode {
-    /// Transparent source pixels may change destination pixels outside the
-    /// source ink. Impeller uses this to flood save-layer output coverage to
-    /// the active clip.
+    /// `is_destructive` reports whether transparent source pixels can change
+    /// destination pixels outside the source ink.
     pub fn is_destructive(self) -> bool {
         matches!(
             self,
@@ -156,7 +152,7 @@ impl BlendMode {
         )
     }
 
-    /// Expressible as fixed-function pipeline blending (no dst read).
+    /// `is_pipeline_blendable` reports whether fixed-function blending is sufficient.
     pub fn is_pipeline_blendable(self) -> bool {
         !matches!(
             self,
@@ -178,50 +174,55 @@ impl BlendMode {
     }
 }
 
-/// Where a mask blur shows relative to the sharp shape (Skia's SkBlurStyle).
+/// `BlurStyle` controls where blurred coverage appears relative to a shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlurStyle {
-    /// Blurred inside and outside — a shadow.
+    /// `Normal` blurs coverage inside and outside the shape.
     #[default]
     Normal,
-    /// Sharp inside, blurred outside — the shape sitting on its own glow.
+    /// `Solid` keeps a sharp interior and blurs outside.
     Solid,
-    /// Blurred inside, nothing outside — an inset/pressed look.
+    /// `Inner` blurs inside and leaves the exterior empty.
     Inner,
-    /// Nothing inside, blurred outside — a halo.
+    /// `Outer` blurs outside and leaves the interior empty.
     Outer,
 }
 
-/// Gaussian mask blur: σ in LOCAL units (rides the transform) plus a style.
-/// Solid-paint rects/rrects render it in closed form (one quad); everything
-/// else takes the layer + filter-pass route.
+/// `MaskBlur` applies a Gaussian blur to a draw's coverage mask.
+///
+/// Sigma is measured in local units and follows the draw's transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct MaskBlur {
+    /// `sigma` is the nonnegative Gaussian standard deviation in local units.
     pub sigma: f32,
+    /// `style` controls which side of the original coverage remains visible.
     pub style: BlurStyle,
 }
 
 impl MaskBlur {
+    /// `new` creates a normal mask blur.
     pub fn new(sigma: f32) -> Self {
         Self::styled(sigma, BlurStyle::Normal)
     }
 
+    /// `solid` creates a blur with a sharp interior.
     pub fn solid(sigma: f32) -> Self {
         Self::styled(sigma, BlurStyle::Solid)
     }
 
+    /// `inner` creates a blur visible only inside the shape.
     pub fn inner(sigma: f32) -> Self {
         Self::styled(sigma, BlurStyle::Inner)
     }
 
+    /// `outer` creates a blur visible only outside the shape.
     pub fn outer(sigma: f32) -> Self {
         Self::styled(sigma, BlurStyle::Outer)
     }
 
-    /// σ is clamped non-negative: a negative value would DEFLATE the
-    /// record-time bounds padding and wrongly cull the draw.
+    /// `styled` clamps sigma to keep effect bounds from shrinking.
     fn styled(sigma: f32, style: BlurStyle) -> Self {
         Self {
             sigma: sigma.max(0.0),
@@ -230,14 +231,15 @@ impl MaskBlur {
     }
 }
 
-/// A per-pixel colour transform over what a draw or layer produced —
-/// Flutter's `ColorFilter`, Skia's `SkColorFilter`. Applied BEFORE
-/// [`MaskBlur`], matching Impeller: the filter runs on the shape's own
-/// pixels and the blur spreads the filtered result.
+/// `ColorFilter` transforms the pixels produced by a draw or layer.
+///
+/// Color filters run before mask blur, so the blur spreads the filtered result.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ColorFilter {
-    /// Row-major 4×5 over UNPREMULTIPLIED colour in 0..1: each output
+    /// `Matrix` is a row-major 4×5 transform over straight color in 0..1.
+    ///
+    /// Each output
     /// channel is `row · [r, g, b, a, 1]`, clamped. Skia's `SkColorMatrix`
     /// convention.
     ///
@@ -247,62 +249,61 @@ pub enum ColorFilter {
     /// wrong still produces a plausible-looking image, which is why it is
     /// called out rather than absorbed.
     Matrix([f32; 20]),
-    /// Blend a constant colour AS THE SOURCE over what was drawn — Flutter's
-    /// `ColorFilter.mode`, the tint behind every coloured icon.
+    /// `Blend` composites a constant source color over each produced pixel.
     Blend(Color, BlendMode),
 }
 
 impl ColorFilter {
-    /// A solid paint's colour after this filter — the CPU fold that skips
-    /// the layer and the filter pass entirely (Impeller folds on the CPU
-    /// first for the same reason).
-    ///
-    /// `None` when the filter needs the drawn pixels as its destination, so
-    /// only the GPU can answer it.
+    /// `folded_into` applies this filter to one solid color on the CPU.
     pub fn folded_into(&self, color: Color) -> Option<Color> {
         Some(crate::color_filter::apply(*self, color))
     }
 
-    /// Whether this filter can turn an untouched transparent pixel into a
-    /// visible one. Layer coverage must include the full filter scope when
-    /// this is true (Flutter's `modifies_transparent_black`).
+    /// `modifies_transparent_black` reports whether this filter can create
+    /// visible output from a transparent input pixel.
     pub fn modifies_transparent_black(&self) -> bool {
         self.folded_into(Color::TRANSPARENT)
             .is_some_and(|color| color.a > 0.0)
     }
 }
 
-/// A post-raster image filter. Composition follows Flutter/Impeller naming:
-/// the inner filter runs first and its result becomes the outer filter's
-/// input.
+/// `ImageFilter` transforms a rasterized draw or layer.
+///
+/// In a composition, the inner filter runs first and feeds the outer filter.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ImageFilter {
-    /// Gaussian blur in local x/y units.
-    Blur { sigma_x: f32, sigma_y: f32 },
-    /// Run a color filter as a texture-stage image filter.
-    Color(ColorFilter),
-    /// The input composited over a blurred, recoloured, offset copy of its own
-    /// alpha — Skia's `SkImageFilters::DropShadow` and what CSS
-    /// `filter: drop-shadow()` lowers to. `offset` and the sigmas are in local
-    /// units and ride the effect transform, like every other filter here.
-    ///
-    /// The plain shadow, not `DropShadowOnly`: the source survives in the
-    /// output. A caller that wants only the shadow composes a colour filter.
-    DropShadow {
-        offset: Point,
+    /// `Blur` applies a Gaussian blur in local x and y units.
+    Blur {
+        /// `sigma_x` is the horizontal standard deviation.
         sigma_x: f32,
+        /// `sigma_y` is the vertical standard deviation.
         sigma_y: f32,
+    },
+    /// `Color` applies a color filter after rasterization.
+    Color(ColorFilter),
+    /// `DropShadow` composites the input over a blurred, colored copy of its alpha.
+    DropShadow {
+        /// `offset` moves the shadow in local coordinates.
+        offset: Point,
+        /// `sigma_x` is the horizontal standard deviation.
+        sigma_x: f32,
+        /// `sigma_y` is the vertical standard deviation.
+        sigma_y: f32,
+        /// `color` colors the shadow.
         color: Color,
     },
-    /// `outer(inner(input))`.
+    /// `Compose` applies `inner` and then `outer`.
     Compose {
+        /// `outer` receives the filtered result of `inner`.
         outer: Arc<ImageFilter>,
+        /// `inner` receives the original input.
         inner: Arc<ImageFilter>,
     },
 }
 
 impl ImageFilter {
+    /// `blur` creates a Gaussian image filter with nonnegative sigmas.
     pub fn blur(sigma_x: f32, sigma_y: f32) -> Self {
         Self::Blur {
             sigma_x: sigma_x.max(0.0),
@@ -310,10 +311,12 @@ impl ImageFilter {
         }
     }
 
+    /// `color` creates an image filter from a color filter.
     pub fn color(filter: ColorFilter) -> Self {
         Self::Color(filter)
     }
 
+    /// `compose` applies `inner` first and `outer` second.
     pub fn compose(outer: ImageFilter, inner: ImageFilter) -> Self {
         Self::Compose {
             outer: Arc::new(outer),
@@ -321,6 +324,7 @@ impl ImageFilter {
         }
     }
 
+    /// `drop_shadow` creates a shadow that retains the original input.
     pub fn drop_shadow(offset: Point, sigma_x: f32, sigma_y: f32, color: Color) -> Self {
         Self::DropShadow {
             offset,
@@ -330,12 +334,7 @@ impl ImageFilter {
         }
     }
 
-    /// Whether the chain leaves every pixel exactly as it found it. A
-    /// zero-sigma blur is the case that matters: Flutter rejects one outright,
-    /// and letting it through here would buy a layer and two full-size
-    /// resamples to reproduce the input.
-    ///
-    /// A colour filter is never a no-op — even an identity matrix clamps.
+    /// `is_nop` reports whether the filter leaves every input pixel unchanged.
     pub fn is_nop(&self) -> bool {
         match self {
             Self::Blur { sigma_x, sigma_y } => *sigma_x <= 0.0 && *sigma_y <= 0.0,
@@ -346,7 +345,7 @@ impl ImageFilter {
         }
     }
 
-    /// Conservative local-space x/y expansion required by the complete chain.
+    /// `padding` returns conservative local x and y expansion for this filter.
     pub fn padding(&self) -> [f32; 2] {
         match self {
             Self::Blur { sigma_x, sigma_y } => [(sigma_x * 3.0).ceil(), (sigma_y * 3.0).ceil()],
@@ -370,6 +369,8 @@ impl ImageFilter {
         }
     }
 
+    /// `modifies_transparent_black` reports whether this filter can create
+    /// visible output from a transparent input pixel.
     pub fn modifies_transparent_black(&self) -> bool {
         match self {
             Self::Blur { .. } => false,
@@ -384,31 +385,38 @@ impl ImageFilter {
     }
 }
 
-/// Fill the shape's interior, or stroke its outline.
+/// `PaintStyle` selects filled geometry or a stroked outline.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum PaintStyle {
+    /// `Fill` covers the geometry's interior.
     #[default]
     Fill,
+    /// `Stroke` draws the geometry's outline with the supplied stroke parameters.
     Stroke(Stroke),
 }
 
-/// How to fill what's drawn. Grows fields as features land — additions,
-/// never reshapes, so recorded lists stay stable.
+/// `Paint` describes how a drawing operation produces and composites pixels.
+///
+/// The default is an opaque black fill using [`BlendMode::SrcOver`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Paint {
+    /// `color` supplies solid-draw color and the alpha for shader or image draws.
+    ///
+    /// Shader and image draws ignore its RGB channels.
     pub color: Color,
+    /// `blend_mode` controls compositing with destination pixels.
     pub blend_mode: BlendMode,
-    /// Per-pixel color source (gradients). When set, `color` acts as an
-    /// opacity/tint multiplier — leave it WHITE for a plain gradient.
+    /// `shader` replaces the solid color with a per-pixel source.
     pub shader: Option<crate::Shader>,
-    /// Soft coverage for shadows, glows, and insets.
+    /// `mask_blur` softens the draw's coverage.
     pub mask_blur: Option<MaskBlur>,
-    /// Recolour what this paint produced, before any blur spreads it.
+    /// `color_filter` transforms produced colors before mask blur.
     pub color_filter: Option<ColorFilter>,
-    /// Texture-stage filter over the rasterized draw or save-layer result.
+    /// `image_filter` transforms the rasterized draw or layer.
     pub image_filter: Option<ImageFilter>,
+    /// `style` selects fill or stroke rendering.
     pub style: PaintStyle,
 }
 
@@ -427,6 +435,7 @@ impl Default for Paint {
 }
 
 impl Paint {
+    /// `from_color` creates a solid-color fill paint.
     pub fn from_color(color: Color) -> Self {
         Self {
             color,
@@ -434,6 +443,7 @@ impl Paint {
         }
     }
 
+    /// `from_shader` creates a fill paint using a per-pixel shader.
     pub fn from_shader(shader: crate::Shader) -> Self {
         Self {
             color: Color::WHITE,
@@ -442,8 +452,7 @@ impl Paint {
         }
     }
 
-    /// Fully transparent + `SrcOver` (or a negative-width stroke) draws
-    /// nothing — the recorder drops them.
+    /// `is_nop` reports whether this paint can produce no visible change.
     pub fn is_nop(&self) -> bool {
         let filter_keeps_transparent = self
             .color_filter
@@ -462,8 +471,7 @@ impl Paint {
         invisible || empty_stroke
     }
 
-    /// A plain-alpha composite (what an elidable saveLayer needs): SrcOver,
-    /// no shader — only `color.a` matters.
+    /// `is_opacity_only` reports whether this paint is only a SrcOver alpha.
     pub fn is_opacity_only(&self) -> bool {
         self.blend_mode == BlendMode::SrcOver
             && self.shader.is_none()
@@ -472,23 +480,17 @@ impl Paint {
             && self.effective_image_filter().is_none()
     }
 
-    /// The image filter only when it would actually change pixels. Every
-    /// decision about whether this paint needs a layer goes through here, so a
-    /// no-op filter never costs a target.
+    /// `effective_image_filter` returns the image filter when it changes pixels.
     pub fn effective_image_filter(&self) -> Option<&ImageFilter> {
         self.image_filter.as_ref().filter(|f| !f.is_nop())
     }
 
-    /// Record-time bounds padding: ±3σ holds >99.7% of a gaussian's spread.
-    /// (Inner style never spreads, but padding is conservative-correct.)
+    /// `mask_padding` returns conservative local padding for the mask blur.
     pub fn mask_padding(&self) -> f32 {
         self.mask_blur.map_or(0.0, |blur| (blur.sigma * 3.0).ceil())
     }
 
-    /// Padding for every raster-stage effect applied to this paint, in LOCAL
-    /// units and per axis. Callers working in local space (a draw's own effect
-    /// layer) can expand before mapping and are done; callers that already
-    /// hold device-space bounds want [`Self::device_effect_padding`].
+    /// `effect_padding_axes` returns local x and y padding for raster effects.
     pub fn effect_padding_axes(&self) -> [f32; 2] {
         let image = self
             .image_filter
@@ -498,20 +500,16 @@ impl Paint {
         [image[0] + mask, image[1] + mask]
     }
 
-    /// Padding for every raster-stage effect applied to this paint.
+    /// `effect_padding` returns the largest local-axis padding for raster effects.
     pub fn effect_padding(&self) -> f32 {
         let axes = self.effect_padding_axes();
         axes[0].max(axes[1])
     }
 
-    /// The same padding expressed in DEVICE pixels under `transform` — what a
-    /// scope whose bounds are already device-space has to expand by.
+    /// `device_effect_padding` returns effect padding in device pixels.
     ///
-    /// The local padding box is mapped through the transform's linear part,
-    /// which is the only thing that bounds a rotated or sheared effect.
-    /// `max(local padding) × max_scale` does not: a 45° rotation sends a
-    /// (10, 10) drop-shadow offset to 14.14 device px while `max_scale` stays
-    /// 1, and the combine pass cuts the missing 4.14 px away as transparent.
+    /// It maps both local padding axes through `transform`, preserving a
+    /// conservative bound under rotation and shear.
     pub fn device_effect_padding(&self, transform: &Matrix) -> f32 {
         let [x, y] = self.effect_padding_axes();
         if x <= 0.0 && y <= 0.0 {
@@ -525,9 +523,10 @@ impl Paint {
         device_x.max(device_y)
     }
 
-    /// Local bounds needed to evaluate this paint's post-raster effects.
-    /// Filters that create pixels from transparent black cover the eventual
-    /// clip rather than only the source ink.
+    /// `effect_bounds` returns local bounds required by this paint's effects.
+    ///
+    /// Filters that create visible pixels from transparency return unbounded
+    /// coverage for the caller to intersect with its active clip.
     pub fn effect_bounds(&self, bounds: Rect) -> Rect {
         let floods = self
             .color_filter
@@ -543,15 +542,14 @@ impl Paint {
         }
     }
 
-    /// Half the stroke width, times the miter's worst-case spike (and √2
-    /// for square-cap corners) — how far ink can reach past the geometry.
+    /// `stroke_padding` returns conservative stroke expansion at unit scale.
     pub fn stroke_padding(&self) -> f32 {
         self.stroke_padding_at_scale(1.0)
     }
 
-    /// Transform-aware stroke padding. The renderer floors every stroke to
-    /// one device pixel, so bounds must use that same effective width under
-    /// minification or a layer/cull edge can trim the widened geometry.
+    /// `stroke_padding_at_scale` returns stroke expansion at a device scale.
+    ///
+    /// Hairlines and minified strokes retain at least one device pixel.
     pub fn stroke_padding_at_scale(&self, scale: f32) -> f32 {
         match &self.style {
             PaintStyle::Fill => 0.0,

@@ -1,8 +1,6 @@
-//! The paragraph → display-list seam: valo-text lays out, valo-dl records
-//! plain `GlyphRun` ops (the font instance + positions — Skia's blob shape).
-//! Shadows lower to blurred offset copies UNDER the run (Flutter's
-//! TextStyle.shadows), decorations to rects from the font's own metrics
-//! (skparagraph's Decorations.cpp).
+//! Paragraph recording lowers the current layout into independent display-list
+//! operations. The list owns the resolved fonts, positions, and paints rather
+//! than retaining the paragraph, so later paragraph changes cannot mutate it.
 
 use std::sync::Arc;
 
@@ -10,18 +8,25 @@ use valo_dl::{DisplayListBuilder, GlyphPos, Paint};
 use valo_geometry::{Point, Rect};
 use valo_text::{DecorationKind, FaceSet, Line, Paragraph, PlacedRun};
 
-/// Record a laid-out paragraph at `origin` (its top-left corner).
+/// `DrawParagraphExt` adds paragraph recording to [`DisplayListBuilder`].
 pub trait DrawParagraphExt {
-    /// Record `paragraph` with its own per-span styles, `origin` being its
-    /// top-left corner.
+    /// `draw_paragraph` records the paragraph's current layout and span styles.
+    ///
+    /// The paragraph is lowered into glyph runs, shadows, and decorations at
+    /// its top-left `origin`. Later layout or style changes do not affect the
+    /// recorded display list.
     fn draw_paragraph(&mut self, paragraph: &Paragraph, origin: impl Into<Point>);
 }
 
-/// Paint every run with one explicit `Paint` — gradient-filled headlines,
-/// blend-mode text. Shadows/decorations still come from the styles.
+/// `DrawGlyphRunExt` adds paragraph recording with an explicit fill paint.
+///
+/// Use it for gradient or blended text. Shadows and decorations continue to
+/// use the paragraph's span styles.
 pub trait DrawGlyphRunExt {
-    /// Record `paragraph` with `paint` overriding every run's fill, `origin`
-    /// being its top-left corner.
+    /// `draw_paragraph_with` records the current layout with one fill paint.
+    ///
+    /// `paint` replaces every span's fill, while shadows and decorations retain
+    /// their span styles. Later paragraph changes do not affect the display list.
     fn draw_paragraph_with(
         &mut self,
         paragraph: &Paragraph,
@@ -67,7 +72,9 @@ impl DrawParagraphExt for DisplayListBuilder {
     }
 }
 
-/// Back-to-front blurred copies beneath the sharp run.
+/// `draw_shadows` records styled shadows beneath their source glyph run.
+///
+/// Recording them first preserves the paragraph's back-to-front shadow order.
 fn draw_shadows(b: &mut DisplayListBuilder, paragraph: &Paragraph, run: &PlacedRun, origin: Point) {
     for shadow in &run.shadows {
         let paint = Paint {
@@ -82,6 +89,10 @@ fn draw_shadows(b: &mut DisplayListBuilder, paragraph: &Paragraph, run: &PlacedR
     }
 }
 
+/// `draw_run` snapshots a placed glyph run into the display list.
+///
+/// It copies glyph positions and retains the resolved font so future paragraph
+/// layout cannot affect the recorded run.
 fn draw_run(
     b: &mut DisplayListBuilder,
     fonts: &FaceSet,
@@ -98,7 +109,7 @@ fn draw_run(
             y: g.y + origin.y,
         })
         .collect();
-    // INK bounds, not the advance box: the record-time oracle culls,
+    // Ink bounds, not the advance box: the record-time oracle culls,
     // sizes layers, and proves elision disjointness with these.
     let bounds = Rect::new(
         run.ink.x + origin.x,
@@ -115,8 +126,10 @@ fn draw_run(
     );
 }
 
-/// Underline / strike / overline as a rect over the run's x extent, placed
-/// by the font's decoration metrics (post/OS2 tables, y-up offsets).
+/// `draw_decoration` records a run's decoration as geometry.
+///
+/// Glyph runs contain no decoration data, so font metrics position the geometry
+/// against the resolved face and line baseline.
 fn draw_decoration(
     b: &mut DisplayListBuilder,
     paragraph: &Paragraph,

@@ -15,7 +15,7 @@ mod style;
 mod wrap;
 
 pub use font::{
-    FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId, FontSource,
+    FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId, FontSource, FontUid,
 };
 pub use paragraph::{
     Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PositionWithAffinity,

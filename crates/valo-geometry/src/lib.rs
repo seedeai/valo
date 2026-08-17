@@ -1,13 +1,8 @@
-//! Pure 2D math for valo: points, rects, affine transforms, color.
-//! Zero dependencies (serde optional) — usable anywhere, no GPU, no unicode.
+//! GPU-free geometry and color types for Valo.
 //!
-//! Conventions (fixed across all of valo):
-//! - y-down, origin top-left, units are logical pixels until a transform says otherwise.
-//! - The public transform is a full 4×4 (glam-backed); the renderer folds depth in (
-//!   is a renderer concern — clips consume z, the user never sees it).
-//! - `Color` is straight (unpremultiplied) sRGB; premultiplication happens at the GPU
-//!   boundary. Blending is performed in sRGB space (the CSS/Skia-compatible look) —
-//!   linear/wide-gamut blending is deliberately deferred.
+//! Coordinates are y-down with the origin at the top-left. Units are logical
+//! pixels until transformed. [`Matrix`] is a full 4×4 transform, while draw
+//! ordering remains a renderer concern. [`Color`] stores straight-alpha sRGB.
 
 mod color;
 mod matrix;

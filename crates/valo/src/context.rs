@@ -2,19 +2,17 @@ use valo_dl::{BlendMode, DisplayList, Filter, Image, MipmapMode, Paint, Sampling
 use valo_geometry::Color;
 use valo_renderer::{ImageDesc, MemoryReport, RenderStats, RenderTarget, RendererCore};
 
-/// One per `wgpu::Device`: owns every GPU-side cache (pipelines, per-frame
-/// arenas — later: atlases, render-target pool, image registry). Stateless with
-/// respect to content; `&mut self` renders one frame at a time, no internal
-/// locks. `wgpu::Device`/`Queue` are internally refcounted, so hosts keep their
-/// own clones freely.
+/// Context renders display lists on a host-owned wgpu device.
+///
+/// Create one context per device. The host may freely retain clones of the
+/// device and queue handles.
 pub struct Context {
     renderer: RendererCore,
     queue: wgpu::Queue,
 }
 
 impl Context {
-    /// Build a context on a host-owned device and queue. Both are cloned
-    /// (wgpu handles are `Arc`s), so the host keeps using its own.
+    /// `new` creates a context from a host-owned device and queue.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         Self {
             renderer: RendererCore::new(device, queue.clone()),
@@ -22,94 +20,93 @@ impl Context {
         }
     }
 
-    /// Replay `dl` into `target`. Submits exactly one command buffer.
-    /// What valo holds between frames — per-pool counts and byte estimates
-    /// plus wgpu's own counters (the `counters` feature). The debug-HUD API.
+    /// `memory_report` returns resource counts and estimated GPU memory usage.
+    ///
+    /// The `counters` feature adds the counters reported by wgpu.
     pub fn memory_report(&self) -> MemoryReport {
         self.renderer.memory_report()
     }
 
-    /// Replay `dl` into `target`, returning this frame's stats. Submits
-    /// exactly one command buffer.
+    /// `render` draws a display list into a target and returns frame statistics.
+    ///
+    /// Each call submits one command buffer.
     pub fn render(&mut self, dl: &DisplayList, target: &RenderTarget) -> RenderStats {
         self.renderer.render(dl, target)
     }
 
-    /// Register the fonts glyph runs rasterize through (once, after the
-    /// Skip `.notdef` in every text tier so unresolved chars render blank
-    /// instead of tofu boxes — OPT-IN; the default draws the box, like
-    /// Skia. Pair with [`valo_text::FontDemand`] reporting so hidden
-    /// misses surface through the API instead of pixels.
+    /// `set_hide_missing_glyphs` controls whether unresolved characters render blank.
+    ///
+    /// By default, unresolved characters render the font's `.notdef` glyph,
+    /// usually a "tofu" box. This is common when CJK fallback fonts are missing.
+    /// Use [`crate::FontDemand`] to detect characters hidden by this option.
     pub fn set_hide_missing_glyphs(&mut self, hide: bool) {
         self.renderer.set_hide_missing_glyphs(hide);
     }
 
-    /// The registered collection (`None` before `set_fonts`) — overlays
-    /// Text tier thresholds (device px): masks < `sdf_min` ≤ SDF <
-    /// `path_min` ≤ outlines. Defaults are Skia's; lower `sdf_min` toward
-    /// ~18–64 for Skia's zoom-heavy trade (fewer rasters, softer small text).
+    /// `set_text_tiers` controls how text is rendered across font-size ranges.
+    ///
+    /// Valo uses bitmap masks below `sdf_min`, SDF below `path_min`, and
+    /// outlines above it. The defaults suit normal use; override them only for
+    /// specialized scaling or zoom behavior.
     pub fn set_text_tiers(&mut self, tiers: valo_renderer::TextTiers) {
         self.renderer.set_text_tiers(tiers);
     }
 
-    /// Gesture switch, OPT-IN (default off — every raster stays eager):
-    /// while held, an SDF glyph missing at the wanted size draws through
-    /// its nearest resident size, scaled (soft, like mid-pinch Chrome),
-    /// instead of rasterizing; glyphs with no resident size still raster.
-    /// The HOST owns the timing: hold while camera input streams, clear on
-    /// idle and re-render — valo keeps no clocks. `RenderStats::
-    /// held_rasters` counts the skips (nonzero at idle = a stuck hold).
+    /// `set_text_raster_hold` allows existing text rasters to stand in for missing sizes.
+    ///
+    /// This applies to bitmap-mask and SDF text, not vector outlines. It is
+    /// useful during rapid zooming: enable it while the gesture is active and
+    /// clear it afterward so the next frame renders sharply.
     pub fn set_text_raster_hold(&mut self, held: bool) {
         self.renderer.set_text_raster_hold(held);
     }
 
-    /// A camera gesture is in flight: the list raster cache reuses existing
-    /// textures at any scale instead of refilling; clear on settle
-    /// (pairs with [`Self::set_text_raster_hold`]).
+    /// `set_raster_hold` allows cached display-list textures to be reused at any scale.
+    ///
+    /// This is useful during rapid zooming: enable it when the gesture starts
+    /// and clear it when the view settles so caches refill at the final scale.
     pub fn set_raster_hold(&mut self, held: bool) {
         self.renderer.set_raster_hold(held);
     }
 
-    /// The device this context renders on.
-    ///
-    /// Public because [`Self::import_image`] is: a host cannot hand over a
-    /// texture it has no device to create.
+    /// `device` returns the device used by this context.
     pub fn device(&self) -> &wgpu::Device {
         self.renderer.device()
     }
 
-    // Export-only accessor; the readback path doesn't exist on wasm.
-
+    // Native readback needs the queue; wasm has no blocking readback path.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn queue_handle(&self) -> wgpu::Queue {
         self.queue.clone()
     }
 
-    /// Hand a rendered frame to the compositor. Presentation moved onto the
-    /// queue in wgpu 30, and the queue is the context's business rather than
-    /// the caller's, so it lives here instead of on [`SurfaceFrame`].
+    /// `present` hands a rendered surface frame to the compositor.
     pub fn present(&self, frame: crate::SurfaceFrame) {
         frame.present(&self.queue);
     }
 
-    /// RGBA8 pixels → retained [`Image`]: premultiplied at the boundary,
-    /// full mip chain rendered on the GPU (posters downscale constantly).
-    /// Dropping the returned handle is the whole lifetime story.
+    /// `upload_image` uploads RGBA8 pixels and returns a retained [`Image`].
+    ///
+    /// Alpha conversion and mip generation follow the supplied [`ImageDesc`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pixels` does not contain exactly four bytes per pixel.
     pub fn upload_image(&mut self, desc: ImageDesc, pixels: &[u8]) -> Image {
         self.renderer.images().upload(desc, pixels)
     }
 
-    /// An externally-rendered texture as a drawable [`Image`], zero-copy —
-    /// the native sibling of the web `ImageBitmap` path. No mips: sources
-    /// that re-render per frame would only throw them away.
+    /// `import_image` wraps an existing texture as an [`Image`] without copying it.
+    ///
+    /// Imported images have one mip level.
     pub fn import_image(&mut self, texture: wgpu::Texture, size: [u32; 2]) -> Image {
         self.renderer.images().finish_external(texture, size, 1)
     }
 
-    /// Web: let the BROWSER decode. Copies an `ImageBitmap` straight into a
-    /// texture (`copy_external_image_to_texture` — off-main-thread decode,
-    /// no wasm-side pixel copy), then builds mips like any upload.
-    /// The bitmap should be premultiplied (createImageBitmap default).
+    /// `upload_image_bitmap` uploads a browser-decoded `ImageBitmap`.
+    ///
+    /// Pixels are copied directly into a retained [`Image`] without passing
+    /// through WebAssembly memory. Set `mips` when the image will be downscaled.
     #[cfg(target_arch = "wasm32")]
     pub fn upload_image_bitmap(&mut self, bitmap: &web_sys::ImageBitmap, mips: bool) -> Image {
         let size = [bitmap.width(), bitmap.height()];
@@ -120,13 +117,11 @@ impl Context {
         )
     }
 
-    /// Any WebGPU-copyable DOM source — `<img>`, `<canvas>`, `<video>`,
-    /// `ImageBitmap`, `OffscreenCanvas`, `ImageData` — into a fresh [`Image`].
+    /// `upload_external_image` uploads a WebGPU-copyable DOM source.
     ///
-    /// The copy is SYNCHRONOUS, which is what lets a Canvas2D `drawImage`
-    /// shim exist at all. The caller owns the source's readiness: an
-    /// undecoded `<img>` makes this throw, where Canvas2D silently draws
-    /// nothing.
+    /// Supported sources include `<img>`, `<canvas>`, `<video>`, `ImageBitmap`,
+    /// `OffscreenCanvas`, and `ImageData`. The source must be ready when called;
+    /// unlike Canvas2D, an undecoded image is not silently ignored.
     #[cfg(target_arch = "wasm32")]
     pub fn upload_external_image(
         &mut self,
@@ -137,10 +132,10 @@ impl Context {
         self.upload_external_image_region(source, [0, 0], size, mips)
     }
 
-    /// The same, reading only `size` pixels starting at `origin` in the
-    /// source. `putImageData` with a dirty rectangle needs this: without it a
-    /// one-pixel update to a 4K `ImageData` would copy every one of its
-    /// ~32 MiB and retain a full-size texture to sample one texel from.
+    /// `upload_external_image_region` uploads a rectangular region of a DOM source.
+    ///
+    /// `origin` is the region's top-left source coordinate, and `size`
+    /// determines both the copied region and the returned image dimensions.
     #[cfg(target_arch = "wasm32")]
     pub fn upload_external_image_region(
         &mut self,
@@ -164,14 +159,11 @@ impl Context {
             .finish_external(texture, size, mip_levels)
     }
 
-    /// Re-copy a changed source into an image that already exists. A
-    /// `<video>` produces a new frame every tick, and minting a new [`Image`]
-    /// each time would throw away the renderer's per-image bind-group cache
-    /// and leave a texture per frame for the pool to reclaim. Same handle,
-    /// same bind group, new pixels.
+    /// `refresh_external_image` replaces the pixels of an existing [`Image`].
     ///
-    /// `false` when the source no longer matches the image's dimensions —
-    /// the caller has to upload afresh.
+    /// Use it for changing sources such as canvas or video frames to preserve
+    /// the image handle and its caches. It returns `false` without copying when
+    /// `size` differs from the existing image dimensions.
     #[cfg(target_arch = "wasm32")]
     pub fn refresh_external_image(
         &mut self,
@@ -221,9 +213,10 @@ fn copy_external_image(
     );
 }
 
-/// Nearest, clamped, no mips. ALIGNMENT is what makes a 1:1 image draw exact
-/// (see [`crate::PersistentCanvas`]); this only removes the remaining ways to
-/// be wrong.
+/// `EXACT_SAMPLING` preserves source texels during 1:1 canvas copies.
+///
+/// [`crate::PersistentCanvas`] provides pixel alignment; nearest filtering,
+/// clamping, and disabled mipmaps prevent sampling from altering the copy.
 pub(crate) const EXACT_SAMPLING: Sampling = Sampling {
     filter: Filter::Nearest,
     mipmap: MipmapMode::None,
@@ -231,11 +224,10 @@ pub(crate) const EXACT_SAMPLING: Sampling = Sampling {
     tile_y: TileMode::Clamp,
 };
 
-/// White at full alpha, `Src`. `fs_image` multiplies the sample by the paint
-/// colour, so anything darker would tint the copy — and `Paint::default()` is
-/// BLACK, which would copy a black rectangle. `Src` REPLACES rather than
-/// composites, so a translucent canvas keeps its own alpha instead of
-/// accumulating it.
+/// `copy_paint` creates an untinted replacement paint for image copies.
+///
+/// `fs_image` multiplies samples by the paint color, so the default black would
+/// erase the image. `Src` replaces the destination without accumulating alpha.
 pub(crate) fn copy_paint() -> Paint {
     Paint {
         color: Color::WHITE,

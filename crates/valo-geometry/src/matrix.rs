@@ -1,56 +1,52 @@
 use crate::{Point, Rect};
 
-/// Full 4×4 column-major transform (glam-backed — the byte layout Flutter
-/// and Impeller use).
+/// `Matrix` is a full 4×4 column-major transform.
 ///
-/// Canvas semantics throughout valo: the current transform maps LOCAL
-/// (drawn) coordinates to the list's ROOT space, and `then(local)` appends
-/// a transform that applies to subsequently drawn geometry FIRST — i.e.
-/// `current ∘ local`, matrix product `current × local`. Same convention as
-/// Skia/Impeller's transform stack.
-///
-/// 2D content maps as (x, y, 0, 1): the w row does perspective (the
-/// hardware divide, with perspective-correct interpolation); the z output
-/// is IGNORED for painting — valo writes its own per-draw depth (2.5D,
-/// Flutter's model).
+/// Valo maps two-dimensional input as `(x, y, 0, 1)`, including perspective
+/// division. The renderer ignores transformed z for draw ordering.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Matrix(glam::Mat4);
 
-/// What the fast paths may assume about a matrix — computed when the
-/// transform stack changes, consulted per draw.
+/// `MatrixKind` classifies the behavior relevant to two-dimensional rendering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatrixKind {
-    /// Positive scale + translation only: device-snapped glyphs, scissor
-    /// clips, and analytic blur stay exact.
+    /// `AxisAligned` contains only positive scale and translation.
     AxisAligned,
-    /// Any other affine (rotation, shear, flips).
+    /// `Affine` includes rotation, shear, or reflection without perspective.
     Affine,
-    /// A live perspective row: conservative bounds, approximate scales.
+    /// `General` includes perspective.
     General,
 }
 
-/// Below this w a projected corner counts as at/behind the eye plane —
-/// bounds go conservative instead of exploding across the flip.
+/// `W_EPSILON` keeps points at the eye plane from producing unbounded values.
 const W_EPSILON: f32 = 1e-6;
 
 impl Matrix {
+    /// `IDENTITY` leaves coordinates unchanged.
     pub const IDENTITY: Matrix = Matrix(glam::Mat4::IDENTITY);
 
+    /// `translation` creates a two-dimensional translation.
     pub fn translation(tx: f32, ty: f32) -> Self {
         Matrix(glam::Mat4::from_translation(glam::Vec3::new(tx, ty, 0.0)))
     }
 
+    /// `scale` creates a two-dimensional scale.
     pub fn scale(sx: f32, sy: f32) -> Self {
         Matrix(glam::Mat4::from_scale(glam::Vec3::new(sx, sy, 1.0)))
     }
 
+    /// `rotation` creates a rotation around the origin.
+    ///
+    /// Positive angles rotate clockwise in Valo's y-down coordinate system.
     pub fn rotation(radians: f32) -> Self {
         Matrix(glam::Mat4::from_rotation_z(radians))
     }
 
-    /// The classic 2×3 affine (column vectors (a,b), (c,d), translation).
+    /// `from_affine` creates a matrix from `[a, b, c, d, tx, ty]`.
+    ///
+    /// The linear columns are `(a, b)` and `(c, d)`.
     pub fn from_affine(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> Self {
         Matrix(glam::Mat4::from_cols_array(&[
             a, b, 0.0, 0.0, //
@@ -60,32 +56,35 @@ impl Matrix {
         ]))
     }
 
-    /// The 16 column-major floats Flutter-architecture hosts hand a canvas.
+    /// `from_flutter_array` creates a matrix from 16 column-major Flutter values.
     pub fn from_flutter_array(values: &[f32; 16]) -> Self {
         Matrix(glam::Mat4::from_cols_array(values))
     }
 
+    /// `to_flutter_array` returns 16 column-major Flutter values.
     pub fn to_flutter_array(&self) -> [f32; 16] {
         self.0.to_cols_array()
     }
 
-    /// The backing matrix, for MVP assembly.
+    /// `to_mat4` returns the backing glam matrix.
     pub fn to_mat4(self) -> glam::Mat4 {
         self.0
     }
 
-    /// `self ∘ other`: apply `other` first, then `self` (product self × other).
+    /// `then` composes this matrix with `other`.
+    ///
+    /// The result applies `other` first and this matrix second.
     pub fn then(&self, other: &Matrix) -> Matrix {
         Matrix(self.0 * other.0)
     }
 
-    /// True when the w row is inert for 2D content ((0, 0, ·, 1) — the
-    /// z column never matters because inputs have z = 0).
+    /// `is_affine` reports whether two-dimensional input has no perspective.
     pub fn is_affine(&self) -> bool {
         let m = &self.0;
         m.x_axis.w == 0.0 && m.y_axis.w == 0.0 && m.w_axis.w == 1.0
     }
 
+    /// `kind` classifies this matrix for two-dimensional rendering.
     pub fn kind(&self) -> MatrixKind {
         if !self.is_affine() {
             return MatrixKind::General;
@@ -100,16 +99,19 @@ impl Matrix {
         }
     }
 
+    /// `map_point` transforms a point and applies perspective division.
+    ///
+    /// Points at or behind the eye plane use a small positive divisor.
     pub fn map_point(&self, p: Point) -> Point {
         let v = self.0 * glam::Vec4::new(p.x, p.y, 0.0, 1.0);
         let w = if v.w > W_EPSILON { v.w } else { W_EPSILON };
         Point::new(v.x / w, v.y / w)
     }
 
-    /// Axis-aligned bounds of the mapped rect: exact for rectilinear
-    /// transforms, conservative under rotation, and [`Rect::EVERYTHING`]
-    /// when any corner reaches the eye plane (w ≤ ε) — culling must never
-    /// reject such content, and layers clamp to their clip instead.
+    /// `map_rect` returns axis-aligned bounds around a transformed rectangle.
+    ///
+    /// It returns [`Rect::EVERYTHING`] when a corner reaches or crosses the
+    /// eye plane and finite conservative bounds cannot be proven.
     pub fn map_rect(&self, r: &Rect) -> Rect {
         let (mut left, mut top) = (f32::MAX, f32::MAX);
         let (mut right, mut bottom) = (f32::MIN, f32::MIN);
@@ -127,10 +129,9 @@ impl Matrix {
         Rect::from_ltrb(left, top, right, bottom)
     }
 
-    /// Maximum length the XY basis vectors scale a unit vector to — the
-    /// device-scale factor text pickers and blur sigmas care about
-    /// (Impeller's maxBasisLengthXY; ignores perspective, so approximate
-    /// under it).
+    /// `max_scale` returns the larger length of the transformed x and y basis vectors.
+    ///
+    /// It ignores perspective and is therefore approximate for general matrices.
     pub fn max_scale(&self) -> f32 {
         let m = &self.0;
         let sx = (m.x_axis.x * m.x_axis.x + m.x_axis.y * m.x_axis.y).sqrt();
@@ -138,10 +139,10 @@ impl Matrix {
         sx.max(sy)
     }
 
-    /// The 2D affine block `[a, b, c, d, tx, ty]` (column vectors (a,b),
-    /// (c,d), translation) — ignores any perspective row; pair with
-    /// [`Self::is_affine`] where exactness matters (gradient locals and
-    /// embed quads are affine by construction).
+    /// `to_affine` returns `[a, b, c, d, tx, ty]` from the two-dimensional block.
+    ///
+    /// Perspective components are omitted; check [`Self::is_affine`] when
+    /// exact conversion is required.
     pub fn to_affine(&self) -> [f32; 6] {
         let m = &self.0;
         [
@@ -149,13 +150,13 @@ impl Matrix {
         ]
     }
 
-    /// The 2D block's determinant (orientation / area factor of the
-    /// xy plane — what stroking and winding care about).
+    /// `determinant` returns the signed area scale of the two-dimensional block.
     pub fn determinant(&self) -> f32 {
         let m = &self.0;
         m.x_axis.x * m.y_axis.y - m.x_axis.y * m.y_axis.x
     }
 
+    /// `invert` returns the inverse matrix or `None` when no finite inverse exists.
     pub fn invert(&self) -> Option<Matrix> {
         let det = self.0.determinant();
         if det == 0.0 || !det.is_finite() {

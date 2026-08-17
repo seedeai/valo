@@ -1,14 +1,8 @@
-//! SVG → valo display lists: `usvg` normalizes the document
-//! (XML, CSS cascade, `defs`/`use`/markers, units) into groups and paths
-//! with resolved paints; the translator WALKS that tree into recorded valo
-//! ops. Skia's `modules/svg` split, with usvg standing in for the DOM.
+//! SVG parsing and translation into Valo display lists.
 //!
-//! Rendering is BEST-EFFORT toward the full spec — flutter_svg's shape:
-//! features valo can't express yet degrade PER ELEMENT (a filtered group
-//! renders unfiltered, an embedded image is dropped) and surface as tags
-//! in [`Svg::missing`] for the host to log. There is no whole-document
-//! abort and no fallback path; the tags tell us which feature real
-//! documents demand next.
+//! Translation is best-effort. Unsupported features degrade only the affected
+//! element and are reported through [`Svg::missing`]; they do not reject the
+//! complete document.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -19,20 +13,25 @@ use valo_dl::DisplayList;
 mod convert;
 mod translate;
 
-/// A translated SVG document: draw `list` fitted from `size` (the viewBox
-/// units) into the destination — crisp at every zoom.
+/// `Svg` is a translated vector document ready to record or draw.
+///
+/// Its display list uses the document's intrinsic coordinate space. Apply a
+/// transform when drawing to fit it into another destination size.
 pub struct Svg {
+    /// `list` contains the translated drawing commands.
     pub list: Arc<DisplayList>,
+    /// `size` is the resolved intrinsic width and height in CSS pixels.
     pub size: [f32; 2],
-    /// Deduped tags for features the document uses but the translator
-    /// cannot express yet — those elements rendered without them.
+    /// `missing` lists unsupported feature tags in first-seen order without duplicates.
+    ///
+    /// Affected elements may be simplified or omitted.
     pub missing: Vec<&'static str>,
 }
 
-/// A parsed document, retained between [`parse`] and [`Document::translate`]
-/// so the host can decode its embedded rasters first: fetch
-/// [`Document::images`], decode each (hardware where available), then
-/// translate with a resolver mapping ids to uploaded textures.
+/// `Document` is a parsed SVG retained for resolving embedded images before translation.
+///
+/// Call [`Self::images`] to discover raster images, decode and upload them
+/// through the host, then provide those image handles to [`Self::translate`].
 pub struct Document {
     tree: usvg::Tree,
     has_text: bool,
@@ -41,23 +40,32 @@ pub struct Document {
     ids: HashMap<usize, u32>,
 }
 
-/// One embedded raster the host should decode.
+/// `ImageData` describes one deduplicated raster image embedded in an SVG.
 #[derive(Clone)]
 pub struct ImageData {
+    /// `id` identifies the image when resolving [`Document::translate`].
     pub id: u32,
+    /// `format` identifies the encoded image format.
     pub format: ImageFormat,
+    /// `bytes` contains the original encoded image data.
     pub bytes: Arc<Vec<u8>>,
 }
 
+/// `ImageFormat` identifies a supported embedded raster encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageFormat {
+    /// `Png` is Portable Network Graphics.
     Png,
+    /// `Jpeg` is Joint Photographic Experts Group encoding.
     Jpeg,
+    /// `Gif` is Graphics Interchange Format.
     Gif,
+    /// `Webp` is WebP encoding.
     Webp,
 }
 
 impl ImageFormat {
+    /// `as_str` returns the lowercase format name.
     pub fn as_str(self) -> &'static str {
         match self {
             ImageFormat::Png => "png",
@@ -68,16 +76,17 @@ impl ImageFormat {
     }
 }
 
-/// Nothing rendered at all (feature gaps are NOT errors — they degrade
-/// per element and report through [`Svg::missing`]).
+/// `SvgError` reports failures that prevent any document from being translated.
+///
+/// Unsupported SVG features are not errors; they are reported through
+/// [`Svg::missing`].
 #[derive(Debug)]
 pub enum SvgError {
-    /// Not parseable as SVG.
+    /// `Parse` indicates invalid SVG, invalid UTF-8/XML, or malformed gzip data.
     Parse,
 }
 
-/// Parse `svg` bytes (plain or gzip-compressed svgz) into a retained
-/// [`Document`].
+/// `parse` reads plain SVG or gzip-compressed SVGZ bytes into a [`Document`].
 pub fn parse(svg: &[u8]) -> Result<Document, SvgError> {
     let decompressed;
     let svg = if svg.starts_with(&[0x1f, 0x8b]) {
@@ -101,24 +110,29 @@ pub fn parse(svg: &[u8]) -> Result<Document, SvgError> {
     })
 }
 
-/// One-shot convenience for documents without embedded rasters (any that
-/// ARE embedded render absent and tag `image`).
+/// `translate` parses and translates SVG bytes without resolving embedded images.
+///
+/// Use it when the document has no embedded rasters. Embedded images are
+/// omitted and reported as `"image"` in [`Svg::missing`].
 pub fn translate(svg: &[u8]) -> Result<Svg, SvgError> {
     Ok(parse(svg)?.translate(&|_| None))
 }
 
 impl Document {
-    /// Embedded rasters awaiting the host's decode, identity-deduped.
+    /// `images` returns deduplicated embedded rasters for host decoding and upload.
     pub fn images(&self) -> &[ImageData] {
         &self.images
     }
 
+    /// `size` returns the resolved intrinsic width and height in CSS pixels.
     pub fn size(&self) -> [f32; 2] {
         [self.tree.size().width(), self.tree.size().height()]
     }
 
-    /// Walk the tree into valo ops; `resolve` maps [`ImageData::id`]s to
-    /// uploaded textures (None renders that element absent + tags).
+    /// `translate` records the parsed document into a Valo display list.
+    ///
+    /// `resolve` maps each [`ImageData::id`] to a host-uploaded image. Returning
+    /// `None` omits that raster element and adds `"image"` to [`Svg::missing`].
     pub fn translate(&self, resolve: &dyn Fn(u32) -> Option<valo_dl::Image>) -> Svg {
         let mut missing = translate::Missing::default();
         if self.has_text {
@@ -135,8 +149,10 @@ impl Document {
 
 #[cfg(feature = "decode")]
 impl ImageData {
-    /// Software decode to straight RGBA8 — for hosts without a hardware
-    /// decoder (server export). Browsers should prefer createImageBitmap.
+    /// `decode` software-decodes the image into straight-alpha RGBA8 pixels.
+    ///
+    /// It returns `(width, height, pixels)` with tightly packed rows, or `None`
+    /// when decoding fails. Prefer a host hardware decoder when available.
     pub fn decode(&self) -> Option<(u32, u32, Vec<u8>)> {
         let decoded = image::load_from_memory(&self.bytes).ok()?;
         let rgba = decoded.to_rgba8();

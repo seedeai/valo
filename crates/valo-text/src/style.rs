@@ -1,35 +1,40 @@
 use valo_geometry::{Color, Point};
 
-/// How one span of text looks (skparagraph's TextStyle, the subset valo implements).
-/// Families are tried in order per character (then the collection's fallback
-/// chain); `weight`/`italic` pick within a family's variants.
+/// `TextStyle` controls font selection and painting for a span of text.
+///
+/// Families are tried in order for each character before the collection's
+/// fallback fonts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
+    /// `families` lists preferred font families in fallback order.
     pub families: Vec<String>,
-    /// CSS weight, 100–900.
+    /// `weight` selects a CSS font weight, conventionally from 100 to 900.
     pub weight: u16,
+    /// `italic` selects an italic face when available.
     pub italic: bool,
-    /// CSS `font-width` (legacy `font-stretch`) percentage; 100 is normal.
-    /// Selects among a family's registered widths — valo never synthesizes
-    /// one, and neither do browsers.
+    /// `stretch` selects CSS font width as a percentage, where 100 is normal.
+    ///
+    /// Valo selects a registered width and does not synthesize one.
     pub stretch: f32,
-    /// Let the font kern (`kern`). Canvas2D's `fontKerning: "none"` clears it.
+    /// `kerning` enables the font's kerning adjustments.
     pub kerning: bool,
-    /// OpenType capital-letter forms — Canvas2D's `fontVariantCaps`.
+    /// `variant_caps` selects OpenType capital-letter forms.
     pub variant_caps: VariantCaps,
+    /// `size` is the font size in logical pixels.
     pub size: f32,
+    /// `color` is the text fill color.
     pub color: Color,
-    /// Added after every grapheme cluster (px).
+    /// `letter_spacing` adds logical pixels after each grapheme cluster.
     pub letter_spacing: f32,
-    /// Added after every U+0020 cluster (px), on top of `letter_spacing`.
+    /// `word_spacing` adds logical pixels after each space, in addition to letter spacing.
     pub word_spacing: f32,
-    /// Line-height multiplier: `Some(1.5)` = 1.5 × size, metrics scaled
-    /// proportionally (skparagraph's setHeight + heightOverride). `None` =
-    /// the font's own metrics.
+    /// `height` overrides line height as a multiple of `size`.
+    ///
+    /// `None` uses the font's metrics.
     pub height: Option<f32>,
+    /// `decoration` optionally adds an underline, overline, or strike-through.
     pub decoration: Option<Decoration>,
-    /// Painted back-to-front UNDER the text, each a blurred offset copy —
-    /// Flutter's TextStyle.shadows lowering.
+    /// `shadows` are painted back-to-front beneath the text.
     pub shadows: Vec<Shadow>,
 }
 
@@ -54,6 +59,7 @@ impl Default for TextStyle {
 }
 
 impl TextStyle {
+    /// `new` creates a style with one preferred family, size, and color.
     pub fn new(family: &str, size: f32, color: Color) -> Self {
         Self {
             families: vec![family.to_owned()],
@@ -63,8 +69,7 @@ impl TextStyle {
         }
     }
 
-    /// What this style asks of face selection — the CSS matching axes,
-    /// separated from everything shaping and painting care about.
+    /// `font_attrs` returns the attributes used to select a face within a family.
     pub fn font_attrs(&self) -> crate::font::FontAttrs {
         crate::font::FontAttrs {
             weight: self.weight,
@@ -74,30 +79,31 @@ impl TextStyle {
     }
 }
 
-/// CSS `font-variant-caps`, lowered to the OpenType features a shaper
-/// understands. Every variant here is a font capability: a face without the
-/// feature renders unchanged rather than synthesizing small capitals, which
-/// is what browsers do for `font-synthesis: none` and what valo always does.
+/// `VariantCaps` selects an OpenType capitalization variant.
+///
+/// If a font lacks the requested feature, text remains unchanged; Valo does not
+/// synthesize capital forms.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VariantCaps {
+    /// `Normal` leaves capitalization features disabled.
     #[default]
     Normal,
-    /// `smcp` — lowercase becomes small capitals.
+    /// `SmallCaps` renders lowercase letters as small capitals.
     SmallCaps,
-    /// `c2sc` + `smcp` — capitals shrink to small capitals too.
+    /// `AllSmallCaps` renders both lowercase and uppercase letters as small capitals.
     AllSmallCaps,
-    /// `pcap` — the lighter-weight petite variant.
+    /// `PetiteCaps` renders lowercase letters as petite capitals.
     PetiteCaps,
-    /// `c2pc` + `pcap`.
+    /// `AllPetiteCaps` renders both lowercase and uppercase letters as petite capitals.
     AllPetiteCaps,
-    /// `unic` — lowercase-looking capitals.
+    /// `Unicase` uses a mixture of uppercase and lowercase-sized capitals.
     Unicase,
-    /// `titl` — capitals cut for all-caps display sizes.
+    /// `TitlingCaps` uses capitals designed for display text.
     TitlingCaps,
 }
 
 impl VariantCaps {
-    /// The OpenType tags this variant turns ON, in application order.
+    /// `feature_tags` returns the enabled OpenType tags in application order.
     pub fn feature_tags(self) -> &'static [&'static [u8; 4]] {
         match self {
             Self::Normal => &[],
@@ -111,18 +117,19 @@ impl VariantCaps {
     }
 }
 
-/// An underline / strike-through / overline, drawn from the font's own
-/// decoration metrics (post/OS2 tables; skparagraph's Decorations.cpp).
+/// `Decoration` describes a line drawn relative to styled text.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decoration {
+    /// `kind` selects the decoration's position.
     pub kind: DecorationKind,
-    /// `None` = the text color.
+    /// `color` overrides the text color when set.
     pub color: Option<Color>,
-    /// Multiplier over the font's suggested thickness.
+    /// `thickness` multiplies the font's suggested decoration thickness.
     pub thickness: f32,
 }
 
 impl Decoration {
+    /// `new` creates a text-colored decoration at the font's suggested thickness.
     pub fn new(kind: DecorationKind) -> Self {
         Self {
             kind,
@@ -132,31 +139,41 @@ impl Decoration {
     }
 }
 
+/// `DecorationKind` selects where a text decoration is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecorationKind {
+    /// `Underline` draws below the baseline using the font's underline metrics.
     Underline,
+    /// `LineThrough` draws through the text using the font's strikeout metrics.
     LineThrough,
+    /// `Overline` draws above the text.
     Overline,
 }
 
-/// One text shadow: an offset, optionally blurred copy in `color`.
+/// `Shadow` describes a colored, offset copy painted beneath text.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
+    /// `color` is the shadow color.
     pub color: Color,
+    /// `offset` moves the shadow in logical pixels.
     pub offset: Point,
-    /// Gaussian σ; 0 = a hard offset copy.
+    /// `blur` is the Gaussian sigma; zero produces a sharp copy.
     pub blur: f32,
 }
 
-/// Paragraph-level horizontal alignment (needs a finite layout width).
+/// `TextAlign` controls horizontal line placement within the layout width.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextAlign {
+    /// `Left` aligns lines with the left edge.
     #[default]
     Left,
+    /// `Center` centers each line.
     Center,
+    /// `Right` aligns lines with the right edge.
     Right,
-    /// Word gaps stretch to fill the width; a paragraph's last line (and
-    /// lines ending in a hard break) stay ragged, CSS-style.
+    /// `Justify` expands word spacing to fill eligible lines.
+    ///
+    /// Final lines and lines ending in a hard break remain unexpanded.
     Justify,
 }
 
@@ -169,30 +186,29 @@ impl From<TextAlign> for ParagraphStyle {
     }
 }
 
-/// Which way the paragraph reads before its content gets a say.
+/// `TextDirection` selects a paragraph's base writing direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextDirection {
+    /// `Ltr` sets a left-to-right base direction.
     Ltr,
+    /// `Rtl` sets a right-to-left base direction.
     Rtl,
 }
 
-/// Paragraph-level knobs, fixed at `build` (Flutter's ParagraphStyle).
+/// `ParagraphStyle` controls layout behavior for a complete paragraph.
 #[derive(Clone, Debug, Default)]
 pub struct ParagraphStyle {
+    /// `align` controls horizontal line alignment.
     pub align: TextAlign,
-    /// The bidi base level. `None` infers it from the first strong character
-    /// (UAX #9 rules P2/P3); `Some(..)` forces it, which is what CSS
-    /// `direction` and Canvas2D's `direction` ask for. Forcing matters for
-    /// text that is entirely neutral — digits and punctuation carry no
-    /// direction of their own, so only the base level orders them.
+    /// `direction` sets the bidirectional base direction.
+    ///
+    /// `None` infers it from the first strong character. Set it explicitly for
+    /// neutral text such as digits and punctuation.
     pub direction: Option<TextDirection>,
-    /// Include trailing whitespace in line advances. Canvas text enables this;
-    /// paragraph layout defaults to trimmed line widths like SkParagraph.
+    /// `preserve_trailing_whitespace` includes trailing spaces in line widths.
     pub preserve_trailing_whitespace: bool,
-    /// Stop wrapping after this many lines; content past them is dropped
-    /// (see `ellipsis`).
+    /// `max_lines` limits the number of laid-out lines.
     pub max_lines: Option<u32>,
-    /// Spliced onto a truncated last line (shaped in that line's trailing
-    /// style), on the visual end matching the paragraph's base direction.
+    /// `ellipsis` replaces omitted content at the visual end of a truncated paragraph.
     pub ellipsis: Option<String>,
 }

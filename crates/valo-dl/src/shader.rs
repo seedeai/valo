@@ -1,95 +1,108 @@
 use valo_geometry::{Color, Matrix, Point};
 
-/// Paint's color source beyond a solid color — the per-PIXEL families.
-/// Geometry is in the DRAW's local space (the same space its
-/// rect/path lives in), so gradients rotate/scale with their shape.
+/// `Shader` determines the color painted at each point of a drawing operation.
+///
+/// Shader coordinates begin in the draw's local coordinate space, so shaders
+/// follow the same transforms as their geometry.
 // Serialize ONLY, now that a pattern can hold an `Image`: the dump records a
 // texture's identity, and no deserializer can turn that back into a live GPU
 // handle. Same call `Path` already makes.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Shader {
+    /// `Linear` interpolates colors along the line from `start` to `end`.
     Linear {
+        /// `start` is the zero-offset point in local coordinates.
         start: Point,
+        /// `end` is the one-offset point in local coordinates.
         end: Point,
+        /// `stops` defines the colors along the gradient.
         stops: Vec<GradientStop>,
+        /// `spread` controls colors outside the zero-to-one span.
         spread: SpreadMode,
-        /// Skia-style LOCAL MATRIX: the gradient evaluates in its own
-        /// space (`p' = local⁻¹ · p`), so skewed/stretched fields — SVG's
-        /// gradientTransform, elliptical radials — stay exact. IDENTITY
-        /// for a plain gradient.
+        /// `local` transforms the shader independently of the drawn geometry.
+        ///
+        /// Use [`Matrix::IDENTITY`] when no additional transform is needed.
         local: Matrix,
     },
+    /// `Radial` interpolates between a start circle and an end circle.
     Radial {
+        /// `center` is the end circle's center in local coordinates.
         center: Point,
+        /// `radius` is the end circle's radius in local coordinates.
         radius: f32,
+        /// `stops` defines the colors along the gradient.
         stops: Vec<GradientStop>,
+        /// `spread` controls colors outside the zero-to-one span.
         spread: SpreadMode,
-        /// The gradient's START circle — Canvas2D's `(x0, y0, r0)` and
-        /// SVG's focal point. `None` is the classic centred gradient, where
-        /// the ramp runs from the centre out to `radius`.
+        /// `focus` is the optional start circle.
+        ///
+        /// `None` starts at a zero-radius circle centered on `center`.
         focus: Option<FocalCircle>,
-        /// See `Linear::local` — this is how a radial becomes an ellipse.
+        /// `local` transforms the shader independently of the drawn geometry.
         local: Matrix,
     },
-    /// Full-turn sweep starting at `start_angle` (radians, clockwise from +x).
-    /// Inherently periodic — no spread mode.
+    /// `Sweep` interpolates colors around one full clockwise turn.
     Sweep {
+        /// `center` is the sweep origin in local coordinates.
         center: Point,
+        /// `start_angle` is the zero-offset angle in radians clockwise from +x.
         start_angle: f32,
+        /// `stops` defines the colors around the sweep.
         stops: Vec<GradientStop>,
-        /// See `Linear::local`.
+        /// `local` transforms the shader independently of the drawn geometry.
         local: Matrix,
     },
-    /// An image tiled across the shape — Canvas2D's `createPattern`, Skia's
-    /// `SkImageShader`. `sampling` carries the per-axis tile modes and the
-    /// filter, so tiling costs nothing extra: it rides the sampler's address
-    /// modes exactly as an image draw's does.
+    /// `Image` samples an image across the drawn geometry.
     Image {
+        /// `image` supplies the sampled pixels.
         image: crate::Image,
+        /// `sampling` controls filtering, mipmaps, and tiling.
         sampling: crate::Sampling,
-        /// See `Linear::local` — the pattern evaluates in its own space, so a
-        /// rotated or scaled tiling stays exact.
+        /// `local` transforms the image pattern independently of the geometry.
         local: Matrix,
     },
 }
 
-/// What lives outside the gradient's 0..1 span (SVG `spreadMethod`, Skia's
-/// shader `SkTileMode`).
+/// `SpreadMode` controls a gradient outside its zero-to-one span.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpreadMode {
-    /// Edge stops extend forever — the CSS/Skia clamp default.
+    /// `Pad` extends the nearest edge color.
     #[default]
     Pad,
-    /// The ramp tiles: …0‥1 0‥1…
+    /// `Repeat` repeats the gradient in the same direction.
     Repeat,
-    /// Every other tile mirrors: …0‥1 1‥0…
+    /// `Reflect` repeats the gradient with alternating direction.
     Reflect,
 }
 
-/// Up to [`MAX_GRADIENT_STOPS`] uniform stops per gradient — the
-/// uniform-stop family; SSBO/texture-ramp fallbacks are a later tier.
+/// `GradientStop` assigns a color to one position along a gradient.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientStop {
-    /// 0..=1 along the gradient; callers should supply sorted offsets.
+    /// `offset` is the position from zero to one.
+    ///
+    /// Supply stops in nondecreasing offset order.
     pub offset: f32,
+    /// `color` is the straight-alpha sRGB color at this offset.
     pub color: Color,
 }
 
-/// A two-point conical gradient's start circle. A zero `radius` is SVG's
-/// focal point (`fx`/`fy`); any positive radius is the general form, which
-/// is what Canvas2D's `createRadialGradient` describes.
+/// `FocalCircle` defines the start circle of a radial gradient.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FocalCircle {
+    /// `center` is the start circle's center in local coordinates.
     pub center: Point,
+    /// `radius` is the start circle's radius.
+    ///
+    /// Zero represents a focal point.
     pub radius: f32,
 }
 
 impl FocalCircle {
-    /// SVG's focal point: a start circle with no radius.
+    /// `point` creates a zero-radius focal circle.
     pub fn point(center: Point) -> Self {
         Self {
             center,
@@ -98,10 +111,13 @@ impl FocalCircle {
     }
 }
 
+/// `MAX_GRADIENT_STOPS` is the largest gradient stored directly in uniforms.
+///
+/// Gradients with more stops use a cached texture ramp.
 pub const MAX_GRADIENT_STOPS: usize = 8;
 
 impl Shader {
-    /// A gradient's stops; empty for families that have none.
+    /// `stops` returns this gradient's stops or an empty slice for image shaders.
     pub fn stops(&self) -> &[GradientStop] {
         match self {
             Shader::Linear { stops, .. }
@@ -111,11 +127,10 @@ impl Shader {
         }
     }
 
-    /// Fold a colour filter into this source, Impeller's
-    /// `Contents::ApplyColorFilter`: a gradient filters its STOP COLOURS,
-    /// matching Impeller's gradient-source semantics (including clamping each
-    /// transformed stop before interpolation). Returns false when the source
-    /// cannot answer on the CPU and needs a texture snapshot instead.
+    /// `fold_color_filter` applies a color filter directly to gradient stops.
+    ///
+    /// It returns `false` for image shaders, whose colors must be filtered
+    /// during sampling.
     pub fn fold_color_filter(&mut self, filter: &crate::ColorFilter) -> bool {
         let stops = match self {
             Shader::Linear { stops, .. }
@@ -136,7 +151,7 @@ impl Shader {
         true
     }
 
-    /// Two-color convenience: `from` at 0, `to` at 1.
+    /// `linear` creates a two-color padded linear gradient.
     pub fn linear(start: Point, end: Point, from: Color, to: Color) -> Self {
         Shader::Linear {
             start,
