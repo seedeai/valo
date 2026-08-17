@@ -177,7 +177,7 @@ function GetStarted() {
           GitHub
         </a>
         <span className="ml-3 font-mono text-[11px] uppercase tracking-[0.12em] text-[#5f5e65]">
-          MIT · 0.1.1
+          MIT · 0.2.0
         </span>
       </div>
     </section>
