@@ -8,8 +8,9 @@ icon: Wrench
 cargo add valo wgpu pollster
 ```
 
-Valo uses the wgpu device and queue owned by your application. For a first
-frame, rendering to pixels avoids any window-system setup:
+The crate's API is on [docs.rs](https://docs.rs/valo/latest/valo/). Valo uses
+the wgpu device and queue owned by your application. For a first frame,
+rendering to pixels avoids any window-system setup:
 
 ```rust
 use valo::{Color, Context, DisplayListBuilder, Paint, Rect};

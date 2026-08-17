@@ -1,6 +1,6 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import { Brand } from '@/components/brand';
-import { repositoryUrl } from './shared';
+import { repositoryUrl, rustDocsUrl } from './shared';
 
 export function baseOptions(): BaseLayoutProps {
   return {
@@ -10,6 +10,7 @@ export function baseOptions(): BaseLayoutProps {
     links: [
       { text: 'Docs', url: '/docs', active: 'nested-url' },
       { text: 'Playground', url: '/playground', active: 'url' },
+      { text: 'Rust API', url: rustDocsUrl, external: true },
     ],
     githubUrl: repositoryUrl,
     // One theme, so there is nothing for a switcher to switch.

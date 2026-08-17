@@ -9,6 +9,7 @@ Valo is built on top of [wgpu](https://wgpu.rs/) and thus supports all platforms
 Resources:
 
 - [Documentation](https://valo.im/docs)
+- [Rust API](https://docs.rs/valo/latest/valo/)
 - [Playground](https://valo.im/playground)
 - [Examples](crates/valo/examples)
 

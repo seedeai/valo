@@ -4,7 +4,7 @@ import { DemoGrid } from '@/components/demo-grid';
 import { HeroDemo } from '@/components/hero-demo';
 import { MemoryMeter } from '@/components/memory-meter';
 import { HERO_DEMO_ID, demoById } from '@/lib/demos/catalog';
-import { packages, repositoryUrl, subtitle } from '@/lib/shared';
+import { packages, repositoryUrl, rustDocsUrl, subtitle } from '@/lib/shared';
 
 const heroDemo = demoById(HERO_DEMO_ID)!;
 
@@ -164,6 +164,12 @@ function GetStarted() {
         >
           Read the docs
         </Link>
+        <a
+          href={rustDocsUrl}
+          className="border border-valo-line px-6 py-3 text-[13px] font-medium transition-colors hover:border-white/35 hover:bg-white/5"
+        >
+          Rust API
+        </a>
         <a
           href={repositoryUrl}
           className="border border-valo-line px-6 py-3 text-[13px] font-medium transition-colors hover:border-white/35 hover:bg-white/5"

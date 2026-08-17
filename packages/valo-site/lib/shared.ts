@@ -14,6 +14,7 @@ export const gitConfig = {
 };
 
 export const repositoryUrl = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
+export const rustDocsUrl = 'https://docs.rs/valo/latest/valo/';
 
 /** Package names, in one place because they appear in prose and in code samples. */
 export const packages = {
