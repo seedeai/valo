@@ -1,0 +1,19 @@
+{
+  "title": "Drawing",
+  "pages": [
+    "index",
+    "shapes",
+    "strokes",
+    "transforms",
+    "shaders",
+    "blend-modes",
+    "mask-blur",
+    "layers",
+    "color-filters",
+    "image-filters",
+    "images",
+    "text",
+    "backdrop-blur",
+    "nested-lists"
+  ]
+}

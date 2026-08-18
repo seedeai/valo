@@ -1,0 +1,66 @@
+---
+title: Backdrop blur
+description: Frosted glass — a layer that opens already filled with a blur of the scene.
+icon: Wind
+---
+
+A backdrop blur is a **save layer** that opens pre-filled with a Gaussian of
+whatever is already painted beneath it. Children draw onto that glass;
+`restore` composites glass and children as one image, so a group alpha
+fades them together.
+
+```rust
+use valo::{Backdrop, ClipOp, Paint, Rect};
+
+let panel = Rect::new(48.0, 40.0, 240.0, 160.0);
+builder.save();
+builder.clip_rrect(panel, 18.0, ClipOp::Intersect);
+builder.save_layer_backdrop(Some(panel), &Paint::default(), Backdrop::blur(14.0));
+builder.restore();
+builder.restore();
+```
+
+JavaScript 0.2.1 keeps a convenience that opens that layer and immediately
+closes it — a glass panel with nothing painted on it. Canvas2D
+`context.backdropBlur` is the same call.
+
+```ts
+builder.save();
+builder.clipRoundedRect(x, y, w, h, new Float32Array([18]), ClipOp.Intersect);
+builder.backdropBlur(x, y, w, h, 14);
+builder.restore();
+```
+
+<Demo demo="drawing-backdrop" caption="live" animate />
+
+Open the layer yourself in Rust when content should ride on the glass.
+JavaScript 0.2.1 has no `saveLayerBackdrop` yet — `backdropBlur` is the
+open-and-restore convenience only.
+
+## Shared keys
+
+Tiles that share a key reuse the **first** tile's blur — and see the scene
+as of that tile. Use one key only for panels over the same background.
+
+```rust
+builder.save_layer_backdrop(
+    Some(a),
+    &Paint::default(),
+    Backdrop::blur(20.0).shared(1),
+);
+builder.restore();
+builder.save_layer_backdrop(
+    Some(b),
+    &Paint::default(),
+    Backdrop::blur(20.0).shared(1),
+);
+builder.restore();
+```
+
+A later tile with a different sigma does not share. Nested replays of a
+retained list save and restore the keyed cache, so drawing the same list
+twice does not reuse the first drawing's blur. Shared keys are Rust-only
+in valo-web 0.2.1.
+
+Hint the layer bounds when the list will be embedded. Without a hint or
+clip, a backdrop layer covers everything beneath it.

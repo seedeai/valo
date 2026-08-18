@@ -1,0 +1,61 @@
+---
+title: Text
+description: Paragraphs, glyph runs, gradient fills, and stroke.
+icon: Type
+---
+
+Register font bytes with a `FontCollection`, then lay out a paragraph. Rust
+can also record a `draw_glyph_run` when you already placed the glyphs;
+JavaScript has no glyph-run binding.
+
+```rust
+use valo::{Color, DrawParagraphExt, ParagraphBuilder, TextStyle};
+
+let mut paragraph = ParagraphBuilder::new(&mut fonts)
+    .add_text("Type at GPU speed", &TextStyle::new("Fira Sans", 24.0, Color::WHITE))
+    .build();
+paragraph.layout(280.0);
+builder.draw_paragraph(&paragraph, (24.0, 40.0));
+```
+
+```ts
+const style = new TextStyle('Fira Sans', 24);
+style.setColor(0.95, 0.95, 0.93, 1);
+const paragraphs = new ParagraphBuilder();
+paragraphs.addText('Type at GPU speed', style);
+const paragraph = paragraphs.build(fonts);
+paragraph.layout(280);
+builder.drawParagraph(paragraph, 24, 40);
+```
+
+<Demo demo="drawing-text" caption="live" />
+
+`draw_paragraph_with` / `drawParagraphWith` fills the already-shaped glyphs
+with any paint, so a gradient or stroke is an ordinary paint, not a second
+text API.
+
+```rust
+use valo::DrawGlyphRunExt;
+
+builder.draw_paragraph_with(&paragraph, (24.0, 40.0), &Paint::from_shader(ramp));
+```
+
+```ts
+builder.drawParagraphWith(paragraph, 24, 40, paint);
+```
+
+## Layout options
+
+| | |
+| --- | --- |
+| `TextAlign` | Left, Center, Right, Justify |
+| `TextDirection` | Infer, Ltr, Rtl |
+| `DecorationKind` | Underline, LineThrough, Overline |
+| `VariantCaps` | SmallCaps and related OpenType caps |
+
+Tiers (bitmap → SDF → outlines) follow device-pixel size. See
+[`set_text_tiers`](/docs/reference/context) and
+[FontCollection](/docs/reference/font-collection).
+
+Unresolved characters draw the font's `.notdef` (tofu) unless
+`set_hide_missing_glyphs` is on.

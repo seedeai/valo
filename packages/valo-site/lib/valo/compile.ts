@@ -23,7 +23,8 @@ const RAW_SPECIFIER = 'valo-web/raw';
 /** `import { a, b as c } from '...'` — the only import form a scene needs. */
 const IMPORT = /^[ \t]*import\s+(type\s+)?(\{[^}]*\}|[A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+)['"];?[ \t]*$/gm;
 const DEFAULT_EXPORT = /^[ \t]*export\s+default\s+(?=function\s+[A-Za-z_$])/m;
-const NAMED_EXPORT = /^[ \t]*export\s+(?=(?:function|const|let|var|class)\s)/gm;
+const NAMED_EXPORT =
+  /^[ \t]*export\s+(?=async\s+function|(?:function|const|let|var|class)\s)/gm;
 
 export function compileScene(source: string): CompileResult {
   try {
@@ -67,7 +68,7 @@ function rewrite(source: string): string {
   body = body.replace(DEFAULT_EXPORT, '');
   body = body.replace(NAMED_EXPORT, '');
 
-  return `${body}\nreturn { default: ${defaultName}, dispose: typeof dispose === 'function' ? dispose : undefined };`;
+  return `${body}\nreturn { default: ${defaultName}, dispose: typeof dispose === 'function' ? dispose : undefined, load: typeof load === 'function' ? load : undefined };`;
 }
 
 function evaluate(body: string): SceneModule {

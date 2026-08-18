@@ -1,0 +1,58 @@
+---
+title: Colour filters
+description: Transform produced colours with a matrix or a constant blend.
+icon: Contrast
+---
+
+A colour filter runs on the pixels a draw (or layer) produces, **before**
+mask blur, so the blur spreads the filtered result.
+
+```rust
+paint.color_filter = Some(ColorFilter::Matrix([
+    0.2126, 0.7152, 0.0722, 0.0, 0.0,
+    0.2126, 0.7152, 0.0722, 0.0, 0.0,
+    0.2126, 0.7152, 0.0722, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0,
+]));
+```
+
+```ts
+paint.setColorFilter(ColorFilter.matrix(new Float32Array([
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0, 0, 0, 1, 0,
+])));
+```
+
+Left to right: unfiltered, greyscale matrix, violet `Modulate` blend.
+
+<Demo demo="drawing-color-filters" caption="live" />
+
+## Matrix
+
+A row-major 4×5 transform over straight colour in `0..=1`. Each output
+channel is `row · [r, g, b, a, 1]`, then clamped (Skia's `SkColorMatrix`).
+
+Flutter's `ColorFilter.matrix` hands the translation column in `0..=255`.
+Divide entries 4, 9, 14, and 19 by 255 before they arrive here.
+
+## Blend
+
+`ColorFilter::Blend(color, mode)` composites a constant source colour over
+each produced pixel. `mode` is any [`BlendMode`](/docs/drawing/blend-modes).
+
+```rust
+paint.color_filter = Some(ColorFilter::Blend(
+    Color::rgb(0.49, 0.29, 1.0),
+    BlendMode::Modulate,
+));
+```
+
+```ts
+paint.setColorFilter(ColorFilter.blend(0.49, 0.29, 1, 1, BlendMode.Modulate));
+```
+
+On a solid paint the filter can fold into the colour on the CPU. On an
+image shader it bakes a filtered texture; on a direct image draw it runs
+in the fragment.

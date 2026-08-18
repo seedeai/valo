@@ -1,0 +1,60 @@
+---
+title: Strokes
+description: Width, caps, joins, miters, and dashes.
+icon: PenLine
+---
+
+A stroke is a `Paint` style, not a separate draw. Width is in path
+coordinates. Width `0` is a hairline (one device pixel); a negative width
+draws nothing.
+
+```rust
+use valo::{Cap, Dash, Join, Paint, PaintStyle, Stroke};
+
+let paint = Paint {
+    style: PaintStyle::Stroke(Stroke {
+        width: 4.0,
+        cap: Cap::Round,
+        join: Join::Round,
+        miter_limit: 4.0,
+        dash: Some(Dash {
+            intervals: vec![10.0, 6.0],
+            phase: 0.0,
+        }),
+    }),
+    ..Paint::from_color(Color::rgb(0.78, 1.0, 0.24))
+};
+```
+
+```ts
+paint.setStroke(4, Cap.Round, Join.Round, 4, new Float32Array([10, 6]), 0);
+```
+
+Round caps, square caps with bevel joins, then a dashed miter.
+
+<Demo demo="drawing-strokes" caption="live" />
+
+## Caps
+
+| Cap | End of an open contour |
+| --- | --- |
+| `Butt` | Stops at the endpoint |
+| `Round` | Semicircle |
+| `Square` | Extends by half the width |
+
+## Joins
+
+| Join | Corner |
+| --- | --- |
+| `Miter` | Outer edges meet, until the miter limit |
+| `Round` | Circular arc |
+| `Bevel` | Straight cut |
+
+`miter_limit` is miter length over half-width. The default is `4`. Longer
+miters become bevels.
+
+## Dashes
+
+`intervals` alternates painted and skipped lengths, starting with painted.
+`phase` walks into that cycle. Dashing runs on the flattened contour before
+the stroker, so caps and joins apply to each dash.

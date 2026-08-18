@@ -33,16 +33,21 @@ export interface Scene {
   readonly time: number;
   /** Registered once per device. Every canvas on it shares the glyph atlas. */
   readonly fonts: FontCollection;
+  /** This canvas's renderer. Upload images here; recording still uses `builder`. */
+  readonly renderer: Renderer;
 }
 
 /**
  * A scene module: one function per frame, and an optional teardown.
  *
- * `dispose` is where anything built to outlive a frame gets released — valo's
- * objects own memory on the wasm side, so whoever keeps one owes it a `free()`.
+ * `load` runs once after the module is installed, before the first draw that
+ * depends on it. Use it to fetch and upload images. `dispose` is where
+ * anything built to outlive a frame gets released — valo's objects own memory
+ * on the wasm side, so whoever keeps one owes it a `free()`.
  */
 export interface SceneModule {
   default(scene: Scene): void;
+  load?(scene: Pick<Scene, 'renderer'>): void | Promise<void>;
   dispose?(): void;
 }
 
@@ -70,6 +75,8 @@ export async function runScene(
     fonts.registerFont(family, bytes, true);
   }
 
+  await module.load?.({ renderer });
+
   const origin = performance.now();
   let frame = 0;
 
@@ -88,7 +95,14 @@ export async function runScene(
     // them into a display list, and the renderer plans that list into passes.
     const builder = new DisplayListBuilder();
     builder.scale(ratio, ratio);
-    module.default({ builder, width: box.width, height: box.height, time: (now - origin) / 1000, fonts });
+    module.default({
+      builder,
+      width: box.width,
+      height: box.height,
+      time: (now - origin) / 1000,
+      fonts,
+      renderer,
+    });
     const list = builder.build();
 
     // `true` discards what was on the canvas first. Pass `false` and the frame

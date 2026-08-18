@@ -48,7 +48,9 @@ restore is a debug assertion in Rust and is ignored in release.
   (`ClipOp.Difference`).
 - **Save layers** group several draws before applying opacity, blending, or a
   filter.
-- **Backdrop blur** reads what was already drawn beneath its bounds.
+- **Backdrop blur** is a save layer that opens already filled with a Gaussian
+  of the pixels beneath it (`save_layer_backdrop`, JavaScript `backdropBlur`).
+  See [Backdrop blur](/docs/drawing/backdrop-blur).
 
 Coordinates are local pixels with y downward until a transform says otherwise.
 

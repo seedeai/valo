@@ -1,0 +1,36 @@
+---
+title: Shapes
+description: Rects, rounded corners, circles, paths, and fill rules.
+icon: Box
+---
+
+Coordinates start at the top-left and y grows downward, in logical pixels
+until a transform says otherwise. Fill versus stroke lives on the `Paint`,
+not on the draw.
+
+```rust
+builder.draw_rect(Rect::new(24.0, 24.0, 72.0, 72.0), &paint);
+builder.draw_rrect(Rect::new(120.0, 24.0, 72.0, 72.0), 18.0, &paint);
+builder.draw_rrect_radii(rect, [18.0, 6.0, 18.0, 6.0], &paint);
+builder.draw_circle((280.0, 60.0), 36.0, &paint);
+builder.draw_path(&path, FillRule::EvenOdd, &paint);
+```
+
+```ts
+builder.drawRect(24, 24, 72, 72, paint);
+builder.drawRoundedRect(120, 24, 72, 72, new Float32Array([18]), paint);
+builder.drawRoundedRect(120, 24, 72, 72, new Float32Array([18, 6, 18, 6]), paint);
+builder.drawCircle(280, 60, 36, paint);
+builder.drawPath(path, FillRule.EvenOdd, paint);
+```
+
+<Demo demo="drawing-shapes" caption="live" />
+
+## Fill rules
+
+`FillRule::NonZero` fills regions whose winding is not zero.
+`FillRule::EvenOdd` fills regions crossed an odd number of times — a path
+with a hole uses this.
+
+Path verbs, arcs, and winding are on [Path](/docs/reference/path). Stroke
+options are on [Strokes](/docs/drawing/strokes).

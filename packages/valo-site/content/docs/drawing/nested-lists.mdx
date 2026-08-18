@@ -1,0 +1,41 @@
+---
+title: Nested lists
+description: Replay a recording. Optionally cache it as a raster.
+icon: Layers2
+---
+
+A `DisplayList` is immutable and nestable. Record a piece once, then
+`draw_display_list` it under different transforms.
+
+```rust
+use std::sync::Arc;
+use valo::{DisplayListBuilder, Rect};
+
+let cell = {
+    let mut nested = DisplayListBuilder::new();
+    nested.draw_rrect(Rect::new(0.0, 0.0, 72.0, 48.0), 10.0, &paint);
+    Arc::new(nested.build())
+};
+builder.draw_display_list(&cell);
+builder.translate(92.0, 0.0);
+builder.draw_display_list_cached(&cell);
+```
+
+```ts
+const cell = new DisplayListBuilder();
+cell.drawRoundedRect(0, 0, 72, 48, new Float32Array([10]), paint);
+const list = cell.build();
+builder.drawDisplayList(list);
+builder.drawDisplayListCached(list);
+```
+
+<Demo demo="drawing-lists" caption="live" />
+
+## Cached replay
+
+`drawDisplayListCached` may sample a raster of the child instead of
+replaying it. A fill, if needed, happens this frame; rotated or skewed
+embeds fall back to inline replay. Lists that read the backdrop cannot be
+cached — the blur samples what is *behind* the list.
+
+See [DisplayList](/docs/reference/display-list).

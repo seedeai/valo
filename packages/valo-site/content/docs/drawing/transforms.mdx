@@ -1,0 +1,47 @@
+---
+title: Transforms and clips
+description: Save, restore, matrices, and clip operations.
+icon: Crop
+---
+
+`save` / `restore` bracket local transforms and clips. An unmatched restore
+is a debug assertion in Rust and is ignored in release.
+
+```rust
+builder.save();
+builder.translate(160.0, 110.0);
+builder.rotate(0.2);
+builder.scale(1.2, 1.2);
+builder.concat(&Matrix::from_affine(1.0, 0.0, 0.2, 1.0, 0.0, 0.0));
+builder.clip_rect(rect, ClipOp::Intersect);
+builder.clip_rrect(rect, 16.0, ClipOp::Difference);
+builder.restore();
+```
+
+```ts
+builder.save();
+builder.translate(160, 110);
+builder.rotate(0.2);
+builder.scale(1.2, 1.2);
+builder.transform(new Float32Array([1, 0, 0.2, 1, 0, 0]));
+builder.clipRect(x, y, w, h, ClipOp.Intersect);
+builder.clipRoundedRect(x, y, w, h, new Float32Array([16]), ClipOp.Difference);
+builder.restore();
+```
+
+Left: a rotated rounded rect. Right: the same shape with a `Difference` hole.
+
+<Demo demo="drawing-transforms" caption="live" />
+
+## Clip operations
+
+| Op | Result |
+| --- | --- |
+| `Intersect` | Keep pixels inside the shape |
+| `Difference` | Keep pixels outside the shape |
+
+Canvas2D `clip()` only intersects. A hole is a `Difference` clip, not a
+compositing trick.
+
+Clips are never bounds-culled for Intersect: the ceiling covers the exterior.
+A Difference clip whose shape misses the viewport is skipped.

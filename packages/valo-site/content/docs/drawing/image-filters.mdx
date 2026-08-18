@@ -1,0 +1,50 @@
+---
+title: Image filters
+description: Blur, drop shadow, colour, and composed chains after rasterization.
+icon: Sparkles
+---
+
+An image filter transforms a **rasterized** draw or layer. Hang it on the
+paint, or on a `saveLayer` so several shapes share one chain.
+
+```rust
+let shadow = ImageFilter::drop_shadow(
+    Point::new(8.0, 12.0),
+    6.0,
+    6.0,
+    Color::rgba(0.0, 0.0, 0.0, 0.55),
+);
+let soften = ImageFilter::blur(1.5, 1.5);
+paint.image_filter = Some(ImageFilter::compose(shadow, soften));
+```
+
+```ts
+const shadow = ImageFilter.dropShadow(8, 12, 6, 6, 0, 0, 0, 0.55);
+const soften = ImageFilter.blur(1.5, 1.5);
+paint.setImageFilter(ImageFilter.compose(shadow, soften));
+```
+
+A lime card with a drop shadow.
+
+<Demo demo="drawing-image-filters" caption="live" />
+
+## Kinds
+
+| Filter | Effect |
+| --- | --- |
+| `Blur` | Gaussian in local x and y |
+| `Color` | A [`ColorFilter`](/docs/drawing/color-filters) after rasterization |
+| `DropShadow` | Blurred, offset, recoloured alpha under the original |
+| `Compose` | `inner` first, then `outer` |
+
+Consecutive blurs merge in device space. A rotation mixes the axes before
+they combine.
+
+## Order with colour filter and mask blur
+
+On a **draw's** effect layer, colour filter runs first, then blur.
+
+On a **`save_layer`**, image filter (including blur) runs first, then colour
+filter — so a translating matrix acts on the halo.
+
+See [`Paint`](/docs/reference/paint) for which field is which.

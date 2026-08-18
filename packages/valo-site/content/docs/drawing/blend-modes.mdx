@@ -1,0 +1,41 @@
+---
+title: Blend modes
+description: How source pixels combine with destination pixels.
+icon: Blend
+---
+
+`BlendMode` sits on the paint. The default is `SrcOver`. Modes that read the
+destination (Overlay through Luminosity) snapshot the target and run in a
+shader — they cost a pass break.
+
+```rust
+let mut paint = Paint::from_color(Color::rgb(0.78, 1.0, 0.24));
+paint.blend_mode = BlendMode::Multiply;
+```
+
+```ts
+paint.setBlendMode(BlendMode.Multiply);
+```
+
+Left to right: `SrcOver`, `Multiply`, `Screen`.
+
+<Demo demo="drawing-blends" caption="live" />
+
+## Porter-Duff
+
+Clear, Src, Dst, SrcOver, DstOver, SrcIn, DstIn, SrcOut, DstOut, SrcAtop,
+DstAtop, Xor, Plus, Modulate, Screen.
+
+These use fixed-function blending except where noted as destructive
+(`Clear`, `Src`, `SrcIn`, …) — transparent source can then change pixels
+outside the ink.
+
+## Separable and HSL
+
+These always snapshot:
+
+Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight,
+Difference, Exclusion, Multiply, Hue, Saturation, Color, Luminosity.
+
+A shader paint with an advanced blend is drawn into an implicit layer first,
+then composited.

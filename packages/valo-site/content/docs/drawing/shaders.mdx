@@ -1,0 +1,63 @@
+---
+title: Colour and shaders
+description: Solid colour, gradients, spread modes, and image patterns.
+icon: Palette
+---
+
+A paint starts as a solid colour. Components are straight-alpha sRGB in
+`0..=1`. Shader and image draws use only the paint's **alpha** and ignore
+its RGB — the default black paint would otherwise blacken every sample.
+
+```rust
+let solid = Paint::from_color(Color::rgb(0.78, 1.0, 0.24));
+let ramp = Paint::from_shader(Shader::linear(
+    Point::new(0.0, 0.0),
+    Point::new(200.0, 0.0),
+    Color::rgb(0.12, 0.2, 0.42),
+    Color::rgb(0.78, 1.0, 0.24),
+));
+```
+
+```ts
+const solid = new Paint(0.78, 1, 0.24, 1);
+const paint = new Paint(1, 1, 1, 1);
+const ramp = Shader.linearGradient(
+  0, 0, 200, 0,
+  new Float32Array([0, 1]),
+  new Float32Array([0.12, 0.2, 0.42, 1, 0.78, 1, 0.24, 1]),
+  SpreadMode.Pad,
+);
+paint.setShader(ramp);
+```
+
+One short linear gradient, three spread modes: Pad, Repeat, Reflect.
+
+<Demo demo="drawing-shaders" caption="live" />
+
+## Gradient kinds
+
+- **Linear** — along a line from `start` to `end`
+- **Radial** — between a start circle (optional focus) and an end circle
+- **Sweep** — one clockwise turn around a centre, angles in radians from +x
+
+Shader coordinates begin in the draw's local space, so they follow the same
+transforms as the geometry. `setTransform` on a JS shader (or `local` in
+Rust) adds a second matrix.
+
+## Spread modes
+
+What happens outside the `0..=1` span:
+
+| Mode | Outside the span |
+| --- | --- |
+| `Pad` | Nearest edge colour |
+| `Repeat` | Tile in the same direction |
+| `Reflect` | Tile, reversing each cycle |
+
+Canvas2D gradients only pad.
+
+## Image patterns
+
+`Shader::Image` / `Shader.imagePattern` samples a GPU image across the
+geometry. Tiling is `TileMode`: Clamp, Repeat, Mirror, Decal. Filtering is
+`Filter` (Linear, Nearest) and `MipmapMode`. See [Images](/docs/drawing/images).

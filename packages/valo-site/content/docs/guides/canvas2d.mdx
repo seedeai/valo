@@ -59,7 +59,7 @@ The adapter exposes a few operations with no standard Canvas2D spelling:
 ```ts
 context.saveLayer(alpha, blendMode);
 context.setColorMatrix(matrix);
-context.backdropBlur(x, y, width, height, sigma);
+context.backdropBlur(x, y, width, height, sigma); // save-layer backdrop, immediately restored
 ```
 
 For difference clips, gradient spread modes, mask blur styles and retained

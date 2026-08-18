@@ -1,0 +1,38 @@
+---
+title: Mask blur
+description: Soften a draw's coverage. Four styles.
+icon: Droplet
+---
+
+Mask blur is a Gaussian on the **coverage mask**, not on the pixels after
+the draw. Solid colours use a closed-form rrect blur (one quad). Shader
+paints go through an effect layer.
+
+Sigma is in local units and follows the draw's transform.
+
+```rust
+paint.mask_blur = Some(MaskBlur::outer(12.0));
+```
+
+```ts
+paint.setMaskBlur(12, BlurStyle.Outer);
+```
+
+Left to right: Normal, Solid, Inner, Outer.
+
+<Demo demo="drawing-mask-blur" caption="live" />
+
+## Styles
+
+| Style | Visible coverage |
+| --- | --- |
+| `Normal` | Inside and outside |
+| `Solid` | Sharp interior, blur outside |
+| `Inner` | Inside only |
+| `Outer` | Outside only |
+
+Canvas2D `shadowBlur` is `Normal` and nothing else.
+
+Mask blur is not the same as [image-filter blur](/docs/drawing/image-filters)
+(which blurs rasterized pixels) or [backdrop blur](/docs/drawing/backdrop-blur)
+(which blurs what is already on the target).

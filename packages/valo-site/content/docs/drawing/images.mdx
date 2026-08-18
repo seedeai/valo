@@ -1,0 +1,64 @@
+---
+title: Images
+description: Upload pixels, draw them, control sampling and tiling.
+icon: Image
+---
+
+An `Image` is a cheap clone of an immutable GPU texture. The host uploads
+it; valo never fetches a URL.
+
+```rust
+use valo::ImageDesc;
+
+let image = context.upload_image(
+    ImageDesc {
+        size: [width, height],
+        premultiplied: false,
+        mips: true,
+    },
+    &pixels, // width * height * 4 bytes, straight RGBA8
+);
+builder.draw_image(&image, dst, &Paint::from_color(Color::WHITE));
+builder.draw_image_rect(&image, src, dst, Sampling::default(), &paint);
+```
+
+```ts
+const image = renderer.uploadRgba(width, height, pixels, false, true);
+builder.drawImageRect(
+  image,
+  0, 0, width, height,
+  40, 40, 240, 140,
+  Filter.Linear, MipmapMode.Linear,
+  TileMode.Clamp, TileMode.Clamp,
+  paint,
+);
+```
+
+The scene fetches a JPEG, decodes it with `createImageBitmap`, and uploads
+it once in `load`. valo still never opens the URL itself — the host does.
+
+<Demo demo="drawing-images" caption="live" />
+
+[Image](/docs/reference/image) covers the handle; [Context](/docs/reference/context)
+covers upload.
+
+## Sampling
+
+| | |
+| --- | --- |
+| `Filter` | `Linear` (bilinear) or `Nearest` |
+| `MipmapMode` | `None`, `Nearest`, `Linear` |
+| `TileMode` | `Clamp`, `Repeat`, `Mirror`, `Decal` |
+
+`Decal` returns transparent outside the image. That matters for a paint
+that is not fully covering — treating it as opaque would fill the rest of
+the quad with black.
+
+## Tint and filters
+
+`draw_image` / `drawImageRect` tints with the paint's **alpha** only. RGB on
+the default black paint would blacken the picture.
+
+A colour filter on a direct image draw runs on the sampled pixel. A mask
+blur or image filter still opens an effect layer so the order stays sample
+→ colour filter → blur.

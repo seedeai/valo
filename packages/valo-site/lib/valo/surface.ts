@@ -120,6 +120,7 @@ function renderScene(scene: ActiveScene, now: number): void {
       height: scene.height / unit,
       time: scene.elapsed + (now - scene.origin) / 1000,
       fonts: scene.fonts,
+      renderer: scene.renderer,
     });
     list = builder.build();
     const stats = scene.renderer.render(list, true, ...scene.clear);
@@ -215,6 +216,18 @@ export async function mountScene(
       scene.elapsed = 0;
       scene.pending = true;
       schedule();
+      const requested = next;
+      void Promise.resolve(next.load?.({ renderer: scene.renderer }))
+        .then(() => {
+          if (scene.module !== requested) return;
+          scene.pending = true;
+          schedule();
+        })
+        .catch((error) => {
+          if (scene.module !== requested) return;
+          scene.failed = true;
+          scene.options.onError?.(error instanceof Error ? error.message : String(error));
+        });
     },
     setAnimating(animating) {
       if (animating === scene.animating) return;
