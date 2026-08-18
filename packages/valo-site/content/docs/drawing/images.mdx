@@ -54,6 +54,11 @@ covers upload.
 that is not fully covering — treating it as opaque would fill the rest of
 the quad with black.
 
+Top: the same crop, Linear vs Nearest. Bottom: Clamp, Repeat, Mirror, Decal
+with a source rectangle larger than the image, so tiling is visible.
+
+<Demo demo="drawing-images-gallery" caption="live" />
+
 ## Tint and filters
 
 `draw_image` / `drawImageRect` tints with the paint's **alpha** only. RGB on

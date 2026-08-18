@@ -56,3 +56,8 @@ paint.setColorFilter(ColorFilter.blend(0.49, 0.29, 1, 1, BlendMode.Modulate));
 On a solid paint the filter can fold into the colour on the CPU. On an
 image shader it bakes a filtered texture; on a direct image draw it runs
 in the fragment.
+
+Top: identity, greyscale, invert, sepia. Bottom: Hue, Screen, Overlay, Color
+blend filters, all with a violet source.
+
+<Demo demo="drawing-color-filters-gallery" caption="live" />

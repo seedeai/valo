@@ -8,9 +8,6 @@ icon: Layers
 `restore` composites that texture as one image using the layer paint's alpha,
 blend, and filters.
 
-Left: per-draw alpha, so overlaps darken twice. Right: the same shapes inside
-a layer — the group alpha applies once.
-
 ```rust
 builder.save_layer(None, &Paint::from_color(Color::rgba(0.0, 0.0, 0.0, 0.4)));
 builder.draw_circle((200.0, 80.0), 46.0, &opaque);
@@ -55,3 +52,8 @@ builder.restore();
 
 The JavaScript engine API does not yet expose mask layers; use Rust or wait
 for a later `valo-web` binding.
+
+Left: `saveLayerBounds` crops children that spill outside the hint. Right:
+a layer nested in a layer.
+
+<Demo demo="drawing-layers-gallery" caption="live" />
