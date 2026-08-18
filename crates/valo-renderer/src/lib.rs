@@ -11,12 +11,13 @@
 //! - [`PipelineCache`]: grow-only map of pipeline variants (format × blend × kind).
 
 mod contours;
+mod frame;
 mod glyphs;
 mod gpu_timer;
 mod host_buffer;
 mod images;
 mod pipelines;
-mod plan;
+mod planner;
 mod pool;
 mod ramps;
 mod raster;

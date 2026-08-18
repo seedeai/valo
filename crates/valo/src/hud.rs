@@ -3,7 +3,7 @@
 //! timings, workload, and memory live (the debug HUD every renderer grows;
 //! this one ships in the box so hosts don't reinvent it).
 
-use valo_dl::{DisplayListBuilder, Paint};
+use valo_dl::{Backdrop, DisplayListBuilder, Paint};
 use valo_geometry::{Color, Rect};
 use valo_renderer::{MemoryReport, RenderStats};
 use valo_text::{FontCollection, ParagraphBuilder, TextStyle};
@@ -64,7 +64,8 @@ impl Hud {
         let pad = self.size * 0.7;
         let height = p.height() + pad * 2.0;
         let strip = Rect::new(0.0, 0.0, width, height);
-        b.backdrop_blur(strip, 6.0);
+        b.save_layer_backdrop(Some(strip), &Paint::default(), Backdrop::blur(6.0));
+        b.restore();
         b.draw_rect(
             strip,
             &Paint::from_color(Color::rgba(0.05, 0.05, 0.08, 0.4)),

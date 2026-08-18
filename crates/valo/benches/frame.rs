@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use valo::{
-    BlendMode, Color, Context, DisplayList, DisplayListBuilder, DrawParagraphExt, Offscreen, Paint,
-    PaintStyle, ParagraphBuilder, PathBuilder, Rect, Shader, Stroke, TextStyle,
+    Backdrop, BlendMode, Color, Context, DisplayList, DisplayListBuilder, DrawParagraphExt,
+    Offscreen, Paint, PaintStyle, ParagraphBuilder, PathBuilder, Rect, Shader, Stroke, TextStyle,
 };
 
 mod bench_fonts;
@@ -79,7 +79,12 @@ fn design_canvas(fonts: &mut valo::FontCollection) -> DisplayList {
     );
     let mut head = head.build();
     head.layout(700.0);
-    b.backdrop_blur(Rect::new(20.0, 20.0, 700.0, 70.0), 8.0);
+    b.save_layer_backdrop(
+        Some(Rect::new(20.0, 20.0, 700.0, 70.0)),
+        &Paint::default(),
+        Backdrop::blur(8.0),
+    );
+    b.restore();
     b.draw_paragraph(&head, (40.0, 28.0));
     b.build()
 }

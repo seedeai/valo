@@ -33,9 +33,9 @@ pub use surface::{metal_device_of, wrap_metal_texture, ExternalMetalTexture};
 pub use surface::{Offscreen, PersistentCanvas, Surface, SurfaceFrame};
 
 pub use valo_dl::{
-    BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList, DisplayListBuilder,
-    Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind, MipmapMode, Op,
-    Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
+    Backdrop, BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList,
+    DisplayListBuilder, Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind,
+    MipmapMode, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
 };
 pub use valo_geometry::{
     constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,

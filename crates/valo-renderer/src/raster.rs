@@ -173,7 +173,7 @@ fn cacheable_bounds(list: &DisplayList) -> Option<Rect> {
     if list.draw_count() < MIN_CACHED_DRAWS {
         return None;
     }
-    if list.backdrop_group_count() > 0 {
+    if list.backdrop_reads() > 0 {
         return None;
     }
     let bounds = list.bounds()?;
@@ -238,5 +238,63 @@ fn create_entry(
         content_bounds,
         bytes,
         last_used: frame,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use valo_dl::{Backdrop, DisplayListBuilder, Paint};
+
+    use super::*;
+
+    /// Enough plain rects to clear the draw-count admission bar.
+    fn heavy_builder() -> DisplayListBuilder {
+        let mut b = DisplayListBuilder::new();
+        for i in 0..MIN_CACHED_DRAWS {
+            let x = i as f32 * 10.0;
+            b.draw_rect(Rect::new(x, 0.0, 8.0, 8.0), &Paint::default());
+        }
+        b
+    }
+
+    #[test]
+    fn admits_a_plain_heavy_list() {
+        assert!(cacheable_bounds(&heavy_builder().build()).is_some());
+    }
+
+    #[test]
+    fn rejects_an_unshared_backdrop() {
+        let mut b = heavy_builder();
+        // No shared key.
+        b.save_layer_backdrop(
+            Some(Rect::new(0.0, 0.0, 50.0, 50.0)),
+            &Paint::default(),
+            Backdrop::blur(4.0),
+        );
+        b.restore();
+        assert!(
+            cacheable_bounds(&b.build()).is_none(),
+            "an unshared backdrop read must block caching"
+        );
+    }
+
+    #[test]
+    fn rejects_a_nested_backdrop() {
+        let mut child = DisplayListBuilder::new();
+        child.save_layer_backdrop(
+            Some(Rect::new(0.0, 0.0, 50.0, 50.0)),
+            &Paint::default(),
+            Backdrop::blur(4.0),
+        );
+        child.restore();
+        let child = Arc::new(child.build());
+        let mut b = heavy_builder();
+        b.draw_display_list(&child);
+        assert!(
+            cacheable_bounds(&b.build()).is_none(),
+            "a backdrop read inside a nested list must block caching"
+        );
     }
 }

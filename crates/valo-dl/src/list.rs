@@ -52,6 +52,16 @@ pub enum Op {
         /// alpha ride each child at its own slot (Impeller's opacity
         /// peephole: elision changes nothing about depth).
         can_elide: bool,
+        /// Set = the layer OPENS pre-filled with a blur of everything
+        /// already painted beneath it (σ in local units; replay scales it
+        /// into device px). Children paint over that glass, and the
+        /// composite applies group alpha to blur + children as one image —
+        /// Flutter's `saveLayer(bounds, paint, backdrop)`. A backdrop layer
+        /// never elides: the seed needs a texture.
+        backdrop_sigma: Option<f32>,
+        /// Tiles sharing one key reuse the FIRST tile's blur (and see the
+        /// scene as of that tile). Meaningful only with `backdrop_sigma`.
+        backdrop_key: Option<u64>,
     },
     Restore,
     /// Appends to the current transform (canvas semantics: applies to
@@ -81,18 +91,6 @@ pub enum Op {
         bounds: Rect,
         slot: u32,
     },
-    /// Blur what's ALREADY on the target under `rect`, composite the blurred
-    /// tile back, keep drawing on top — frosted glass.
-    /// Tiles sharing `shared_key` blur ONCE over their union region; later
-    /// tiles show the scene as of the first (Flutter's backdropKey trade).
-    BackdropBlur {
-        rect: Rect,
-        /// σ in local units at record; replay scales it into device px.
-        sigma: f32,
-        shared_key: Option<u64>,
-        bounds: Rect,
-        slot: u32,
-    },
     /// Depth-buffer clip (Impeller's "new clips"): the renderer
     /// stencils the shape, then writes a depth CEILING at `expiry_slot` —
     /// Intersect ceilings the exterior, Difference the interior. Draws below
@@ -102,7 +100,6 @@ pub enum Op {
         path: Arc<Path>,
         fill_rule: FillRule,
         op: ClipOp,
-        bounds: Rect,
         /// The slot of the restore that ends this clip's scope (backpatched
         /// by the builder when the scope closes — still record-time).
         expiry_slot: u32,
@@ -178,9 +175,13 @@ pub struct DisplayList {
     /// Depth slots consumed when replayed (draws + clip-scope restores),
     /// nested lists included — the renderer derives its z quantum from this.
     pub(crate) depth_slots: u32,
-    /// Per shared backdrop key: union of the tiles' recorded bounds and the
-    /// tile count — the first tile replayed blurs the whole union once.
+    /// Per shared backdrop key: the union of the recorded regions of the
+    /// backdrop layers carrying it — the first one replayed blurs the whole
+    /// union once, and the rest reuse that blur.
     pub(crate) backdrop_groups: Vec<BackdropGroup>,
+    /// Backdrop reads when replayed, shared or not, nested lists included.
+    /// A rasterized copy of such a list would freeze what it read.
+    pub(crate) backdrop_reads: u32,
 }
 
 /// `GlyphPos` identifies and positions one glyph within a glyph run.
@@ -203,8 +204,6 @@ pub struct BackdropGroup {
     pub key: u64,
     /// `union_bounds` encloses every region in the group.
     pub union_bounds: Rect,
-    /// `tiles` is the number of regions in the group.
-    pub tiles: u32,
     /// `sigma` is the shared blur radius when every region agrees.
     ///
     /// It is `None` when regions with this key use different radii and cannot
@@ -223,6 +222,7 @@ impl DisplayList {
         draw_count: u32,
         depth_slots: u32,
         backdrop_groups: Vec<BackdropGroup>,
+        backdrop_reads: u32,
     ) -> Self {
         Self {
             id: next_id(),
@@ -231,6 +231,7 @@ impl DisplayList {
             draw_count,
             depth_slots,
             backdrop_groups,
+            backdrop_reads,
         }
     }
 
@@ -264,9 +265,10 @@ impl DisplayList {
         self.depth_slots
     }
 
-    /// `backdrop_group_count` returns the number of shared backdrop groups.
-    pub fn backdrop_group_count(&self) -> usize {
-        self.backdrop_groups.len()
+    /// `backdrop_reads` counts backdrop reads when replayed, shared or not,
+    /// nested lists included.
+    pub fn backdrop_reads(&self) -> u32 {
+        self.backdrop_reads
     }
 
     /// `backdrop_group` returns the group recorded for `key`, if present.

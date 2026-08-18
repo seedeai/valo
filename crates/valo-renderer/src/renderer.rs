@@ -2,13 +2,25 @@ use valo_dl::DisplayList;
 use valo_geometry::Color;
 
 use crate::contours::ContourCache;
+use crate::frame::{FramePlan, PassColor, PlannedPass};
 use crate::glyphs::GlyphStore;
 use crate::gpu_timer::GpuTimer;
 use crate::host_buffer::HostBuffer;
 use crate::images::ImageStore;
 use crate::pipelines::PipelineCache;
-use crate::plan::{FramePlan, PassColor, PlannedPass, Planner};
+use crate::planner::Planner;
 use crate::pool::TargetPool;
+
+/// `linear_sampler` is the one linear sampler every filter/composite bind
+/// group shares — created once (a per-frame create is a JS hop on wasm).
+pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("valo.linear"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    })
+}
 
 /// `RenderTarget` is the destination for one render operation.
 ///
@@ -122,7 +134,7 @@ impl RendererCore {
         let pool = TargetPool::new(&device);
         let glyphs = GlyphStore::new(&device, &queue);
         let timer = GpuTimer::new(&device, &queue);
-        let sampler = crate::plan::linear_sampler(&device);
+        let sampler = linear_sampler(&device);
         Self {
             device,
             queue,

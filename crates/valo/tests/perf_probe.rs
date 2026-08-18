@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use valo::{
-    BlendMode, Color, Context, DisplayList, DisplayListBuilder, DrawParagraphExt, FontCollection,
-    MaskBlur, Offscreen, Paint, PaintStyle, ParagraphBuilder, PathBuilder, Point, Rect, Shader,
-    Stroke, TextStyle,
+    Backdrop, BlendMode, Color, Context, DisplayList, DisplayListBuilder, DrawParagraphExt,
+    FontCollection, MaskBlur, Offscreen, Paint, PaintStyle, ParagraphBuilder, PathBuilder, Point,
+    Rect, Shader, Stroke, TextStyle,
 };
 
 fn fonts() -> FontCollection {
@@ -71,7 +71,12 @@ fn design_canvas(fonts: &mut FontCollection) -> DisplayList {
     );
     let mut head = head.build();
     head.layout(700.0);
-    b.backdrop_blur(Rect::new(20.0, 20.0, 700.0, 70.0), 8.0);
+    b.save_layer_backdrop(
+        Some(Rect::new(20.0, 20.0, 700.0, 70.0)),
+        &Paint::default(),
+        Backdrop::blur(8.0),
+    );
+    b.restore();
     b.draw_paragraph(&head, (40.0, 28.0));
     b.build()
 }

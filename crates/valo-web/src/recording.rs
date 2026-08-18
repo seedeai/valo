@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use valo::{DisplayList, DisplayListBuilder, DrawGlyphRunExt, DrawParagraphExt, Rect};
+use valo::{Backdrop, DisplayList, DisplayListBuilder, DrawGlyphRunExt, DrawParagraphExt, Rect};
 use wasm_bindgen::prelude::*;
 
 use crate::path::{elliptical_radii, WebPath};
@@ -367,6 +367,11 @@ impl WebDisplayListBuilder {
     ///
     /// `sigma` is the Gaussian standard deviation in local units. The active
     /// clip shapes the result; later draws appear above it.
+    ///
+    /// It is a convenience for the backdrop save-layer form — a layer opened
+    /// over the rectangle and immediately closed, so the blurred region
+    /// composites with nothing painted onto it. Open the layer yourself when
+    /// content should ride on the glass and fade with it.
     #[wasm_bindgen(js_name = backdropBlur)]
     pub fn backdrop_blur(
         &mut self,
@@ -376,8 +381,13 @@ impl WebDisplayListBuilder {
         height: f32,
         sigma: f32,
     ) -> Result<(), JsValue> {
-        self.builder()?
-            .backdrop_blur(Rect::new(x, y, width, height), sigma);
+        let builder = self.builder()?;
+        builder.save_layer_backdrop(
+            Some(Rect::new(x, y, width, height)),
+            &valo::Paint::default(),
+            Backdrop::blur(sigma),
+        );
+        builder.restore();
         Ok(())
     }
 

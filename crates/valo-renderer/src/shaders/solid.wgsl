@@ -12,7 +12,7 @@
 //   payload[17..22) = colour matrix rows + translation column; slot 17 alone
 //                     carries the blend filter's premultiplied source colour
 // Colors are premultiplied everywhere; depth (the draw's slot) rides in mvp.
-// plan.rs's `PAYLOAD_*` constants are the authority for all of this.
+// The `PAYLOAD_*` constants in planner/emit.rs are the authority for all of this.
 
 struct DrawUniforms {
     mvp: mat4x4<f32>,

@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use valo::{BlendMode, Color, Context, DisplayListBuilder, MaskBlur, Offscreen, Paint, Rect};
+use valo::{
+    Backdrop, BlendMode, Color, Context, DisplayListBuilder, MaskBlur, Offscreen, Paint, Rect,
+};
 
 fn goldens_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
@@ -2069,10 +2071,15 @@ fn m5_backdrop_scene() -> valo::DisplayList {
     let panel = |b: &mut DisplayListBuilder, rect: Rect, sigma: f32, shared: Option<u64>| {
         b.save();
         b.clip_rrect(rect, 18.0, ClipOp::Intersect);
-        match shared {
-            Some(key) => b.backdrop_blur_shared(rect, sigma, key),
-            None => b.backdrop_blur(rect, sigma),
-        }
+        b.save_layer_backdrop(
+            Some(rect),
+            &Paint::default(),
+            Backdrop {
+                sigma,
+                shared_key: shared,
+            },
+        );
+        b.restore();
         b.draw_rect(rect, &Paint::from_color(Color::rgba(1.0, 1.0, 1.0, 0.14)));
         b.restore();
     };
@@ -3154,8 +3161,18 @@ fn redrawn_list_gets_its_own_backdrop_blur() {
     let offscreen = Offscreen::new(&device, size);
 
     let mut tile = DisplayListBuilder::new();
-    tile.backdrop_blur_shared(Rect::new(0.0, 0.0, 80.0, 60.0), 6.0, 7);
-    tile.backdrop_blur_shared(Rect::new(90.0, 0.0, 80.0, 60.0), 6.0, 7);
+    tile.save_layer_backdrop(
+        Some(Rect::new(0.0, 0.0, 80.0, 60.0)),
+        &Paint::default(),
+        Backdrop::blur(6.0).shared(7),
+    );
+    tile.restore();
+    tile.save_layer_backdrop(
+        Some(Rect::new(90.0, 0.0, 80.0, 60.0)),
+        &Paint::default(),
+        Backdrop::blur(6.0).shared(7),
+    );
+    tile.restore();
     let tile = std::sync::Arc::new(tile.build());
 
     let mut b = DisplayListBuilder::new();
@@ -3195,8 +3212,18 @@ fn mixed_sigma_backdrop_keys_do_not_share() {
         Rect::new(0.0, 0.0, 400.0, 150.0),
         &Paint::from_color(Color::rgb(0.8, 0.4, 0.3)),
     );
-    b.backdrop_blur_shared(Rect::new(10.0, 10.0, 80.0, 60.0), 4.0, 9);
-    b.backdrop_blur_shared(Rect::new(100.0, 10.0, 80.0, 60.0), 12.0, 9);
+    b.save_layer_backdrop(
+        Some(Rect::new(10.0, 10.0, 80.0, 60.0)),
+        &Paint::default(),
+        Backdrop::blur(4.0).shared(9),
+    );
+    b.restore();
+    b.save_layer_backdrop(
+        Some(Rect::new(100.0, 10.0, 80.0, 60.0)),
+        &Paint::default(),
+        Backdrop::blur(12.0).shared(9),
+    );
+    b.restore();
 
     let stats = ctx.render(&b.build(), &offscreen.target(Some(Color::BLACK)));
     assert_eq!(stats.backdrops, 2, "each σ blurs independently");

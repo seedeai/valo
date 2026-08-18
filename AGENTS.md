@@ -46,10 +46,10 @@ Each rule exists for a reason; the reason is stated so you can tell when a rule 
 Not rules — facts about how the engine works that are cheap to know and expensive to rediscover. The detailed mechanics live as comments beside the code they describe.
 
 - Coordinates start at the top-left and y grows downward, in logical pixels until a transform says otherwise (the Canvas2D/Skia convention).
-- The public transform is a full 4×4, but matrix z never controls draw order. Depth is internal: the renderer assigns z to make clips depth-tested, and callers never see it. (The formula lives beside `slot_z` in `plan.rs`.)
+- The public transform is a full 4×4, but matrix z never controls draw order. Depth is internal: the renderer assigns z to make clips depth-tested, and callers never see it. (The formula lives beside `slot_z` in `planner/replay.rs`.)
 - Draws render into 4-sample scratch textures that hardware-resolve into single-sample persistent targets. The scratch is kept only when a later render section resumes the same target; the final section discards it, which lets tiled GPUs (phones, Apple Silicon) skip writing it to memory.
 - Recording may hold existing GPU texture handles, but never needs a GPU device — display lists and text stay recordable from any thread. Hosts create and upload GPU resources before recording refers to them.
-- When one paint carries both a colour filter and a blur, the order applied depends on what the filter is attached to — the reasoning lives beside `LayerEffects` in `plan.rs`.
+- When one paint carries both a colour filter and a blur, the order applied depends on what the filter is attached to — the reasoning lives beside `LayerEffects` in `planner/filters.rs`.
 
 ## Working here
 
@@ -72,7 +72,7 @@ No abbreviations in public names or fields. Full words — `composition`, not `c
 ### Comments
 
 - Comments must carry information the code does not: contracts, constraints, rationale, surprising behavior, or external design references.
-- Public rustdoc starts with the exact identifier and a complete sentence: `Context is ...`, `` `render` draws ... ``. Describe correct use, ownership, side effects, defaults, edge cases, and when an option should be changed.
+- Public rustdoc starts with the exact identifier and a complete sentence: `Context is ...`, `` `render` draws ... ``. Go style: the first line alone states WHAT it is; a blank line, then one concise paragraph for why it exists and what else is worth knowing. Describe correct use, ownership, side effects, defaults, edge cases, and when an option should be changed. Per-field facts go on the fields, not in the type's paragraph.
 - Introduce public concepts in ordinary language before specialized terms: say what the API represents, why a caller uses it, and define terms such as shaping or caret affinity. Add a short example when prose alone would still leave correct use unclear.
 - Link public documentation through facade types such as `crate::TextTiers`, not internal implementation crates.
 - Never cite an internal document, plan number, or chapter that a reader cannot follow. Delete stale or misplaced comments instead of adapting them to the wrong item.
@@ -82,5 +82,5 @@ No abbreviations in public names or fields. Full words — `composition`, not `c
 Issue records, not rules — each of these produced wrong pixels or lost hours once already.
 
 - **Images rendering solid black:** every image-drawing step must tint with `alpha_tint(...)`, never the raw paint colour. The image shader multiplies samples by its tint and the default paint is black. Shipped twice; the `m3_images` golden now catches it.
-- **Gradient gaps rendering solid black:** never treat a paint as fully covering unless it is guaranteed to touch every pixel in its bounds. Some gradients have opaque stops but paint nothing outside their valid region; promoting them to the no-blend pipeline replaces those untouched pixels with black. `shader_opaque` in `plan.rs` is deliberately conservative about this.
+- **Gradient gaps rendering solid black:** never treat a paint as fully covering unless it is guaranteed to touch every pixel in its bounds. Some gradients have opaque stops but paint nothing outside their valid region; promoting them to the no-blend pipeline replaces those untouched pixels with black. `shader_opaque` in `planner/emit.rs` is deliberately conservative about this.
 - **GPU resources not being freed:** one non-blocking `poll` per paced frame is enough for the driver to reclaim finished resources. Blocking waits belong only on pixel-readback paths; an unthrottled submit loop is the one case needing an explicit wait, and hosts do not run that way.

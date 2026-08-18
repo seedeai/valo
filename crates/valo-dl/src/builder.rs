@@ -15,8 +15,8 @@ pub struct DisplayListBuilder {
     /// Open save layers (innermost last). Layer-scoped oracle state lives
     /// here; `Scope.is_layer` says which restore pops one.
     layers: Vec<LayerScope>,
-    /// Shared backdrop keys seen so far: union of recorded tile bounds +
-    /// tile count (the replay blurs each union once).
+    /// Shared backdrop keys seen so far, each with the union of the regions
+    /// of the backdrop layers carrying it (the replay blurs each union once).
     backdrop_groups: Vec<crate::BackdropGroup>,
     /// Ops indexes of clips awaiting their expiry, one bucket per open scope
     /// (index 0 = the root scope, closed by `build`).
@@ -26,6 +26,44 @@ pub struct DisplayListBuilder {
     slots: u32,
     bounds: Option<Rect>,
     draw_count: u32,
+    /// Backdrop reads in this list, nested lists included — shared or not.
+    /// Consumers that freeze pixels (the raster cache) must refuse any list
+    /// where this is nonzero.
+    backdrop_reads: u32,
+}
+
+/// `Backdrop` describes what a backdrop save layer samples from the scene
+/// beneath it.
+///
+/// Today that is a gaussian blur. Further seed-only stages (a color matrix
+/// for iOS glass saturation) join as fields here, never as effects on the
+/// layer paint — a paint effect would filter the children too.
+#[derive(Clone, Copy, Debug)]
+pub struct Backdrop {
+    /// Gaussian σ in local units at record; replay scales it into device
+    /// px. σ ≤ 0 records a plain save layer (nothing to blur — the scene
+    /// already shows through).
+    pub sigma: f32,
+    /// Tiles sharing a key reuse the FIRST tile's blur — and see the scene
+    /// as of that tile. Use one key only for tiles over the same
+    /// background.
+    pub shared_key: Option<u64>,
+}
+
+impl Backdrop {
+    /// `blur` is a gaussian backdrop blur of `sigma` local units.
+    pub fn blur(sigma: f32) -> Self {
+        Self {
+            sigma,
+            shared_key: None,
+        }
+    }
+
+    /// `shared` marks this backdrop as one tile of a keyed group.
+    pub fn shared(mut self, key: u64) -> Self {
+        self.shared_key = Some(key);
+        self
+    }
 }
 
 /// One save-scope's state: the transform and the device-space clip bounds
@@ -51,6 +89,15 @@ struct LayerScope {
     compatible: bool,
     /// ±3σ (device units) when the composite paint blurs.
     blur_pad: f32,
+    /// `(sigma, shared_key)` when this layer opens pre-filled with a blur
+    /// of what's beneath it. The keyed group is noted at close, when the
+    /// layer's region is known.
+    backdrop: Option<(f32, Option<u64>)>,
+    /// A caller-supplied bounds hint is a CROP; eliding a hinted layer
+    /// would un-crop it. Conservative — Flutter tracks whether the bounds
+    /// actually clipped (`kMayClipContents`); valo vetoes on any hint until
+    /// a real caller needs the finer rule.
+    hinted: bool,
 }
 
 impl Default for DisplayListBuilder {
@@ -75,6 +122,7 @@ impl DisplayListBuilder {
             slots: 0,
             bounds: None,
             draw_count: 0,
+            backdrop_reads: 0,
         }
     }
 
@@ -96,7 +144,7 @@ impl DisplayListBuilder {
     /// content outside it is discarded. Pass `None` to derive bounds from the
     /// recorded children and active clip.
     pub fn save_layer(&mut self, bounds_hint: Option<Rect>, paint: &Paint) {
-        self.save_layer_inner(bounds_hint, paint, None);
+        self.save_layer_inner(bounds_hint, paint, None, None);
     }
 
     /// `save_layer_mask` begins a mask layer closed by `restore`.
@@ -109,7 +157,28 @@ impl DisplayListBuilder {
             blend_mode: crate::BlendMode::DstIn,
             ..Paint::default()
         };
-        self.save_layer_inner(bounds_hint, &paint, Some(kind));
+        self.save_layer_inner(bounds_hint, &paint, Some(kind), None);
+    }
+
+    /// `save_layer_backdrop` begins a layer that OPENS pre-filled with the
+    /// [`Backdrop`]-filtered scene beneath it (frosted glass). Children
+    /// paint over that glass, and `restore` composites glass + children as
+    /// one image with `paint` — so a group alpha fades them together
+    /// (Flutter's `saveLayer(bounds, paint, backdrop)`).
+    ///
+    /// Without `bounds_hint` the layer covers the active clip — a backdrop
+    /// reads everything beneath it, so a hint-less, clip-less list records
+    /// unbounded bounds; hint the layer when the list will be embedded.
+    pub fn save_layer_backdrop(
+        &mut self,
+        bounds_hint: Option<Rect>,
+        paint: &Paint,
+        backdrop: Backdrop,
+    ) {
+        // σ ≤ 0 has nothing to sample: keep the layer semantics, drop the
+        // read (and the raster-cache poison that rides every real read).
+        let backdrop = (backdrop.sigma > 0.0).then_some((backdrop.sigma, backdrop.shared_key));
+        self.save_layer_inner(bounds_hint, paint, None, backdrop);
     }
 
     fn save_layer_inner(
@@ -117,6 +186,7 @@ impl DisplayListBuilder {
         bounds_hint: Option<Rect>,
         paint: &Paint,
         mask_composite: Option<MaskKind>,
+        backdrop: Option<(f32, Option<u64>)>,
     ) {
         let device_hint = bounds_hint.map(|h| self.top().transform.map_rect(&h));
         let mut scope = Scope {
@@ -141,8 +211,16 @@ impl DisplayListBuilder {
             || paint
                 .image_filter
                 .as_ref()
-                .is_some_and(|filter| filter.modifies_transparent_black());
+                .is_some_and(|filter| filter.modifies_transparent_black())
+            // A backdrop layer OPENS full of blurred parent, so it paints its
+            // whole region whether or not children add ink — and with no
+            // hint that region is everything beneath it. Deriving its bounds
+            // from children instead would leave a childless glass panel empty.
+            || backdrop.is_some();
         let flooded_bounds = floods_scope.then(|| scope.clip.unwrap_or(Rect::EVERYTHING));
+        if backdrop.is_some() {
+            self.backdrop_reads += 1;
+        }
         self.scopes.push(scope);
         self.pending_clips.push(Vec::new());
         self.layers.push(LayerScope {
@@ -153,6 +231,8 @@ impl DisplayListBuilder {
             // Blurred layers spread ink past their children:
             // pad the recorded bounds so the texture holds the falloff.
             blur_pad: paint.device_effect_padding(&self.top().transform),
+            backdrop,
+            hinted: device_hint.is_some(),
         });
         // Children keep counting on the SAME depth line (Impeller's global
         // numbering) — the layer's pass rebases against base_slot.
@@ -163,6 +243,8 @@ impl DisplayListBuilder {
             base_slot: self.slots,
             composite_slot: 0,
             can_elide: false,
+            backdrop_sigma: backdrop.map(|(sigma, _)| sigma),
+            backdrop_key: backdrop.and_then(|(_, key)| key),
         });
     }
 
@@ -249,15 +331,17 @@ impl DisplayListBuilder {
     }
 
     /// `clip_path` applies a path clip until the current scope ends.
+    ///
+    /// Clips do NOT forfeit an enclosing layer's elision (Flutter's
+    /// opacity distribution ignores clips too): a depth clip records its
+    /// own expiry slot and works identically whether the group's children
+    /// draw in a layer or in the parent, and child bounds are already
+    /// clip-cropped when the disjointness check reads them. The Cupertino
+    /// dialog depends on this — fade → clip → backdrop must keep the fade
+    /// elidable or the glass snapshots a cleared offscreen.
     pub fn clip_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, op: ClipOp) {
         let bounds = self.top().transform.map_rect(&path.bounds());
         self.shrink_clip(op, bounds);
-        // Clips forfeit elision: correct in principle now that elided
-        // children keep their own slots, but kept conservative until a
-        // scene needs it (stricter than Flutter/Impeller, on purpose).
-        if let Some(layer) = self.layers.last_mut() {
-            layer.compatible = false;
-        }
         self.pending_clips
             .last_mut()
             .expect("root scope")
@@ -266,7 +350,6 @@ impl DisplayListBuilder {
             path: Arc::clone(path),
             fill_rule,
             op,
-            bounds,
             expiry_slot: 0, // backpatched by expire_scope_clips
         });
     }
@@ -379,23 +462,6 @@ impl DisplayListBuilder {
         self.draw_path(&p.build(), FillRule::NonZero, paint);
     }
 
-    /// `backdrop_blur` blurs existing target pixels beneath `rect`.
-    ///
-    /// `sigma` is measured in local units. The active clip shapes the result;
-    /// later draws appear above it.
-    pub fn backdrop_blur(&mut self, rect: Rect, sigma: f32) {
-        self.record_backdrop(rect, sigma, None);
-    }
-
-    /// `backdrop_blur_shared` shares one blur across regions with the same key.
-    ///
-    /// Sharing reduces filter work but snapshots the background when the first
-    /// keyed region is reached. Use one key only for regions over the same
-    /// background.
-    pub fn backdrop_blur_shared(&mut self, rect: Rect, sigma: f32, key: u64) {
-        self.record_backdrop(rect, sigma, Some(key));
-    }
-
     /// `draw_image` records the whole image into `dst`.
     ///
     /// It uses linear filtering and clamps at the image edges.
@@ -491,6 +557,7 @@ impl DisplayListBuilder {
         let base_slot = self.slots;
         self.slots += list.depth_slots();
         self.draw_count += list.draw_count();
+        self.backdrop_reads += list.backdrop_reads();
         self.union_bounds(bounds);
         // Conservative: a nested list's internal structure is opaque here.
         self.note_layer_child(bounds, false);
@@ -520,6 +587,7 @@ impl DisplayListBuilder {
             self.draw_count,
             self.slots,
             self.backdrop_groups,
+            self.backdrop_reads,
         )
     }
 
@@ -552,15 +620,28 @@ impl DisplayListBuilder {
             base_slot: _,
             composite_slot,
             can_elide,
+            ..
         } = &mut self.ops[layer.op_index]
         else {
             unreachable!("LayerScope.op_index always points at SaveLayer");
         };
         *sb = scope_bounds;
         *composite_slot = self.slots;
-        *can_elide = layer.compatible && paint.is_opacity_only();
+        // A backdrop layer never elides (its seed needs a texture); a hinted
+        // layer never elides (the hint is a crop that eliding would undo).
+        *can_elide = layer.compatible
+            && paint.is_opacity_only()
+            && layer.backdrop.is_none()
+            && !layer.hinted;
 
+        // One SrcOver composite quad — an ENCLOSING opacity group can still
+        // distribute its alpha onto it. This is what lets a fading group
+        // elide over a backdrop layer: the alpha lands once, on the glass
+        // and its children together.
         let supports = paint.blend_mode == crate::BlendMode::SrcOver;
+        if let Some((sigma, Some(key))) = layer.backdrop {
+            self.note_backdrop_group(key, scope_bounds, sigma);
+        }
         self.draw_count += 1; // the composite draws
         self.union_bounds(scope_bounds);
         self.note_layer_child(scope_bounds, supports);
@@ -581,32 +662,10 @@ impl DisplayListBuilder {
         });
     }
 
-    fn record_backdrop(&mut self, rect: Rect, sigma: f32, shared_key: Option<u64>) {
-        if rect.is_empty() || sigma <= 0.0 {
-            return;
-        }
-        let Some(bounds) = self.clipped_device_bounds(&rect) else {
-            return;
-        };
-        // Reads the target, so it can never share an elided layer's z.
-        let slot = self.take_draw_slot(bounds, false);
-        if let Some(key) = shared_key {
-            self.note_backdrop_group(key, bounds, sigma);
-        }
-        self.ops.push(Op::BackdropBlur {
-            rect,
-            sigma,
-            shared_key,
-            bounds,
-            slot,
-        });
-    }
-
     fn note_backdrop_group(&mut self, key: u64, bounds: Rect, sigma: f32) {
         match self.backdrop_groups.iter_mut().find(|g| g.key == key) {
             Some(group) => {
                 group.union_bounds = group.union_bounds.union(&bounds);
-                group.tiles += 1;
                 if group.sigma != Some(sigma) {
                     group.sigma = None; // mixed σ under one key: no sharing
                 }
@@ -614,7 +673,6 @@ impl DisplayListBuilder {
             None => self.backdrop_groups.push(crate::BackdropGroup {
                 key,
                 union_bounds: bounds,
-                tiles: 1,
                 sigma: Some(sigma),
             }),
         }
@@ -774,20 +832,27 @@ mod tests {
         panic!("no clip recorded");
     }
 
+    /// Every recorded layer's `(scope_bounds, base_slot, composite_slot,
+    /// can_elide)`, in recording order — so an enclosing layer comes before
+    /// the layers nested inside it.
+    fn layer_facts(dl: &DisplayList) -> Vec<(Rect, u32, u32, bool)> {
+        dl.ops()
+            .iter()
+            .filter_map(|op| match op {
+                Op::SaveLayer {
+                    scope_bounds,
+                    base_slot,
+                    composite_slot,
+                    can_elide,
+                    ..
+                } => Some((*scope_bounds, *base_slot, *composite_slot, *can_elide)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn find_layer(dl: &DisplayList) -> (Rect, u32, u32, bool) {
-        for op in dl.ops() {
-            if let Op::SaveLayer {
-                scope_bounds,
-                base_slot,
-                composite_slot,
-                can_elide,
-                ..
-            } = op
-            {
-                return (*scope_bounds, *base_slot, *composite_slot, *can_elide);
-            }
-        }
-        panic!("no layer recorded");
+        *layer_facts(dl).first().expect("no layer recorded")
     }
 
     #[test]
@@ -979,14 +1044,16 @@ mod tests {
     }
 
     #[test]
-    fn clip_inside_layer_forfeits_elision() {
+    fn clip_inside_layer_keeps_elision() {
         let mut b = DisplayListBuilder::new();
         b.save_layer(None, &alpha_layer(0.5));
         b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
         b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
         b.restore();
         let (_, _, _, can_elide) = find_layer(&b.build());
-        assert!(!can_elide);
+        // A depth clip expires on its own slot either way; Flutter's
+        // opacity distribution ignores clips too.
+        assert!(can_elide);
     }
 
     #[test]
@@ -1065,27 +1132,110 @@ mod tests {
     }
 
     #[test]
+    fn hinted_layer_forfeits_elision() {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(Some(Rect::new(0.0, 0.0, 40.0, 40.0)), &alpha_layer(0.5));
+        b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        b.restore();
+        let (_, _, _, can_elide) = find_layer(&b.build());
+        assert!(!can_elide, "the hint is a crop; eliding would un-crop it");
+    }
+
+    // ── backdrop layers ─────────────────────────────────────────────────────
+
+    /// A glass panel: a backdrop layer with nothing painted over it.
+    fn glass(b: &mut DisplayListBuilder, rect: Rect, sigma: f32, key: Option<u64>) {
+        b.save_layer_backdrop(
+            Some(rect),
+            &Paint::default(),
+            Backdrop {
+                sigma,
+                shared_key: key,
+            },
+        );
+        b.restore();
+    }
+
+    #[test]
     fn shared_backdrops_group_by_key() {
         let mut b = DisplayListBuilder::new();
-        b.backdrop_blur_shared(Rect::new(0.0, 0.0, 50.0, 50.0), 8.0, 7);
-        b.backdrop_blur_shared(Rect::new(100.0, 0.0, 50.0, 50.0), 8.0, 7);
-        b.backdrop_blur(Rect::new(0.0, 100.0, 50.0, 50.0), 8.0);
+        glass(&mut b, Rect::new(0.0, 0.0, 50.0, 50.0), 8.0, Some(7));
+        glass(&mut b, Rect::new(100.0, 0.0, 50.0, 50.0), 8.0, Some(7));
+        glass(&mut b, Rect::new(0.0, 100.0, 50.0, 50.0), 8.0, None);
         let dl = b.build();
         let group = dl.backdrop_group(7).expect("key 7 recorded");
-        assert_eq!(group.tiles, 2);
+        // Each layer joins its group at close, contributing its scope bounds.
         assert_eq!(group.union_bounds, Rect::new(0.0, 0.0, 150.0, 50.0));
-        assert_eq!(dl.draw_count(), 3, "each tile is a draw");
+        assert_eq!(group.sigma, Some(8.0), "one σ across the key: shareable");
+        assert_eq!(dl.draw_count(), 3, "each layer's composite is a draw");
         assert_eq!(dl.depth_slots(), 3);
     }
 
     #[test]
-    fn backdrop_inside_layer_forfeits_elision() {
+    fn mixed_sigma_under_one_key_clears_the_shared_sigma() {
+        let mut b = DisplayListBuilder::new();
+        glass(&mut b, Rect::new(0.0, 0.0, 50.0, 50.0), 4.0, Some(7));
+        glass(&mut b, Rect::new(100.0, 0.0, 50.0, 50.0), 12.0, Some(7));
+        let dl = b.build();
+        let group = dl.backdrop_group(7).expect("key 7 recorded");
+        assert_eq!(group.sigma, None, "disagreeing σ cannot share one blur");
+    }
+
+    #[test]
+    fn opacity_group_elides_over_a_backdrop_layer() {
         let mut b = DisplayListBuilder::new();
         b.save_layer(None, &alpha_layer(0.5));
-        b.backdrop_blur(Rect::new(0.0, 0.0, 50.0, 50.0), 4.0);
+        glass(&mut b, Rect::new(0.0, 0.0, 50.0, 50.0), 4.0, None);
         b.restore();
-        let (_, _, _, can_elide) = find_layer(&b.build());
-        assert!(!can_elide, "a dst-reading tile can't share the composite z");
+        let layers = layer_facts(&b.build());
+        assert_eq!(layers.len(), 2, "the opacity group and the glass inside it");
+        assert!(
+            layers[0].3,
+            "the group's alpha lands on the glass composite — the whole point \
+             of backdrop-as-a-layer-property: glass keeps blurring while the \
+             group fades"
+        );
+        assert!(!layers[1].3, "the glass itself needs a texture to seed");
+    }
+
+    /// The Cupertino dialog's exact recording shape: fade -> superellipse
+    /// clip -> glass. The clip must NOT forfeit the fade's elision - a depth
+    /// clip works identically whether the group's children draw in a layer
+    /// or the parent, and eliding is what lets the glass snapshot the live
+    /// scene instead of the fade's cleared offscreen.
+    #[test]
+    fn a_clip_does_not_forfeit_elision_around_glass() {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.save();
+        let mut clip = PathBuilder::new();
+        clip.rect(Rect::new(0.0, 0.0, 60.0, 60.0));
+        b.clip_path(&clip.build(), FillRule::NonZero, ClipOp::Intersect);
+        glass(&mut b, Rect::new(0.0, 0.0, 50.0, 50.0), 4.0, None);
+        b.restore();
+        b.restore();
+        let layers = layer_facts(&b.build());
+        assert_eq!(layers.len(), 2);
+        assert!(layers[0].3, "the clipped fade still elides");
+        assert!(!layers[1].3);
+    }
+
+    #[test]
+    fn backdrop_reads_count_unshared_and_nested() {
+        let mut child = DisplayListBuilder::new();
+        glass(&mut child, Rect::new(0.0, 0.0, 50.0, 50.0), 4.0, None);
+        let child = Arc::new(child.build());
+        assert_eq!(child.backdrop_reads(), 1, "unshared reads count too");
+
+        let mut parent = DisplayListBuilder::new();
+        glass(&mut parent, Rect::new(0.0, 0.0, 50.0, 50.0), 8.0, Some(7));
+        parent.draw_display_list(&child);
+        let parent = parent.build();
+        assert_eq!(parent.backdrop_reads(), 2, "own layer + the nested list's");
+
+        let mut clean = DisplayListBuilder::new();
+        clean.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red());
+        assert_eq!(clean.build().backdrop_reads(), 0);
     }
 
     #[cfg(feature = "serde")]

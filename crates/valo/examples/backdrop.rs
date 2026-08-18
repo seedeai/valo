@@ -1,19 +1,20 @@
 //! Backdrop blur: frosted glass over live content.
 //! `cargo run -p valo --example backdrop`
 //!
-//! `backdrop_blur(rect, σ)` breaks the pass, snapshots the region under the
-//! tile (+3σ so edge taps read real scene), blurs it AT SCALE (σ>4 renders
-//! the blur at reduced resolution — cost stays ~flat in σ), and composites
-//! the blurred tile back. Later draws land on top; a live `clip_rrect`
-//! shapes the tile into a panel.
+//! `save_layer_backdrop(bounds, paint, Backdrop { sigma: σ, shared_key: key })` opens a layer already full
+//! of blurred parent: it breaks the pass, snapshots the region under the
+//! panel (+3σ so edge taps read real scene), blurs it AT SCALE (σ>4 renders
+//! the blur at reduced resolution — cost stays ~flat in σ), and seeds the
+//! layer with it. Children paint onto that glass, and `restore` composites
+//! blur + children as one image; a live `clip_rrect` shapes it into a panel.
 //!
 //! What to look at:
-//! - LEFT panel: a lone glass tile (its own pass break + blur chain).
-//! - RIGHT pair: `backdrop_blur_shared(.., key)` — TWO tiles, ONE blur of
-//!   their union region; the second tile costs zero filter work. Stats:
-//!   `backdrops 2 · shared 1`, and only two snapshots for three tiles.
+//! - LEFT panel: a lone glass layer (its own pass break + blur chain).
+//! - RIGHT pair: two backdrop layers sharing one `key` — ONE blur of their
+//!   union region, and the second panel costs zero filter work. Stats:
+//!   `backdrops 2 · shared 1`, and only two snapshots for three panels.
 
-use valo::{ClipOp, Color, DisplayListBuilder, Paint, Point, Rect, Shader};
+use valo::{Backdrop, ClipOp, Color, DisplayListBuilder, Paint, Point, Rect, Shader};
 
 fn busy_background(b: &mut DisplayListBuilder) {
     b.draw_rect(
@@ -44,11 +45,16 @@ fn busy_background(b: &mut DisplayListBuilder) {
 fn glass_panel(b: &mut DisplayListBuilder, rect: Rect, sigma: f32, shared: Option<u64>) {
     b.save();
     b.clip_rrect(rect, 18.0, ClipOp::Intersect);
-    match shared {
-        Some(key) => b.backdrop_blur_shared(rect, sigma, key),
-        None => b.backdrop_blur(rect, sigma),
-    }
-    // The glass tint + a highlight edge, drawn OVER the blurred tile.
+    b.save_layer_backdrop(
+        Some(rect),
+        &Paint::default(),
+        Backdrop {
+            sigma,
+            shared_key: shared,
+        },
+    );
+    b.restore();
+    // The glass tint + a highlight edge, drawn OVER the blurred panel.
     b.draw_rect(rect, &Paint::from_color(Color::rgba(1.0, 1.0, 1.0, 0.14)));
     b.draw_rect(
         Rect::new(rect.x, rect.y, rect.width, 2.0),

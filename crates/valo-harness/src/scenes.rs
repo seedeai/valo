@@ -2,8 +2,8 @@
 //! so "the Figma board" means the same content everywhere.
 
 use valo::{
-    Color, DisplayList, DisplayListBuilder, DrawParagraphExt, FontCollection, MaskBlur, Paint,
-    ParagraphBuilder, Rect, TextStyle,
+    Backdrop, Color, DisplayList, DisplayListBuilder, DrawParagraphExt, FontCollection, MaskBlur,
+    Paint, ParagraphBuilder, Rect, TextStyle,
 };
 
 /// A Figma-style board: ~100 artboard "frames" scattered in clusters over a
@@ -50,7 +50,12 @@ fn frame(
     text(b, fonts, format!("Frame {index}"), 22.0, fg, x, y - 34.0);
     b.draw_rrect(Rect::new(x, y, w, h), 6.0, &Paint::from_color(bg));
     if index.is_multiple_of(6) {
-        b.backdrop_blur(Rect::new(x, y, w, 64.0), 7.0);
+        b.save_layer_backdrop(
+            Some(Rect::new(x, y, w, 64.0)),
+            &Paint::default(),
+            Backdrop::blur(7.0),
+        );
+        b.restore();
     }
     match index % 4 {
         0 => thumbs(b, fonts, rng, x, y, w, fg),
