@@ -138,6 +138,15 @@ impl DisplayListBuilder {
         self.ops.push(Op::Save);
     }
 
+    /// `save_count` returns the current canvas save-stack depth.
+    ///
+    /// A new builder starts at one. Each `save` or save-layer operation
+    /// increments the count, and each matched `restore` decrements it. Hosts
+    /// can use the value to verify that callbacks leave shared canvas state balanced.
+    pub fn save_count(&self) -> usize {
+        self.scopes.len()
+    }
+
     /// `save_layer` begins an offscreen layer composited with `paint` at `restore`.
     ///
     /// `bounds_hint` is a local-space crop, not merely an allocation hint;
@@ -306,7 +315,7 @@ impl DisplayListBuilder {
     ///
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn clip_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], op: ClipOp) {
-        let rect = rect.into();
+        let rect = positive_rect(rect.into());
         let mut p = PathBuilder::new();
         p.rrect_radii(rect, radii);
         self.clip_path(&p.build(), FillRule::NonZero, op);
@@ -321,7 +330,7 @@ impl DisplayListBuilder {
         radii: [[f32; 2]; 4],
         op: ClipOp,
     ) {
-        let rect = rect.into();
+        let rect = positive_rect(rect.into());
         if let Some(circular) = circular_radii(radii) {
             return self.clip_rrect_radii(rect, circular, op);
         }
@@ -428,7 +437,7 @@ impl DisplayListBuilder {
     ///
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
-        let rect = rect.into();
+        let rect = positive_rect(rect.into());
         if rect.is_empty() || paint.is_nop() {
             return;
         }
@@ -450,7 +459,7 @@ impl DisplayListBuilder {
         radii: [[f32; 2]; 4],
         paint: &Paint,
     ) {
-        let rect = rect.into();
+        let rect = positive_rect(rect.into());
         if let Some(circular) = circular_radii(radii) {
             return self.draw_rrect_radii(rect, circular, paint);
         }
@@ -792,6 +801,22 @@ fn circular_radii(radii: [[f32; 2]; 4]) -> Option<[f32; 4]> {
         .then(|| radii.map(|[x, _]| x))
 }
 
+// Flutter's RRect bridge accepts inverted edges and normalizes them before
+// creating the engine round rect. CupertinoActivityIndicator relies on this.
+fn positive_rect(rect: Rect) -> Rect {
+    let x = if rect.width < 0.0 {
+        rect.x + rect.width
+    } else {
+        rect.x
+    };
+    let y = if rect.height < 0.0 {
+        rect.y + rect.height
+    } else {
+        rect.y
+    };
+    Rect::new(x, y, rect.width.abs(), rect.height.abs())
+}
+
 fn is_analytic_blur(paint: &Paint) -> bool {
     paint.mask_blur.is_some()
         && paint.shader.is_none()
@@ -815,6 +840,41 @@ mod tests {
     use crate::BlendMode;
     use valo_geometry::Color;
 
+    #[test]
+    fn save_count_tracks_saves_layers_and_restores() {
+        let mut builder = DisplayListBuilder::new();
+        assert_eq!(builder.save_count(), 1);
+
+        builder.save();
+        assert_eq!(builder.save_count(), 2);
+
+        builder.save_layer(None, &Paint::default());
+        assert_eq!(builder.save_count(), 3);
+
+        builder.restore();
+        assert_eq!(builder.save_count(), 2);
+        builder.restore();
+        assert_eq!(builder.save_count(), 1);
+    }
+
+    #[test]
+    fn rounded_rects_normalize_inverted_edges_like_flutter() {
+        let mut builder = DisplayListBuilder::new();
+        builder.draw_rrect(
+            Rect::from_ltrb(-1.0, -10.0 / 3.0, 1.0, -10.0),
+            1.0,
+            &Paint::from_color(Color::WHITE),
+        );
+
+        let list = builder.build();
+        let Op::DrawPath { path, .. } = &list.ops()[0] else {
+            panic!("rounded rectangle should record as a path");
+        };
+        assert_eq!(
+            path.bounds(),
+            Rect::from_ltrb(-1.0, -10.0, 1.0, -10.0 / 3.0)
+        );
+    }
     fn red() -> Paint {
         Paint::from_color(Color::rgb(1.0, 0.0, 0.0))
     }
