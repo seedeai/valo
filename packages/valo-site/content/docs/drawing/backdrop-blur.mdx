@@ -20,7 +20,7 @@ builder.restore();
 builder.restore();
 ```
 
-JavaScript 0.2.1 keeps a convenience that opens that layer and immediately
+JavaScript 0.2.2 keeps a convenience that opens that layer and immediately
 closes it — a glass panel with nothing painted on it. Canvas2D
 `context.backdropBlur` is the same call.
 
@@ -34,7 +34,7 @@ builder.restore();
 <Demo demo="drawing-backdrop" caption="live" animate />
 
 Open the layer yourself in Rust when content should ride on the glass.
-JavaScript 0.2.1 has no `saveLayerBackdrop` yet — `backdropBlur` is the
+JavaScript 0.2.2 has no `saveLayerBackdrop` yet — `backdropBlur` is the
 open-and-restore convenience only.
 
 ## Shared keys
@@ -60,7 +60,7 @@ builder.restore();
 A later tile with a different sigma does not share. Nested replays of a
 retained list save and restore the keyed cache, so drawing the same list
 twice does not reuse the first drawing's blur. Shared keys are Rust-only
-in valo-web 0.2.1.
+in valo-web 0.2.2.
 
 Hint the layer bounds when the list will be embedded. Without a hint or
 clip, a backdrop layer covers everything beneath it.
