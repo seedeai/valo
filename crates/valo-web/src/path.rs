@@ -75,6 +75,17 @@ impl WebPath {
         });
     }
 
+    /// `conicTo` adds a rational quadratic (conic) through one control point to `(x, y)`.
+    ///
+    /// A weight of `cos(θ/2)` traces a circular arc of sweep `θ` exactly;
+    /// weight 1 is an ordinary quadratic.
+    #[wasm_bindgen(js_name = conicTo)]
+    pub fn conic_to(&mut self, control_x: f32, control_y: f32, x: f32, y: f32, weight: f32) {
+        self.change(|path| {
+            path.conic_to((control_x, control_y), (x, y), weight);
+        });
+    }
+
     /// `bezierCurveTo` adds a cubic Bézier through two control points to `(x, y)`.
     #[wasm_bindgen(js_name = bezierCurveTo)]
     pub fn bezier_curve_to(

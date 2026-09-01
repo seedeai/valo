@@ -11,6 +11,7 @@ mod path;
 mod point;
 mod rect;
 mod stroke;
+mod superellipse;
 mod winding;
 
 pub use color::Color;
@@ -23,3 +24,4 @@ pub use path::{
 pub use point::{Point, Size};
 pub use rect::Rect;
 pub use stroke::{dash_contours, stroke_contains, stroke_strip, Cap, Dash, Join, Stroke};
+pub use superellipse::RoundSuperellipse;

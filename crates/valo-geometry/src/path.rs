@@ -29,13 +29,18 @@ pub enum Winding {
 }
 
 // Serialize ONLY (the serde feature is a debug dump): a deserializer would
-// let malformed verb/point counts reach flatten() and index out of bounds.
+// let malformed verb/point/weight counts reach flatten() and index out of
+// bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 enum Verb {
     Move,
     Line,
     Quad,
+    /// A rational quadratic: control point, end point, and a weight drawn
+    /// from the side channel `weights`. Weights are strictly positive and
+    /// finite — `conic_to` lowers everything else.
+    Conic,
     Cubic,
     Close,
 }
@@ -66,6 +71,9 @@ pub struct Contour {
 pub struct Path {
     verbs: Vec<Verb>,
     points: Vec<Point>,
+    /// One entry per `Verb::Conic`, consumed in verb order. Positive weights
+    /// keep the curve inside its control hull, so `bounds` stays sound.
+    weights: Vec<f32>,
     /// Control-point bounds: conservative (curves stay inside their hull),
     /// which is exactly what the record-time oracle wants.
     bounds: Rect,
@@ -81,6 +89,7 @@ impl Path {
     pub fn tight_bounds(&self) -> Rect {
         let mut bounds = TightBounds::default();
         let mut point_index = 0usize;
+        let mut weight_index = 0usize;
         let mut cursor = Point::ZERO;
         let mut contour_start = Point::ZERO;
         for verb in &self.verbs {
@@ -101,6 +110,15 @@ impl Path {
                     let end = self.points[point_index + 1];
                     point_index += 2;
                     include_quadratic_extrema(&mut bounds, cursor, control, end);
+                    cursor = end;
+                }
+                Verb::Conic => {
+                    let control = self.points[point_index];
+                    let end = self.points[point_index + 1];
+                    let weight = self.weights[weight_index];
+                    point_index += 2;
+                    weight_index += 1;
+                    include_conic_extrema(&mut bounds, cursor, control, end, weight);
                     cursor = end;
                 }
                 Verb::Cubic => {
@@ -127,7 +145,9 @@ impl Path {
 
     /// `heap_bytes` returns an estimate of owned path storage.
     pub fn heap_bytes(&self) -> usize {
-        self.points.len() * std::mem::size_of::<Point>() + self.verbs.len()
+        self.points.len() * std::mem::size_of::<Point>()
+            + self.weights.len() * std::mem::size_of::<f32>()
+            + self.verbs.len()
     }
 
     /// `contains` reports whether a point lies inside the filled path.
@@ -149,6 +169,7 @@ impl Path {
     fn walk_crossings(&self, point: Point) -> crate::winding::Crossings {
         let mut crossings = crate::winding::Crossings::default();
         let mut index = 0usize;
+        let mut weight_index = 0usize;
         let mut cursor = Point::ZERO;
         let mut contour_start = Point::ZERO;
         let mut contour_open = false;
@@ -174,6 +195,18 @@ impl Path {
                     crossings.quad(cursor, self.points[index], self.points[index + 1], point);
                     cursor = self.points[index + 1];
                     index += 2;
+                }
+                Verb::Conic => {
+                    crossings.conic(
+                        cursor,
+                        self.points[index],
+                        self.points[index + 1],
+                        self.weights[weight_index],
+                        point,
+                    );
+                    cursor = self.points[index + 1];
+                    index += 2;
+                    weight_index += 1;
                 }
                 Verb::Cubic => {
                     crossings.cubic(
@@ -217,6 +250,7 @@ impl Path {
     pub fn flatten(&self, tolerance: f32) -> Vec<Contour> {
         let mut out = Flattener::new(tolerance.max(1e-4));
         let mut i = 0usize;
+        let mut weight_index = 0usize;
         for verb in &self.verbs {
             match verb {
                 Verb::Move => {
@@ -230,6 +264,15 @@ impl Path {
                 Verb::Quad => {
                     out.quad_to(self.points[i], self.points[i + 1]);
                     i += 2;
+                }
+                Verb::Conic => {
+                    out.conic_to(
+                        self.points[i],
+                        self.points[i + 1],
+                        self.weights[weight_index],
+                    );
+                    i += 2;
+                    weight_index += 1;
                 }
                 Verb::Cubic => {
                     out.cubic_to(self.points[i], self.points[i + 1], self.points[i + 2]);
@@ -307,6 +350,86 @@ fn include_cubic_extrema(
     }
 }
 
+fn include_conic_extrema(
+    bounds: &mut TightBounds,
+    start: Point,
+    control: Point,
+    end: Point,
+    weight: f32,
+) {
+    bounds.include(start);
+    bounds.include(end);
+    for (start_axis, control_axis, end_axis) in
+        [(start.x, control.x, end.x), (start.y, control.y, end.y)]
+    {
+        for parameter in conic_derivative_roots(start_axis, control_axis, end_axis, weight) {
+            let p = eval_conic(start, control, end, weight, parameter);
+            // A positive-weight conic never leaves its control hull; a root
+            // that lands a float ulp inside an endpoint must not let eval
+            // noise widen the bounds past it.
+            let clamp = |v: f32, a: f32, b: f32, c: f32| v.clamp(a.min(b).min(c), a.max(b).max(c));
+            bounds.include(Point::new(
+                clamp(p.x, start.x, control.x, end.x),
+                clamp(p.y, start.y, control.y, end.y),
+            ));
+        }
+    }
+}
+
+/// Parameters in (0, 1) where one coordinate of the conic turns around.
+///
+/// With numerator `N(t) = At² + Bt + C` and denominator `D(t) = at² − at + 1`
+/// (`a = 2 − 2w`), the extremum condition `N′D − ND′ = 0` collapses — the
+/// cubic terms cancel — to the quadratic `−a(A+B)t² + 2(A − aC)t + (B + aC)`.
+pub(crate) fn conic_derivative_roots(
+    start: f32,
+    control: f32,
+    end: f32,
+    weight: f32,
+) -> impl Iterator<Item = f32> {
+    // In point DIFFERENCES, Skia's `conic_find_extrema` form: substituting
+    // p10 = control − start and p20 = end − start collapses the quadratic
+    // above (divided by 2) to the coefficients below. The absolute-coordinate
+    // form subtracts near-equal products and loses every significant digit
+    // for curves far from the origin; the difference form does not, and f64
+    // covers what remains.
+    let w = weight as f64;
+    let p10 = control as f64 - start as f64;
+    let p20 = end as f64 - start as f64;
+    let quadratic = (w - 1.0) * p20;
+    let linear = p20 - 2.0 * w * p10;
+    let constant = w * p10;
+
+    let mut roots = [None, None];
+    if quadratic == 0.0 {
+        roots[0] = unit_root(-constant, linear);
+    } else {
+        let discriminant = linear * linear - 4.0 * quadratic * constant;
+        if discriminant >= 0.0 && discriminant.is_finite() {
+            // The same stable pairing as `cubic_extrema`: never subtract two
+            // near-equal numbers.
+            let root = discriminant.sqrt();
+            let q = -0.5 * (linear + root.copysign(linear));
+            roots[0] = unit_root(q, quadratic);
+            roots[1] = unit_root(constant, q).filter(|value| roots[0] != Some(*value));
+        }
+    }
+    roots.into_iter().flatten()
+}
+
+/// The conic (rational quadratic) point at `t`.
+pub(crate) fn eval_conic(start: Point, control: Point, end: Point, weight: f32, t: f32) -> Point {
+    let u = 1.0 - t;
+    let b0 = u * u;
+    let b1 = 2.0 * weight * u * t;
+    let b2 = t * t;
+    let d = b0 + b1 + b2;
+    Point::new(
+        (b0 * start.x + b1 * control.x + b2 * end.x) / d,
+        (b0 * start.y + b1 * control.y + b2 * end.y) / d,
+    )
+}
+
 fn cubic_extrema(start: f32, first: f32, second: f32, end: f32) -> [Option<f32>; 2] {
     let start = start as f64;
     let first = first as f64;
@@ -345,6 +468,7 @@ fn unit_root(numerator: f64, denominator: f64) -> Option<f32> {
 pub struct PathBuilder {
     verbs: Vec<Verb>,
     points: Vec<Point>,
+    weights: Vec<f32>,
     bounds: Option<Rect>,
     /// Where a segment recorded after a `close` resumes.
     ///
@@ -396,6 +520,37 @@ impl PathBuilder {
         self.verbs.push(Verb::Quad);
         self.push_point(c);
         self.push_point(p);
+        self
+    }
+
+    /// `conic_to` adds a rational quadratic (a conic) through control point
+    /// `c` to `p`.
+    ///
+    /// A weight of 1 is an ordinary quadratic; `cos(θ/2)` traces a circular
+    /// arc of sweep `θ` exactly, which is what the arc and rounded-rect
+    /// helpers rely on. Stored weights are restricted to positive finite
+    /// values so every curve stays inside its control hull — the invariant
+    /// the record-time bounds rely on. Everything else lowers: a nonpositive
+    /// weight draws a line, a non-finite weight the control polygon (the
+    /// curve's limit as the weight grows). Skia, by contrast, records
+    /// negative weights as-is; nothing in valo's builders or Canvas2D
+    /// produces one.
+    pub fn conic_to(&mut self, c: impl Into<Point>, p: impl Into<Point>, weight: f32) -> &mut Self {
+        let (c, p) = (c.into(), p.into());
+        if !weight.is_finite() {
+            return self.line_to(c).line_to(p);
+        }
+        if weight <= 0.0 {
+            return self.line_to(p);
+        }
+        if weight == 1.0 {
+            return self.quad_to(c, p);
+        }
+        self.ensure_contour(c);
+        self.verbs.push(Verb::Conic);
+        self.push_point(c);
+        self.push_point(p);
+        self.weights.push(weight);
         self
     }
 
@@ -492,33 +647,34 @@ impl PathBuilder {
             self.resume_point = Some(Point::new(l, t));
             return self;
         }
-        // Cubic arc approximation of a quarter ELLIPSE per corner: the
-        // quarter-circle control offsets, scaled per axis.
-        let k = |rad: f32| rad * (1.0 - KAPPA);
+        // Each corner is one conic: a quarter ELLIPSE, exactly — the control
+        // point is the box corner and the weight is cos(45°). Impeller's
+        // rounded rect uses the identical construction (`round_rect.cc`).
+        let w = std::f32::consts::FRAC_1_SQRT_2;
         match winding {
             Winding::Clockwise => self
                 .move_to((l + tl[0], t))
                 .line_to((rr - tr[0], t))
-                .cubic_to((rr - k(tr[0]), t), (rr, t + k(tr[1])), (rr, t + tr[1]))
+                .conic_to((rr, t), (rr, t + tr[1]), w)
                 .line_to((rr, b - br[1]))
-                .cubic_to((rr, b - k(br[1])), (rr - k(br[0]), b), (rr - br[0], b))
+                .conic_to((rr, b), (rr - br[0], b), w)
                 .line_to((l + bl[0], b))
-                .cubic_to((l + k(bl[0]), b), (l, b - k(bl[1])), (l, b - bl[1]))
+                .conic_to((l, b), (l, b - bl[1]), w)
                 .line_to((l, t + tl[1]))
-                .cubic_to((l, t + k(tl[1])), (l + k(tl[0]), t), (l + tl[0], t))
+                .conic_to((l, t), (l + tl[0], t), w)
                 .close(),
-            // The same anchors in reverse, each corner's two control points
-            // swapped with it — so the two directions are the identical
-            // outline and differ only in traversal.
+            // The same anchors in reverse around the same control points —
+            // so the two directions are the identical outline and differ
+            // only in traversal.
             Winding::CounterClockwise => self
                 .move_to((l + tl[0], t))
-                .cubic_to((l + k(tl[0]), t), (l, t + k(tl[1])), (l, t + tl[1]))
+                .conic_to((l, t), (l, t + tl[1]), w)
                 .line_to((l, b - bl[1]))
-                .cubic_to((l, b - k(bl[1])), (l + k(bl[0]), b), (l + bl[0], b))
+                .conic_to((l, b), (l + bl[0], b), w)
                 .line_to((rr - br[0], b))
-                .cubic_to((rr - k(br[0]), b), (rr, b - k(br[1])), (rr, b - br[1]))
+                .conic_to((rr, b), (rr, b - br[1]), w)
                 .line_to((rr, t + tr[1]))
-                .cubic_to((rr, t + k(tr[1])), (rr - k(tr[0]), t), (rr - tr[0], t))
+                .conic_to((rr, t), (rr - tr[0], t), w)
                 .line_to((l + tl[0], t))
                 .close(),
         };
@@ -535,6 +691,26 @@ impl PathBuilder {
         // two places where the prose and every implementation disagree, so
         // that distinction is worth keeping in view.
         self.resume_point = Some(Point::new(l, t));
+        self
+    }
+
+    /// `rsuperellipse` adds a rounded superellipse with one corner radius.
+    ///
+    /// The corner profile is the iOS "squircle": circular near the diagonal,
+    /// blending into the straight edges along a superellipse instead of
+    /// meeting them abruptly the way a circular [`Self::rrect`] corner does.
+    pub fn rsuperellipse(&mut self, r: Rect, radius: f32) -> &mut Self {
+        self.rsuperellipse_radii(r, [[radius; 2]; 4])
+    }
+
+    /// `rsuperellipse_radii` adds a rounded superellipse with per-corner
+    /// elliptical radii.
+    ///
+    /// Each corner is `[x_radius, y_radius]`, clockwise from the top-left.
+    /// Radii are proportionally reduced when adjacent corners would overlap.
+    pub fn rsuperellipse_radii(&mut self, r: Rect, radii: [[f32; 2]; 4]) -> &mut Self {
+        crate::superellipse::RoundSuperellipse::new(r, radii).emit(self);
+        self.resume_point = Some(Point::new(r.x, r.y));
         self
     }
 
@@ -610,7 +786,7 @@ impl PathBuilder {
             self.move_to(first);
         }
         if sweep_angle != 0.0 {
-            self.push_arc_cubics(&unit_circle_to_ellipse, start_angle, sweep_angle);
+            self.push_arc_conics(&unit_circle_to_ellipse, start_angle, sweep_angle);
         }
         // A whole turn ends where it began: close it, so the stroker joins the
         // seam instead of capping it (Skia's full sweeps produce a closed oval).
@@ -676,19 +852,23 @@ impl PathBuilder {
 
         self.line_to(entry);
         let map = unit_circle_map(center, [radius; 2], 0.0);
-        self.push_arc_cubics(&map, start_angle, sweep);
+        self.push_arc_conics(&map, start_angle, sweep);
         self
     }
 
     /// `circle` adds a closed circular contour.
+    ///
+    /// Four conic quarters trace the circle exactly; the control points are
+    /// the bounding box's corners.
     pub fn circle(&mut self, center: impl Into<Point>, radius: f32) -> &mut Self {
         let c = center.into();
-        let (r, k) = (radius, radius * KAPPA);
+        let r = radius;
+        let w = std::f32::consts::FRAC_1_SQRT_2;
         self.move_to((c.x + r, c.y))
-            .cubic_to((c.x + r, c.y + k), (c.x + k, c.y + r), (c.x, c.y + r))
-            .cubic_to((c.x - k, c.y + r), (c.x - r, c.y + k), (c.x - r, c.y))
-            .cubic_to((c.x - r, c.y - k), (c.x - k, c.y - r), (c.x, c.y - r))
-            .cubic_to((c.x + k, c.y - r), (c.x + r, c.y - k), (c.x + r, c.y))
+            .conic_to((c.x + r, c.y + r), (c.x, c.y + r), w)
+            .conic_to((c.x - r, c.y + r), (c.x - r, c.y), w)
+            .conic_to((c.x - r, c.y - r), (c.x, c.y - r), w)
+            .conic_to((c.x + r, c.y - r), (c.x + r, c.y), w)
             .close()
     }
 
@@ -703,12 +883,13 @@ impl PathBuilder {
             return self;
         }
         let mut point = path.points.iter();
+        let mut weight = path.weights.iter();
         let mut cursor = Point::ZERO;
         let mut contour_start = Point::ZERO;
         for verb in &path.verbs {
             let count = match verb {
                 Verb::Move | Verb::Line => 1,
-                Verb::Quad => 2,
+                Verb::Quad | Verb::Conic => 2,
                 Verb::Cubic => 3,
                 Verb::Close => 0,
             };
@@ -719,6 +900,16 @@ impl PathBuilder {
                 };
                 cursor = transform.map_point(p);
                 self.push_point(cursor);
+            }
+            if matches!(verb, Verb::Conic) {
+                // Weights survive affine transforms unchanged. (A projective
+                // transform would need to reweigh them — but it would also
+                // need more than control-point mapping for quads and cubics,
+                // so every verb shares that limitation.)
+                let Some(&w) = weight.next() else {
+                    return self;
+                };
+                self.weights.push(w);
             }
             match verb {
                 Verb::Move => contour_start = cursor,
@@ -753,34 +944,31 @@ impl PathBuilder {
         Arc::new(Path {
             verbs: self.verbs,
             points: self.points,
+            weights: self.weights,
             bounds: self.bounds.unwrap_or_default(),
         })
     }
 
     // ── internals ──────────────────────────────────────────────────────────
 
-    /// `push_arc_cubics` approximates an arc with cubic pieces of at most 90°.
+    /// `push_arc_conics` traces an arc with conic pieces of at most 90°.
     ///
-    /// The current point must already be at the arc's start.
-    fn push_arc_cubics(&mut self, map: &Matrix, start_angle: f32, sweep_angle: f32) {
+    /// Each piece is exact: a conic of weight `cos(θ/2)` whose control point
+    /// sits where the endpoint tangents meet IS the circular arc of sweep
+    /// `θ`. The current point must already be at the arc's start.
+    fn push_arc_conics(&mut self, map: &Matrix, start_angle: f32, sweep_angle: f32) {
         let piece_count = (sweep_angle.abs() / std::f32::consts::FRAC_PI_2)
             .ceil()
             .max(1.0);
         let step = sweep_angle / piece_count;
-        // Control-point offset for a Bézier matching an arc of `step`: at a
-        // quarter turn this is exactly KAPPA.
-        let reach = 4.0 / 3.0 * (step / 4.0).tan();
+        let weight = (step / 2.0).cos();
 
         let mut angle = start_angle;
         for _ in 0..piece_count as u32 {
-            let (from, to) = (unit_circle_point(angle), unit_circle_point(angle + step));
-            let first = Point::new(from.x - reach * from.y, from.y + reach * from.x);
-            let second = Point::new(to.x + reach * to.y, to.y - reach * to.x);
-            self.cubic_to(
-                map.map_point(first),
-                map.map_point(second),
-                map.map_point(to),
-            );
+            let mid = unit_circle_point(angle + step / 2.0);
+            let control = Point::new(mid.x / weight, mid.y / weight);
+            let to = unit_circle_point(angle + step);
+            self.conic_to(map.map_point(control), map.map_point(to), weight);
             angle += step;
         }
     }
@@ -817,9 +1005,6 @@ impl PathBuilder {
         });
     }
 }
-
-/// `KAPPA` is the cubic control ratio `4/3 × tan(π/8)` for a quarter circle.
-const KAPPA: f32 = 0.552_284_8;
 
 /// `unit_circle_point` returns the point at `angle` on the unit circle.
 fn unit_circle_point(angle: f32) -> Point {
@@ -924,6 +1109,18 @@ impl Flattener {
         }
     }
 
+    fn conic_to(&mut self, c: Point, p: Point, w: f32) {
+        let Some(&start) = self.current.last() else {
+            return;
+        };
+        self.has_segments = true;
+        let n = segment_count(conic_segment_estimate(start, c, p, w, self.tolerance));
+        for i in 1..=n {
+            let t = i as f32 / n as f32;
+            self.current.push(eval_conic(start, c, p, w, t));
+        }
+    }
+
     fn cubic_to(&mut self, c1: Point, c2: Point, p: Point) {
         let Some(&start) = self.current.last() else {
             return;
@@ -977,6 +1174,28 @@ impl Flattener {
         }
         self.has_segments = false;
     }
+}
+
+/// Wang's formula extended to conics — the same estimate Impeller and Skia's
+/// GPU tessellators use ("Wang's formula for rational quadratics", Skia
+/// `wangs_formula::conic`), with `precision = 1 / tolerance`.
+fn conic_segment_estimate(start: Point, control: Point, end: Point, w: f32, tolerance: f32) -> f32 {
+    let precision = 1.0 / tolerance;
+    // Recentring on the bounding box improves translation invariance.
+    let cx = 0.5 * (start.x.min(control.x).min(end.x) + start.x.max(control.x).max(end.x));
+    let cy = 0.5 * (start.y.min(control.y).min(end.y) + start.y.max(control.y).max(end.y));
+    let (p0x, p0y) = (start.x - cx, start.y - cy);
+    let (p1x, p1y) = (control.x - cx, control.y - cy);
+    let (p2x, p2y) = (end.x - cx, end.y - cy);
+    let max_len_sq = (p0x * p0x + p0y * p0y)
+        .max(p1x * p1x + p1y * p1y)
+        .max(p2x * p2x + p2y * p2y);
+    let (dpx, dpy) = (p0x - 2.0 * w * p1x + p2x, p0y - 2.0 * w * p1y + p2y);
+    let dw = (2.0 - 2.0 * w).abs();
+    let rp_minus_1 = (max_len_sq.sqrt() * precision - 1.0).max(0.0);
+    let numer = (dpx * dpx + dpy * dpy).sqrt() * precision + rp_minus_1 * dw;
+    let denom = 4.0 * w.min(1.0);
+    (numer / denom).sqrt()
 }
 
 fn second_difference(a: Point, b: Point, c: Point) -> f32 {
@@ -1698,5 +1917,225 @@ mod tests {
         assert!(path.contains(Point::new(50.0, 40.0), FillRule::NonZero));
         assert!(!path.contains(Point::new(50.0, -10.0), FillRule::NonZero));
         assert!(!path.contains(Point::new(-30.0, 40.0), FillRule::NonZero));
+    }
+
+    // ── conic segments ─────────────────────────────────────────────────────
+
+    /// A conic quarter with weight cos(45°) IS the circle: every flattened
+    /// point sits on it exactly, not within the old cubic approximation's
+    /// 0.027%-of-radius bulge. Ignoring the weight (treating the segment as
+    /// a plain quad) would miss by ~6% of the radius.
+    #[test]
+    fn circle_flattens_onto_the_exact_circle() {
+        let mut b = PathBuilder::new();
+        b.circle((10.0, -20.0), 100.0);
+        let contours = b.build().flatten(0.1);
+        let points: Vec<Point> = contours.iter().flat_map(|c| c.points.clone()).collect();
+        assert!(points.len() > 20);
+        for p in &points {
+            let distance = (p.x - 10.0).hypot(p.y + 20.0);
+            assert!(
+                (distance - 100.0).abs() < 2e-3,
+                "{p:?} is off the circle by {}",
+                (distance - 100.0).abs()
+            );
+        }
+    }
+
+    /// `ellipse` runs on conics too: sampled points must satisfy the ellipse
+    /// equation, including through a rotation.
+    #[test]
+    fn ellipse_arc_flattens_onto_the_exact_ellipse() {
+        let mut b = PathBuilder::new();
+        let rotation = 0.5f32;
+        b.ellipse((5.0, 7.0), [80.0, 30.0], rotation, 0.3, 4.0);
+        let contours = b.build().flatten(0.05);
+        let (sin_r, cos_r) = rotation.sin_cos();
+        for p in contours.iter().flat_map(|c| &c.points) {
+            let (dx, dy) = (p.x - 5.0, p.y - 7.0);
+            // Undo the rotation, then normalize by the radii.
+            let (ux, uy) = (dx * cos_r + dy * sin_r, -dx * sin_r + dy * cos_r);
+            let value = (ux / 80.0).powi(2) + (uy / 30.0).powi(2);
+            assert!((value - 1.0).abs() < 1e-3, "{p:?} deviates: {value}");
+        }
+    }
+
+    /// The conic's rational midpoint reaches the true circle edge, so the
+    /// tight bounds of a circle are its exact box — no cubic overshoot, and
+    /// no undershoot from treating control points as reachable.
+    #[test]
+    fn conic_circle_tight_bounds_are_exact() {
+        let mut b = PathBuilder::new();
+        b.circle((0.0, 0.0), 50.0);
+        let tight = b.build().tight_bounds();
+        for (got, want) in [
+            (tight.x, -50.0),
+            (tight.y, -50.0),
+            (tight.right(), 50.0),
+            (tight.bottom(), 50.0),
+        ] {
+            assert!((got - want).abs() < 1e-3, "bound {got} should be {want}");
+        }
+        // The arc helper's extremum lies between piece endpoints: an arc
+        // through the top must still reach exactly -50 in y.
+        let mut arc = PathBuilder::new();
+        arc.arc((0.0, 0.0), 50.0, -3.0, 2.5);
+        let tight = arc.build().tight_bounds();
+        assert!((tight.y + 50.0).abs() < 1e-3, "arc top: {}", tight.y);
+    }
+
+    /// Analytic containment solves the conic itself: probes 0.05 units off a
+    /// 100-unit circle land on the right side at every angle.
+    #[test]
+    fn conic_containment_is_exact_on_the_curve() {
+        let mut b = PathBuilder::new();
+        b.circle((0.0, 0.0), 100.0);
+        let path = b.build();
+        for i in 0..64 {
+            let angle = i as f32 / 64.0 * std::f32::consts::TAU;
+            let (s, c) = angle.sin_cos();
+            let inside = Point::new(c * 99.95, s * 99.95);
+            let outside = Point::new(c * 100.05, s * 100.05);
+            assert!(
+                path.contains(inside, FillRule::NonZero),
+                "{inside:?} at angle {i} should be inside"
+            );
+            assert!(
+                !path.contains(outside, FillRule::NonZero),
+                "{outside:?} at angle {i} should be outside"
+            );
+        }
+    }
+
+    /// Conic circles wind like any other contour: an opposing inner circle
+    /// carves a hole under the non-zero rule.
+    #[test]
+    fn conic_windings_cancel_under_the_non_zero_rule() {
+        let mut b = PathBuilder::new();
+        b.circle((0.0, 0.0), 100.0);
+        // The same circle traversed the other way: swap the conic sweep
+        // direction by walking the quarters in reverse.
+        let w = std::f32::consts::FRAC_1_SQRT_2;
+        b.move_to((60.0, 0.0))
+            .conic_to((60.0, -60.0), (0.0, -60.0), w)
+            .conic_to((-60.0, -60.0), (-60.0, 0.0), w)
+            .conic_to((-60.0, 60.0), (0.0, 60.0), w)
+            .conic_to((60.0, 60.0), (60.0, 0.0), w)
+            .close();
+        let path = b.build();
+        assert!(!path.contains(Point::new(0.0, 0.0), FillRule::NonZero));
+        assert!(path.contains(Point::new(80.0, 0.0), FillRule::NonZero));
+    }
+
+    /// `append` carries conic weights through its transform: a rotated
+    /// circle is still a circle.
+    #[test]
+    fn append_preserves_conic_weights() {
+        let mut source = PathBuilder::new();
+        source.circle((0.0, 0.0), 40.0);
+        let source = source.build();
+        let mut b = PathBuilder::new();
+        b.append(&source, &Matrix::rotation(0.7));
+        for p in b.build().flatten(0.05).iter().flat_map(|c| &c.points) {
+            let distance = p.x.hypot(p.y);
+            assert!((distance - 40.0).abs() < 1e-3, "{p:?} off by {distance}");
+        }
+    }
+
+    /// Degenerate weights lower instead of recording: nonpositive to a line,
+    /// exactly 1 to a quad, non-finite to the control polygon.
+    #[test]
+    fn degenerate_conic_weights_lower_to_simpler_verbs() {
+        let mut zero = PathBuilder::new();
+        zero.move_to((0.0, 0.0))
+            .conic_to((50.0, 50.0), (100.0, 0.0), 0.0);
+        let contour = &zero.build().flatten(0.1)[0];
+        assert_eq!(contour.points.len(), 2, "weight 0 must be a straight line");
+
+        let mut quad = PathBuilder::new();
+        quad.move_to((0.0, 0.0))
+            .conic_to((50.0, 50.0), (100.0, 0.0), 1.0);
+        let mut plain = PathBuilder::new();
+        plain
+            .move_to((0.0, 0.0))
+            .quad_to((50.0, 50.0), (100.0, 0.0));
+        assert_eq!(
+            quad.build().flatten(0.1),
+            plain.build().flatten(0.1),
+            "weight 1 must match the plain quadratic"
+        );
+
+        let mut infinite = PathBuilder::new();
+        infinite
+            .move_to((0.0, 0.0))
+            .conic_to((50.0, 50.0), (100.0, 0.0), f32::INFINITY);
+        let contour = &infinite.build().flatten(0.1)[0];
+        assert_eq!(
+            contour.points,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(50.0, 50.0),
+                Point::new(100.0, 0.0)
+            ],
+            "an unbounded weight collapses onto the control polygon"
+        );
+    }
+
+    /// Extremum-finding must survive coordinates far from the origin: the
+    /// quadratic's coefficients are built from point DIFFERENCES (Skia's
+    /// `conic_find_extrema` form) in f64, because the absolute-coordinate
+    /// form cancels catastrophically in f32. Audit repro: this curve near
+    /// y=442028 has a real interior maximum that the naive form misses.
+    #[test]
+    fn conic_extrema_survive_large_coordinates() {
+        let p0 = Point::new(0.0, 442_027.38);
+        let c = Point::new(50.0, 442_028.47);
+        let p2 = Point::new(100.0, 442_027.03);
+        let w = 20.189_045;
+        let mut b = PathBuilder::new();
+        b.move_to(p0).conic_to(c, p2, w).close();
+        let path = b.build();
+        let bottom = path.tight_bounds().bottom();
+        assert!(
+            (bottom - 442_028.4).abs() < 0.05,
+            "tight bottom {bottom} should reach the true maximum ~442028.41"
+        );
+        assert!(
+            path.contains(Point::new(49.660_536, 442_028.0), FillRule::NonZero),
+            "an interior point above the chord must be inside"
+        );
+    }
+
+    /// Flattening error stays within the requested tolerance for a strongly
+    /// hyperbolic weight (the superellipse emits weights past 8): the chord
+    /// midpoints of consecutive flattened points may deviate from the curve
+    /// by at most the tolerance.
+    #[test]
+    fn conic_flattening_respects_tolerance_for_large_weights() {
+        let (p0, c, p2, w) = (
+            Point::new(0.0, 100.0),
+            Point::new(35.0, 100.0),
+            Point::new(40.0, 90.0),
+            8.3f32,
+        );
+        let tolerance = 0.05f32;
+        let mut b = PathBuilder::new();
+        b.move_to(p0).conic_to(c, p2, w);
+        let contour = &b.build().flatten(tolerance)[0];
+        // Dense reference polyline on the true curve.
+        let reference: Vec<Point> = (0..=4096)
+            .map(|i| eval_conic(p0, c, p2, w, i as f32 / 4096.0))
+            .collect();
+        for pair in contour.points.windows(2) {
+            let mid = Point::new((pair[0].x + pair[1].x) / 2.0, (pair[0].y + pair[1].y) / 2.0);
+            let distance = reference
+                .iter()
+                .map(|r| (r.x - mid.x).hypot(r.y - mid.y))
+                .fold(f32::MAX, f32::min);
+            assert!(
+                distance <= tolerance * 1.1,
+                "chord midpoint {mid:?} is {distance} off the curve"
+            );
+        }
     }
 }

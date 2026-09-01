@@ -77,6 +77,35 @@ impl Crossings {
         }
     }
 
+    pub(crate) fn conic(&mut self, from: Point, control: Point, to: Point, w: f32, at: Point) {
+        // Split where y turns around, on the curve's own parameter, so each
+        // piece crosses the ray at most once. A conic coordinate has up to
+        // two interior extrema (hyperbolic segments with large weights).
+        let mut extrema = [0.0f32; 2];
+        let mut count = 0;
+        for root in crate::path::conic_derivative_roots(from.y, control.y, to.y, w) {
+            extrema[count] = root;
+            count += 1;
+        }
+        match count {
+            0 => self.monotonic_conic(from, control, to, w, at),
+            1 => {
+                let (left, right) = chop_conic(from, control, to, w, extrema[0]);
+                self.monotonic_conic(left.0, left.1, left.2, left.3, at);
+                self.monotonic_conic(right.0, right.1, right.2, right.3, at);
+            }
+            _ => {
+                let (left, rest) = chop_conic(from, control, to, w, extrema[0]);
+                self.monotonic_conic(left.0, left.1, left.2, left.3, at);
+                // The second root, remapped into the tail's parameter space.
+                let remapped = ((extrema[1] - extrema[0]) / (1.0 - extrema[0])).clamp(0.0, 1.0);
+                let (mid, right) = chop_conic(rest.0, rest.1, rest.2, rest.3, remapped);
+                self.monotonic_conic(mid.0, mid.1, mid.2, mid.3, at);
+                self.monotonic_conic(right.0, right.1, right.2, right.3, at);
+            }
+        }
+    }
+
     pub(crate) fn cubic(&mut self, from: Point, first: Point, second: Point, to: Point, at: Point) {
         let mut pieces = [Point::ZERO; 10];
         let count = chop_cubic_at_y_extrema(&[from, first, second, to], &mut pieces);
@@ -108,6 +137,28 @@ impl Crossings {
                 let b = 2.0 * (control.x - c);
                 (a * t + b) * t + c
             }
+        };
+        self.settle(x_at_crossing, at, end, direction);
+    }
+
+    /// The conic twin of [`Self::monotonic_quad`]: `y(t) = at.y` on a
+    /// rational quadratic is still a plain quadratic, `(N_y − at.y·D)(t) = 0`.
+    fn monotonic_conic(&mut self, start: Point, control: Point, end: Point, w: f32, at: Point) {
+        let Some(direction) = self.enter_monotonic(start, end, at) else {
+            return;
+        };
+
+        let a_den = 2.0 - 2.0 * w;
+        let a = start.y - 2.0 * w * control.y + end.y;
+        let b = 2.0 * (w * control.y - start.y);
+        // D(t) = a_den·t² − a_den·t + 1, so subtracting at.y·D flips the
+        // signs pairwise.
+        let roots = unit_quadratic_roots(a - at.y * a_den, b + at.y * a_den, start.y - at.y);
+        let x_at_crossing = match roots {
+            // No root means y(t) is constant at the query height; the
+            // crossing sits at whichever end the ray enters from.
+            None => (if direction == 1 { start } else { end }).x,
+            Some(t) => crate::path::eval_conic(start, control, end, w, t).x,
         };
         self.settle(x_at_crossing, at, end, direction);
     }
@@ -288,6 +339,46 @@ fn chop_cubic_at(points: &[Point; 4], t: f32, out: &mut [Point]) {
     out[4] = bcd;
     out[5] = cd;
     out[6] = points[3];
+}
+
+/// Chop a conic at `t` by de Casteljau in homogeneous coordinates, returning
+/// both halves renormalized to standard form (end weights 1). Skia's
+/// `SkConic::chopAt`.
+type ConicPiece = (Point, Point, Point, f32);
+
+fn chop_conic(p0: Point, control: Point, p2: Point, w: f32, t: f32) -> (ConicPiece, ConicPiece) {
+    let lerp3 = |a: [f32; 3], b: [f32; 3], t: f32| {
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let z0 = [p0.x, p0.y, 1.0];
+    let z1 = [control.x * w, control.y * w, w];
+    let z2 = [p2.x, p2.y, 1.0];
+    let z01 = lerp3(z0, z1, t);
+    let z12 = lerp3(z1, z2, t);
+    let z012 = lerp3(z01, z12, t);
+
+    let mid = Point::new(z012[0] / z012[2], z012[1] / z012[2]);
+    // A standard-form conic with homogeneous weights (ω0, ω1, ω2) carries
+    // the single weight ω1 / √(ω0·ω2); each half keeps one original
+    // endpoint, whose weight is 1.
+    let root = z012[2].max(0.0).sqrt();
+    let left = (
+        p0,
+        Point::new(z01[0] / z01[2], z01[1] / z01[2]),
+        mid,
+        z01[2] / root,
+    );
+    let right = (
+        mid,
+        Point::new(z12[0] / z12[2], z12[1] / z12[2]),
+        p2,
+        z12[2] / root,
+    );
+    (left, right)
 }
 
 fn quadratic_roots_in_open_unit(a: f32, b: f32, c: f32) -> impl Iterator<Item = f32> {

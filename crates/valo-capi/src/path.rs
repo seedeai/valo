@@ -90,6 +90,13 @@ path_op!(
     |b| b.quad_to((control_x, control_y), (x, y))
 );
 path_op!(
+    /// `valo_path_conic_to` adds a rational quadratic (conic) through a control point to (`x`, `y`).
+    ///
+    /// A weight of `cos(θ/2)` traces a circular arc of sweep `θ` exactly.
+    valo_path_conic_to(control_x: f32, control_y: f32, x: f32, y: f32, weight: f32),
+    |b| b.conic_to((control_x, control_y), (x, y), weight)
+);
+path_op!(
     /// `valo_path_cubic_to` adds a cubic Bézier through two control points to (`x`, `y`).
     valo_path_cubic_to(
         control1_x: f32,

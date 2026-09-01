@@ -363,6 +363,11 @@ void valo_path_line_to(ValoPath *path, float x, float y);
  * to (x, y). */
 void valo_path_quadratic_to(ValoPath *path, float control_x, float control_y,
                             float x, float y);
+/* valo_path_conic_to adds a rational quadratic (conic) through a control
+ * point to (x, y). A weight of cos(theta/2) traces a circular arc of sweep
+ * theta exactly. */
+void valo_path_conic_to(ValoPath *path, float control_x, float control_y,
+                        float x, float y, float weight);
 /* valo_path_cubic_to adds a cubic Bézier through two control points to
  * (x, y). */
 void valo_path_cubic_to(ValoPath *path, float control1_x, float control1_y,
