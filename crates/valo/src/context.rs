@@ -20,6 +20,24 @@ impl Context {
         }
     }
 
+    /// `with_glyph_raster` creates a context whose glyphs `raster` shapes.
+    ///
+    /// The default context rasterizes glyphs from each font's own bytes. A host whose
+    /// glyph shapes come from elsewhere, such as a program running behind a boundary
+    /// that holds fonts without their outline tables, supplies a
+    /// [`GlyphRaster`](crate::GlyphRaster) that fetches them instead; shaping and layout
+    /// are unchanged.
+    pub fn with_glyph_raster(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        raster: Box<dyn crate::GlyphRaster>,
+    ) -> Self {
+        Self {
+            renderer: RendererCore::with_glyph_raster(device, queue.clone(), raster),
+            queue,
+        }
+    }
+
     /// `memory_report` returns resource counts and estimated GPU memory usage.
     ///
     /// The `counters` feature adds the counters reported by wgpu.

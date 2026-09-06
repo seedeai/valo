@@ -45,6 +45,68 @@ pub struct GlyphImage {
     pub data: Vec<u8>,
 }
 
+/// `GlyphRaster` turns one glyph of a font into pixels or an outline.
+///
+/// It is the renderer's only way to a glyph's shape: everything else in text
+/// (shaping, layout, the glyph cache) reads a font's metric and shaping tables,
+/// which a font without outline tables still has. [`Rasterizer`] is the
+/// implementation over the font's own bytes; a host whose glyphs are rendered
+/// elsewhere, such as a program running behind a boundary, supplies another.
+/// All sizes are in raster pixels, and the results are as [`Rasterizer`]'s
+/// methods document them.
+pub trait GlyphRaster: Send {
+    /// See [`Rasterizer::alpha`].
+    fn alpha(&mut self, font: &Font, glyph: u32, px: f32, dx: f32) -> Option<GlyphImage>;
+
+    /// See [`Rasterizer::stroked`].
+    fn stroked(
+        &mut self,
+        font: &Font,
+        glyph: u32,
+        px: f32,
+        dx: f32,
+        stroke: &GlyphStroke,
+    ) -> Option<GlyphImage>;
+
+    /// See [`Rasterizer::sdf`].
+    fn sdf(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage>;
+
+    /// See [`Rasterizer::color`].
+    fn color(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage>;
+
+    /// See [`glyph_path`].
+    fn path(&mut self, font: &Font, glyph: u32, px: f32) -> Option<Arc<Path>>;
+}
+
+impl GlyphRaster for Rasterizer {
+    fn alpha(&mut self, font: &Font, glyph: u32, px: f32, dx: f32) -> Option<GlyphImage> {
+        Rasterizer::alpha(self, font, glyph, px, dx)
+    }
+
+    fn stroked(
+        &mut self,
+        font: &Font,
+        glyph: u32,
+        px: f32,
+        dx: f32,
+        stroke: &GlyphStroke,
+    ) -> Option<GlyphImage> {
+        Rasterizer::stroked(self, font, glyph, px, dx, stroke)
+    }
+
+    fn sdf(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
+        Rasterizer::sdf(self, font, glyph, px)
+    }
+
+    fn color(&mut self, font: &Font, glyph: u32, px: f32) -> Option<GlyphImage> {
+        Rasterizer::color(self, font, glyph, px)
+    }
+
+    fn path(&mut self, font: &Font, glyph: u32, px: f32) -> Option<Arc<Path>> {
+        glyph_path(font, glyph, px)
+    }
+}
+
 /// `Rasterizer` converts font glyphs into CPU bitmap or distance-field images.
 ///
 /// Valo's renderer owns one internally. Hosts need this type only when building

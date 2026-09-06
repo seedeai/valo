@@ -62,6 +62,20 @@ pub struct Contour {
     pub has_segments: bool,
 }
 
+/// `PathElement` is one step of a [`Path`], as [`Path::elements`] walks it.
+///
+/// Points are absolute. A `Conic` carries its weight; feed the elements to a
+/// [`PathBuilder`] in order to rebuild an equal path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathElement {
+    MoveTo(Point),
+    LineTo(Point),
+    QuadTo(Point, Point),
+    ConicTo(Point, Point, f32),
+    CubicTo(Point, Point, Point),
+    Close,
+}
+
 /// `Path` is an immutable collection of line and Bézier contours.
 ///
 /// Build paths with [`PathBuilder`]. Display lists retain shared [`Arc`] handles,
@@ -80,6 +94,42 @@ pub struct Path {
 }
 
 impl Path {
+    /// `elements` walks the path's verbs with their points, for a consumer that
+    /// serializes or re-encodes it rather than flattens it.
+    pub fn elements(&self) -> impl Iterator<Item = PathElement> + '_ {
+        let mut point = 0;
+        let mut weight = 0;
+        self.verbs.iter().map(move |verb| {
+            let element = match verb {
+                Verb::Move => PathElement::MoveTo(self.points[point]),
+                Verb::Line => PathElement::LineTo(self.points[point]),
+                Verb::Quad => PathElement::QuadTo(self.points[point], self.points[point + 1]),
+                Verb::Conic => {
+                    let element = PathElement::ConicTo(
+                        self.points[point],
+                        self.points[point + 1],
+                        self.weights[weight],
+                    );
+                    weight += 1;
+                    element
+                }
+                Verb::Cubic => PathElement::CubicTo(
+                    self.points[point],
+                    self.points[point + 1],
+                    self.points[point + 2],
+                ),
+                Verb::Close => PathElement::Close,
+            };
+            point += match verb {
+                Verb::Move | Verb::Line => 1,
+                Verb::Quad | Verb::Conic => 2,
+                Verb::Cubic => 3,
+                Verb::Close => 0,
+            };
+            element
+        })
+    }
+
     /// `bounds` returns conservative control-point bounds.
     pub fn bounds(&self) -> Rect {
         self.bounds
@@ -2137,5 +2187,38 @@ mod tests {
                 "chord midpoint {mid:?} is {distance} off the curve"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod element_tests {
+    use super::*;
+
+    #[test]
+    fn elements_rebuild_an_equal_path() {
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to((0.0, 0.0))
+            .line_to((10.0, 0.0))
+            .quad_to((10.0, 5.0), (10.0, 10.0))
+            .conic_to((5.0, 10.0), (0.0, 10.0), 0.7)
+            .cubic_to((0.0, 7.0), (0.0, 3.0), (0.0, 0.0))
+            .close();
+        let path = builder.build();
+        let mut rebuilt = PathBuilder::new();
+        for element in path.elements() {
+            match element {
+                PathElement::MoveTo(p) => rebuilt.move_to(p),
+                PathElement::LineTo(p) => rebuilt.line_to(p),
+                PathElement::QuadTo(c, p) => rebuilt.quad_to(c, p),
+                PathElement::ConicTo(c, p, w) => rebuilt.conic_to(c, p, w),
+                PathElement::CubicTo(a, b, p) => rebuilt.cubic_to(a, b, p),
+                PathElement::Close => rebuilt.close(),
+            };
+        }
+        let rebuilt = rebuilt.build();
+        assert_eq!(path.elements().count(), 6);
+        assert_eq!(rebuilt.bounds(), path.bounds());
+        assert!(path.elements().eq(rebuilt.elements()));
     }
 }

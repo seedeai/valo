@@ -21,7 +21,8 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 | `valo-renderer` | the wgpu core: planner, encoder, pipelines, atlases, pools, caches |
 | `valo` | the facade hosts use, plus `Hud` |
 | `valo-svg` | SVG → display list translation |
-| `valo-system-fonts` | native OS font discovery behind `FontSource`. Never a wasm dependency |
+| `valo-fontmgr` | installed fonts in Skia's `SkFontMgr` shape: faces by family and style, a face covering a character in a language, the platform's UI font. CoreText on Apple systems, a directory scan elsewhere, trait-only on wasm. The one crate that opens font files (memory-mapped), and it carries no text stack, so a host can forward fonts with it alone |
+| `valo-system-fonts` | the adapter from a `valo-fontmgr` manager to `FontSource`, so a collection resolves its misses. Builds anywhere `valo-text` does |
 | `valo-capi` | C ABI for non-Rust embedders; the committed header is `crates/valo-capi/include/valo.h` |
 | `valo-web` | wasm-bindgen bindings: the raw API, canvas attach, image upload. Ships to npm as `valo-web`; the `webgl` feature builds the WebGL2-fallback compat artifact |
 | `valo-web-demo` | dev only: the browser playground chapters (`npm run dev:web`) |

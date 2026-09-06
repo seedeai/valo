@@ -17,10 +17,12 @@ use core_foundation_sys::notification_center::{
     CFNotificationCenterRemoveObserver, CFNotificationCenterRef,
     CFNotificationSuspensionBehaviorDeliverImmediately,
 };
+use core_foundation::base::CFType;
+use core_foundation::dictionary::CFDictionary;
 use core_text::font::{self, kCTFontSystemFontType, CTFont, CTFontRef};
 use core_text::font_collection;
 use core_text::font_descriptor::{
-    kCTFontItalicTrait, CTFontDescriptor, CTFontTraits, TraitAccessors,
+    self, kCTFontItalicTrait, CTFontDescriptor, CTFontTraits, TraitAccessors,
 };
 use core_text::font_manager;
 
@@ -106,9 +108,12 @@ impl FontManager for CoreText {
         locales: &[&str],
         character: char,
     ) -> Option<Typeface> {
+        // The base font decides the cascade: a family's own, else the platform's default
+        // font, as Skia's backend starts from a descriptor naming no family. The
+        // user-interface font would cascade into the platform's reserved UI variants.
         let base = family
             .and_then(|name| font::new_from_name(name, LOOKUP_SIZE).ok())
-            .unwrap_or_else(|| font::new_ui_font_for_language(kCTFontSystemFontType, LOOKUP_SIZE, None));
+            .unwrap_or_else(default_font);
         let text = CFString::new(&character.to_string());
         let range = CFRange::init(0, character.len_utf16() as isize);
         let language = locales.first().map(|locale| CFString::new(locale));
@@ -166,6 +171,12 @@ impl FontManager for CoreText {
     fn watch(&mut self, on_change: Box<dyn Fn() + Send + Sync>) -> Option<Watch> {
         Some(Watch::new(Observer::new(on_change)))
     }
+}
+
+/// The platform's default font: what an empty descriptor resolves to.
+fn default_font() -> CTFont {
+    let no_attributes: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[]);
+    font::new_from_descriptor(&font_descriptor::new_from_attributes(&no_attributes), LOOKUP_SIZE)
 }
 
 /// CoreText's normalized weight, -1 to 1, against CSS weights: Skia's table for its

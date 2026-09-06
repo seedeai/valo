@@ -44,6 +44,7 @@ unicode-segmentation = "1"
 # directory scan (fontdb) — native hosts only, never a wasm dependency
 fontdb = "0.23"
 core-text = "21"
+memmap2 = "0.9"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 rustc-hash = "2"

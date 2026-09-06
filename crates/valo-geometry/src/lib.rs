@@ -17,7 +17,7 @@ mod winding;
 pub use color::Color;
 pub use matrix::{Matrix, MatrixKind};
 pub use measure::{ContourMeasure, PathSample};
-pub use path::{
+pub use path::{PathElement, 
     constrain_radii, constrain_radii_elliptical, local_tolerance, Contour, FillRule, Path,
     PathBuilder, Winding,
 };

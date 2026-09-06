@@ -2,7 +2,7 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use valo_geometry::{Cap, Join, Path};
-use valo_text::{Font, GlyphImage, GlyphStroke, Rasterizer};
+use valo_text::{Font, GlyphImage, GlyphRaster, GlyphStroke, Rasterizer};
 
 /// Skia's kMaxMultitexturePages: open pages up to this, then GC.
 const MAX_PAGES: usize = 4;
@@ -238,7 +238,7 @@ const EVICT_BATCH: usize = 64;
 pub struct GlyphStore {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    raster: Rasterizer,
+    raster: Box<dyn GlyphRaster>,
     page_size: u32,
     mask_pages: Vec<Page>,
     color_pages: Vec<Page>,
@@ -285,12 +285,24 @@ impl GlyphStore {
         Self::with_page_size(device, queue, DEFAULT_PAGE_SIZE)
     }
 
+    /// Glyphs rasterized by `raster` instead of the fonts' own bytes: for a host whose
+    /// glyph shapes come from elsewhere.
+    pub fn with_raster(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        raster: Box<dyn GlyphRaster>,
+    ) -> Self {
+        let mut store = Self::with_page_size(device, queue, DEFAULT_PAGE_SIZE);
+        store.raster = raster;
+        store
+    }
+
     /// Test seam: tiny pages force the page-add and GC paths.
     pub fn with_page_size(device: &wgpu::Device, queue: &wgpu::Queue, page_size: u32) -> Self {
         Self {
             device: device.clone(),
             queue: queue.clone(),
-            raster: Rasterizer::new(),
+            raster: Box::new(Rasterizer::new()),
             page_size,
             mask_pages: Vec::new(),
             color_pages: Vec::new(),
@@ -611,7 +623,7 @@ impl GlyphStore {
             .paths
             .entry((font.uid().0, glyph, px.to_bits()))
             .or_insert_with(|| PathEntry {
-                path: valo_text::glyph_path(font, glyph, px),
+                path: self.raster.path(font, glyph, px),
                 last_used: frame,
             });
         entry.last_used = frame;

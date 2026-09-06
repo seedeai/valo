@@ -20,7 +20,7 @@ pub use font::{
 pub use paragraph::{
     Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PositionWithAffinity,
 };
-pub use raster::{glyph_path, GlyphImage, GlyphStroke, Rasterizer, SDF_PAD};
+pub use raster::{glyph_path, GlyphImage, GlyphRaster, GlyphStroke, Rasterizer, SDF_PAD};
 pub use style::{
     Decoration, DecorationKind, ParagraphStyle, Shadow, TextAlign, TextDirection, TextStyle,
     VariantCaps,

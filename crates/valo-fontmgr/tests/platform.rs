@@ -70,3 +70,33 @@ fn the_system_font_is_answered_at_text_and_display_sizes() {
     assert!(display.covers('a'));
     assert!(!manager.families().is_empty());
 }
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn the_served_tables_are_a_fraction_of_the_file_and_rebuild_a_font() {
+    use skrifa::MetadataProvider;
+    let Some(mut manager) = manager() else {
+        return;
+    };
+    let face = manager.system_font(17.0, Style::default()).expect("a UI font");
+    let rebuilt = valo_fontmgr::assemble(&face.tables());
+    eprintln!(
+        "system font: file {} bytes, served tables {} bytes",
+        face.data().len(),
+        rebuilt.len()
+    );
+    assert!(rebuilt.len() * 4 < face.data().len());
+    let font = skrifa::FontRef::new(&rebuilt).expect("the rebuilt font parses");
+    assert!(font.charmap().map('a').is_some());
+    if let Some(cjk) = manager.match_character(None, Style::default(), &["zh-Hans"], '中') {
+        let rebuilt = valo_fontmgr::assemble(&cjk.tables());
+        eprintln!(
+            "cjk font: file {} bytes, served tables {} bytes",
+            cjk.data().len(),
+            rebuilt.len()
+        );
+        assert!(rebuilt.len() * 4 < cjk.data().len());
+        let font = skrifa::FontRef::new(&rebuilt).expect("the rebuilt font parses");
+        assert!(font.charmap().map('中').is_some(), "a collection face keeps its cmap");
+    }
+}

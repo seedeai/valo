@@ -128,11 +128,26 @@ pub struct RendererCore {
 impl RendererCore {
     /// `new` creates a renderer from a host-owned device and queue.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        let glyphs = GlyphStore::new(&device, &queue);
+        Self::with_glyphs(device, queue, glyphs)
+    }
+
+    /// `with_glyph_raster` creates a renderer whose glyphs `raster` shapes, for a host
+    /// whose glyph shapes come from elsewhere than the fonts' own bytes.
+    pub fn with_glyph_raster(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        raster: Box<dyn valo_text::GlyphRaster>,
+    ) -> Self {
+        let glyphs = GlyphStore::with_raster(&device, &queue, raster);
+        Self::with_glyphs(device, queue, glyphs)
+    }
+
+    fn with_glyphs(device: wgpu::Device, queue: wgpu::Queue, glyphs: GlyphStore) -> Self {
         let host = HostBuffer::new(&device);
         let pipelines = PipelineCache::new(&device, host.bind_group_layout());
         let images = ImageStore::new(&device, &queue);
         let pool = TargetPool::new(&device);
-        let glyphs = GlyphStore::new(&device, &queue);
         let timer = GpuTimer::new(&device, &queue);
         let sampler = linear_sampler(&device);
         Self {

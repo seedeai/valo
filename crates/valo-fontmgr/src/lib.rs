@@ -18,11 +18,14 @@ mod coretext;
 mod files;
 #[cfg(not(target_arch = "wasm32"))]
 mod scan;
+mod sfnt;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use coretext::CoreText;
 #[cfg(not(target_arch = "wasm32"))]
 pub use scan::Scan;
+pub use sfnt::assemble;
+pub use skrifa::raw::types::Tag;
 
 /// `FontData` is a font file's bytes, shared by every face read from them.
 pub type FontData = Arc<dyn AsRef<[u8]> + Send + Sync>;
@@ -124,6 +127,14 @@ impl Typeface {
     /// `covers` reports whether the face has a glyph for `character`.
     pub fn covers(&self, character: char) -> bool {
         files::covers(self.data(), self.index, character)
+    }
+
+    /// `tables` is what a platform serves of this face: its tables in the file's order,
+    /// without the outline and color-glyph tables, which stay with the platform and are
+    /// rasterized on request. A consumer rebuilds a font from them with [`assemble`].
+    /// Empty when the file does not parse.
+    pub fn tables(&self) -> Vec<(Tag, &[u8])> {
+        sfnt::served_tables(self.data(), self.index).unwrap_or_default()
     }
 }
 

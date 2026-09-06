@@ -49,8 +49,8 @@ pub use valo_renderer::{
 pub use valo_text::{
     Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
     FontId, FontSource, FontUid, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle,
-    PlacedRun, PositionWithAffinity, Rasterizer, Shadow, TextAlign, TextDirection, TextStyle,
-    VariantCaps,
+    GlyphImage, GlyphRaster, GlyphStroke, PlacedRun, PositionWithAffinity, Rasterizer, Shadow,
+    TextAlign, TextDirection, TextStyle, VariantCaps,
 };
 
 mod text;
