@@ -1,6 +1,6 @@
 [package]
 name = "valo-system-fonts"
-description = "Native OS font discovery for valo, behind its FontSource trait"
+description = "The platform's installed fonts as valo's FontSource, over a valo-fontmgr font manager"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,9 +11,8 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
+valo-fontmgr = { workspace = true }
 valo-text = { workspace = true }
-skrifa = { workspace = true }
-fontdb = { workspace = true }
 
 [dev-dependencies]
 valo-geometry = { workspace = true }

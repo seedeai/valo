@@ -121,3 +121,17 @@ fn variable_system_fonts_expand_into_weighted_instances() {
     }
     eprintln!("SKIP: no variable system font found under known names");
 }
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn the_system_family_carries_its_weights() {
+    let mut system = SystemFonts::load();
+    let fonts = system.system_family(17.0);
+    if fonts.is_empty() {
+        eprintln!("SKIP: no system UI font");
+        return;
+    }
+    assert!(fonts.iter().all(|font| font.covers('a')));
+    assert!(fonts.iter().any(|font| font.attrs().weight >= 700));
+    assert!(fonts.iter().any(|font| font.attrs().weight <= 400));
+}

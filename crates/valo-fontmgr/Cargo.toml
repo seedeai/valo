@@ -1,0 +1,22 @@
+[package]
+name = "valo-fontmgr"
+description = "Installed fonts, found the way Skia's SkFontMgr finds them: by family and style, by the character to cover, and the platform's own UI font"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+skrifa = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fontdb = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+core-text = { workspace = true }
+core-foundation = { workspace = true }
+core-foundation-sys = { workspace = true }

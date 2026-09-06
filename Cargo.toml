@@ -27,6 +27,7 @@ valo-renderer = { path = "crates/valo-renderer", version = "0.3.0" }
 valo-harness = { path = "crates/valo-harness" }
 valo = { path = "crates/valo", version = "0.3.0" }
 valo-svg = { path = "crates/valo-svg", version = "0.3.0" }
+valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.3.0" }
 valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.3.0" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
@@ -39,9 +40,12 @@ swash = "0.2"
 unicode-bidi = "0.3"
 unicode-linebreak = "0.1"
 unicode-segmentation = "1"
-# system-font discovery: platform directories, .ttc face indices,
-# memory-mapped bytes — native hosts only, never a wasm dependency
+# installed fonts: the platform's font API where it has one (CoreText), else a
+# directory scan (fontdb) — native hosts only, never a wasm dependency
 fontdb = "0.23"
+core-text = "21"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
 rustc-hash = "2"
 etagere = "0.2"
 bytemuck = { version = "1", features = ["derive"] }

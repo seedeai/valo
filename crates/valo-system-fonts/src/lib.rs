@@ -1,105 +1,118 @@
-//! Native system-font discovery for Valo.
+//! The platform's installed fonts as valo's [`FontSource`].
 //!
-//! [`SystemFonts`] implements [`FontSource`] by scanning fonts installed on the
-//! operating system. Keeping discovery in this separate crate prevents
-//! `valo-text` and WebAssembly builds from acquiring platform filesystem code.
+//! [`SystemFonts`] adapts a [`FontManager`], the platform's font lookup in Skia's shape,
+//! to the two questions valo's font collection asks a source: the faces of a family, and
+//! a face covering a character. The manager decides how the platform is asked (CoreText,
+//! a directory scan, or a host across a boundary); this crate parses the answers into
+//! [`Font`]s and picks the instance nearest the request, so it builds anywhere
+//! `valo-text` does, wasm included.
 
+use valo_fontmgr::{FontManager, Slant, Style, Typeface};
+pub use valo_fontmgr::{self as fontmgr, Watch};
 use valo_text::{FaceSet, Font, FontAttrs, FontDemand, FontSource};
 
-/// `SystemFonts` is a reusable index of fonts installed on the operating system.
+/// `SystemFonts` is a [`FontSource`] over the platform's font manager.
 ///
-/// Creating it scans platform font directories and may block, so load it once
-/// and retain it as a [`FontSource`]. Returned [`Font`] values retain shared
-/// mappings of their font data.
+/// Returned [`Font`] values share their file's bytes. For automatic resolution during
+/// paragraph building, add it to a [`valo_text::FontCollection`]; [`satisfy`] is for a
+/// host that resolves demands out of band.
+///
+/// [`satisfy`]: SystemFonts::satisfy
 pub struct SystemFonts {
-    database: fontdb::Database,
+    manager: Box<dyn FontManager>,
+    /// The languages fallback prefers, BCP 47, most preferred first.
+    locales: Vec<String>,
 }
 
 impl SystemFonts {
-    /// `load` synchronously scans platform font directories.
+    /// `load` uses this platform's own font manager. It may block while the platform
+    /// indexes its fonts, so load once and keep it.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
-        let mut database = fontdb::Database::new();
-        database.load_system_fonts();
-        Self { database }
+        Self::with_manager(valo_fontmgr::platform())
     }
 
-    /// `face_count` returns the number of installed faces discovered by the scan.
+    /// `with_manager` answers through `manager`, for a host that supplies its own.
+    pub fn with_manager(manager: Box<dyn FontManager>) -> Self {
+        SystemFonts {
+            manager,
+            locales: Vec::new(),
+        }
+    }
+
+    /// `set_locales` tells character fallback which languages to prefer (BCP 47, most
+    /// preferred first); none prefers whatever the platform does.
+    pub fn set_locales(&mut self, locales: Vec<String>) {
+        self.locales = locales;
+    }
+
+    /// `manager` is the platform lookup underneath, for questions valo does not ask.
+    pub fn manager(&mut self) -> &mut dyn FontManager {
+        &mut *self.manager
+    }
+
+    /// `face_count` is how many installed faces the platform reports.
     pub fn face_count(&self) -> usize {
-        self.database.len()
+        self.manager.face_count()
     }
 
-    /// `satisfy` returns a face-set clone extended to answer a font demand.
-    ///
-    /// It returns `None` when no matching system font is found. For automatic
-    /// resolution during paragraph building, add `SystemFonts` directly to a
-    /// [`valo_text::FontCollection`] instead.
+    /// `system_family` is every weight of the platform's user-interface font for text at
+    /// `size` points, one [`Font`] per weight the platform has; empty where the platform
+    /// has no such notion. Registered under a name of the caller's, it stands in for
+    /// "the system font".
+    pub fn system_family(&mut self, size: f32) -> Vec<Font> {
+        let mut fonts: Vec<Font> = Vec::new();
+        for weight in (100..=900).step_by(100) {
+            let attrs = FontAttrs {
+                weight,
+                ..FontAttrs::default()
+            };
+            let Some(typeface) = self.manager.system_font(size, style_of(attrs)) else {
+                continue;
+            };
+            let Some(font) = nearest_instance(fonts_of(typeface), attrs) else {
+                continue;
+            };
+            if !fonts.iter().any(|known| known.attrs() == font.attrs()) {
+                fonts.push(font);
+            }
+        }
+        fonts
+    }
+
+    /// `satisfy` returns a face-set clone extended to answer a font demand, or `None`
+    /// when no installed font answers any of it.
     pub fn satisfy(&mut self, faces: &FaceSet, demand: &FontDemand) -> Option<FaceSet> {
         faces.grown_by(self, demand)
-    }
-
-    /// All face identifiers, closest to `attrs` first (valo's CSS-style
-    /// order: matching style, then smallest weight distance).
-    fn face_identifiers_nearest(&self, attrs: FontAttrs) -> Vec<fontdb::ID> {
-        let mut keyed: Vec<(bool, u16, fontdb::ID)> = self
-            .database
-            .faces()
-            .map(|face| {
-                let italic = face.style != fontdb::Style::Normal;
-                (
-                    italic != attrs.italic,
-                    face.weight.0.abs_diff(attrs.weight),
-                    face.id,
-                )
-            })
-            .collect();
-        keyed
-            .sort_by_key(|&(style_mismatch, weight_distance, _)| (style_mismatch, weight_distance));
-        keyed
-            .into_iter()
-            .map(|(_, _, identifier)| identifier)
-            .collect()
-    }
-
-    fn shared_face_data(&mut self, identifier: fontdb::ID) -> Option<(valo_text::FontData, u32)> {
-        // SAFETY (fontdb's mmap contract): the font file must not change
-        // while mapped. Installed fonts are effectively immutable while in
-        // use — the assumption every mmap-based font stack shares; a font
-        // uninstalled mid-run degrades glyphs, it does not race memory we
-        // hand out (the map holds the old pages).
-        unsafe { self.database.make_shared_face_data(identifier) }
     }
 }
 
 impl FontSource for SystemFonts {
     fn family(&mut self, name: &str) -> Vec<Font> {
-        let identifiers: Vec<fontdb::ID> = self
-            .database
-            .faces()
-            .filter(|face| face_answers_to(face, name))
-            .map(|face| face.id)
-            .collect();
-        identifiers
+        self.manager
+            .family(name)
             .into_iter()
-            .filter_map(|identifier| self.shared_face_data(identifier))
-            .flat_map(|(data, face_index)| Font::instances_from_data(data, face_index))
+            .flat_map(fonts_of)
             .collect()
     }
 
     fn face_for_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> Option<Font> {
-        for identifier in self.face_identifiers_nearest(attrs) {
-            let Some((data, face_index)) = self.shared_face_data(identifier) else {
-                continue;
-            };
-            if face_covers((*data).as_ref(), face_index, codepoint) {
-                return nearest_instance(Font::instances_from_data(data, face_index), attrs);
-            }
-        }
-        None
+        let locales: Vec<&str> = self.locales.iter().map(String::as_str).collect();
+        let typeface = self
+            .manager
+            .match_character(None, style_of(attrs), &locales, codepoint)?;
+        nearest_instance(fonts_of(typeface), attrs).filter(|font| font.covers(codepoint))
     }
 }
 
-/// A variable face answers with its instance nearest the request (a bold
-/// span's fallback arrives bold); static fonts pass through unchanged.
+/// Every registrable instance of a typeface: one for a static face, one per named
+/// instance of a variable one.
+fn fonts_of(typeface: Typeface) -> Vec<Font> {
+    Font::instances_from_data(typeface.shared_data(), typeface.index())
+}
+
+/// A variable face answers with its instance nearest the request (a bold span's
+/// fallback arrives bold); static fonts pass through unchanged.
 fn nearest_instance(instances: Vec<Font>, attrs: FontAttrs) -> Option<Font> {
     instances.into_iter().min_by_key(|face| {
         (
@@ -109,17 +122,14 @@ fn nearest_instance(instances: Vec<Font>, attrs: FontAttrs) -> Option<Font> {
     })
 }
 
-fn face_answers_to(face: &fontdb::FaceInfo, name: &str) -> bool {
-    face.families
-        .iter()
-        .any(|(family, _)| family.eq_ignore_ascii_case(name))
-}
-
-/// Probe one face's cmap without building a full [`Font`] — candidates are
-/// rejected wholesale during the coverage scan and must stay cheap.
-fn face_covers(bytes: &[u8], face_index: u32, codepoint: char) -> bool {
-    use skrifa::MetadataProvider;
-    skrifa::FontRef::from_index(bytes, face_index)
-        .map(|face| face.charmap().map(codepoint).is_some())
-        .unwrap_or(false)
+fn style_of(attrs: FontAttrs) -> Style {
+    Style {
+        weight: attrs.weight,
+        width: attrs.stretch,
+        slant: if attrs.italic {
+            Slant::Italic
+        } else {
+            Slant::Upright
+        },
+    }
 }
