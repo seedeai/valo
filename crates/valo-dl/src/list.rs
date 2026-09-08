@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use valo_geometry::{FillRule, Matrix, Path, Rect};
 
-use crate::{Image, Paint, Sampling};
+use crate::{Image, ImageFilter, Paint, Sampling};
 
 /// `ClipOp` controls how a clip shape changes the current clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,15 +52,15 @@ pub enum Op {
         /// alpha ride each child at its own slot (Impeller's opacity
         /// peephole: elision changes nothing about depth).
         can_elide: bool,
-        /// Set = the layer OPENS pre-filled with a blur of everything
-        /// already painted beneath it (σ in local units; replay scales it
-        /// into device px). Children paint over that glass, and the
-        /// composite applies group alpha to blur + children as one image —
+        /// Set = the layer opens with the filtered scene already painted
+        /// beneath it. Filter parameters are in local coordinates. Children
+        /// paint afterward, and the composite applies group alpha to the
+        /// filtered backdrop and children as one image —
         /// Flutter's `saveLayer(bounds, paint, backdrop)`. A backdrop layer
         /// never elides: the seed needs a texture.
-        backdrop_sigma: Option<f32>,
-        /// Tiles sharing one key reuse the FIRST tile's blur (and see the
-        /// scene as of that tile). Meaningful only with `backdrop_sigma`.
+        backdrop_filter: Option<ImageFilter>,
+        /// Tiles sharing one key reuse the FIRST tile's filtered snapshot (and see the
+        /// scene as of that tile). Meaningful only with `backdrop_filter`.
         backdrop_key: Option<u64>,
     },
     Restore,
@@ -196,19 +196,16 @@ pub struct GlyphPos {
     pub y: f32,
 }
 
-/// `BackdropGroup` summarizes regions sharing one backdrop-blur key.
-#[derive(Clone, Copy, Debug)]
+/// `BackdropGroup` summarizes regions sharing one backdrop-filter key.
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BackdropGroup {
     /// `key` identifies the shared backdrop group.
     pub key: u64,
     /// `union_bounds` encloses every region in the group.
     pub union_bounds: Rect,
-    /// `sigma` is the shared blur radius when every region agrees.
-    ///
-    /// It is `None` when regions with this key use different radii and cannot
-    /// share one blur result.
-    pub sigma: Option<f32>,
+    /// `filter` is shared when every region agrees; `None` disables reuse.
+    pub filter: Option<ImageFilter>,
 }
 
 fn next_id() -> u64 {

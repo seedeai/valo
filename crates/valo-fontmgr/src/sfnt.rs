@@ -1,7 +1,7 @@
 //! A font's tables as a platform serves them, and an sfnt assembled from them.
 
-use skrifa::raw::types::Tag;
 use skrifa::raw::FontRef;
+use skrifa::raw::types::Tag;
 
 /// The tables that hold glyph shapes and color glyphs. A platform keeps them: shapes are
 /// rasterized on request, and a font file never leaves it.
@@ -84,7 +84,10 @@ mod tests {
 
     #[test]
     fn served_tables_keep_shaping_and_lose_outlines() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/fira_sans.ttf");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/fira_sans.ttf"
+        );
         let bytes = std::fs::read(path).expect("fira_sans.ttf");
         let tables = served_tables(&bytes, 0).expect("a parsable font");
         let tags: Vec<[u8; 4]> = tables.iter().map(|(tag, _)| tag.to_be_bytes()).collect();
@@ -92,7 +95,12 @@ mod tests {
         assert!(!tags.contains(b"glyf") && !tags.contains(b"loca"));
 
         let assembled = assemble(&tables);
-        assert!(assembled.len() < bytes.len() / 2, "{} of {}", assembled.len(), bytes.len());
+        assert!(
+            assembled.len() < bytes.len() / 2,
+            "{} of {}",
+            assembled.len(),
+            bytes.len()
+        );
         let font = FontRef::new(&assembled).expect("the assembled font parses");
         assert!(font.charmap().map('a').is_some());
         assert_eq!(font.table_directory().table_records().len(), tables.len());

@@ -1,7 +1,7 @@
 //! Backdrop blur: frosted glass over live content.
 //! `cargo run -p valo --example backdrop`
 //!
-//! `save_layer_backdrop(bounds, paint, Backdrop { sigma: σ, shared_key: key })` opens a layer already full
+//! `save_layer_backdrop(bounds, paint, Backdrop::blur(σ).shared(key))` opens a layer already full
 //! of blurred parent: it breaks the pass, snapshots the region under the
 //! panel (+3σ so edge taps read real scene), blurs it AT SCALE (σ>4 renders
 //! the blur at reduced resolution — cost stays ~flat in σ), and seeds the
@@ -49,7 +49,7 @@ fn glass_panel(b: &mut DisplayListBuilder, rect: Rect, sigma: f32, shared: Optio
         Some(rect),
         &Paint::default(),
         Backdrop {
-            sigma,
+            filter: valo::ImageFilter::blur(sigma, sigma),
             shared_key: shared,
         },
     );

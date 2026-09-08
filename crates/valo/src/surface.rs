@@ -152,6 +152,30 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// `set_presents_with_transaction` synchronizes Metal presentation with Core Animation.
+    ///
+    /// Call on the main thread before acquiring a frame. Enable this for AppKit
+    /// hosts that render inside resize callbacks, so the new drawable and window
+    /// geometry are committed together. wgpu waits for GPU scheduling before
+    /// presenting the drawable. Returns false for a non-Metal surface.
+    #[cfg(target_os = "macos")]
+    pub fn set_presents_with_transaction(&mut self, enabled: bool) -> bool {
+        assert!(
+            objc2::MainThreadMarker::new().is_some(),
+            "presentation configuration requires the main thread"
+        );
+        // The guard keeps the surface alive; only the layer's presentation mode
+        // changes, under its lock. No HAL resource is destroyed or replaced.
+        let Some(surface) = (unsafe { self.surface.as_hal::<wgpu::hal::api::Metal>() }) else {
+            return false;
+        };
+        surface
+            .render_layer()
+            .lock()
+            .setPresentsWithTransaction(enabled);
+        true
+    }
+
     /// `new` creates and configures a surface over a window or canvas.
     pub fn new(
         instance: &wgpu::Instance,

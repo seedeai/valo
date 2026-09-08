@@ -37,6 +37,28 @@ Open the layer yourself in Rust when content should ride on the glass.
 JavaScript 0.4.0 has no `saveLayerBackdrop` yet — `backdropBlur` is the
 open-and-restore convenience only.
 
+## Composed backdrop filters
+
+In Rust, `Backdrop::new(filter)` accepts the same `ImageFilter` used by ordinary layers. `Compose` runs its inner filter first. For example, an acrylic material can put an opaque base beneath the sampled scene before blurring it:
+
+```rust
+use valo::{Backdrop, BlendMode, Color, ColorFilter, ImageFilter};
+
+let filter = ImageFilter::compose(
+    ImageFilter::blur(30.0, 30.0),
+    ImageFilter::color(ColorFilter::Blend(
+        Color::rgb(1.0, 1.0, 1.0),
+        BlendMode::DstOver,
+    )),
+);
+let backdrop = Backdrop::new(filter);
+builder.save_layer_backdrop(Some(panel), &Paint::default(), backdrop);
+// Foreground drawing here stays sharp.
+builder.restore();
+```
+
+`Backdrop::blur(sigma)` remains a convenience for equal horizontal and vertical blur radii. The backdrop filter runs before children paint. A filter on the save layer's `Paint` runs on the completed layer, including its children.
+
 ## Shared keys
 
 Tiles that share a key reuse the **first** tile's blur — and see the scene
@@ -57,7 +79,7 @@ builder.save_layer_backdrop(
 builder.restore();
 ```
 
-A later tile with a different sigma does not share. Nested replays of a
+Tiles with different filters under the same key do not share. Reuse also requires the same device-space filter transform and source target. Nested replays of a
 retained list save and restore the keyed cache, so drawing the same list
 twice does not reuse the first drawing's blur. Shared keys are Rust-only
 in valo-web 0.4.0.

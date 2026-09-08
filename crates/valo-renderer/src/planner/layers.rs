@@ -8,7 +8,7 @@
 //! render target.
 
 use rustc_hash::FxHashMap;
-use valo_dl::{BlendMode, DisplayList, MaskKind, Paint};
+use valo_dl::{BlendMode, DisplayList, ImageFilter, MaskKind, Paint};
 use valo_geometry::{Color, Matrix, Point, Rect};
 
 use crate::frame::{PassColor, Step, TextureCopy};
@@ -17,28 +17,28 @@ use crate::raster::FillTarget;
 use crate::renderer::RenderTarget;
 
 use super::emit::{alpha_tint, PAYLOAD_GEOM, PAYLOAD_MISC};
-use super::filters::{region_uv, LayerEffects, SharedBlur};
+use super::filters::{region_uv, LayerEffects, SharedBackdrop};
 use super::Planner;
 
 /// `BackdropRequest` is a recorded backdrop's facts, resolved by replay.
 ///
 /// Replay validates the shared key against the list's backdrop groups
-/// before the layer opens, so the seed logic never re-checks σ agreement.
+/// before the layer opens, so the seed logic never re-checks filter agreement.
 pub(super) struct BackdropRequest {
-    /// Blur σ in local units; the save-point transform scales it.
-    pub sigma_local: f32,
+    /// Filter in local units, transformed at the save point.
+    pub filter: ImageFilter,
     /// The shared key, already validated — cleared when the group's tiles
-    /// disagree on σ.
+    /// disagree on the filter.
     pub key: Option<u64>,
     /// The keyed group's union bounds, list-root space.
     pub group_bounds: Option<Rect>,
 }
 
-/// `BackdropSeed` is the blurred parent region a backdrop layer opens with.
+/// `BackdropSeed` is the filtered parent region a backdrop layer opens with.
 ///
 /// Drawn as the layer's first step — the glass every child paints over.
 struct BackdropSeed {
-    /// The finished blur.
+    /// The finished filtered snapshot.
     view: wgpu::TextureView,
     /// The region the blur covers, absolute replay coords.
     region: Rect,
@@ -191,7 +191,7 @@ impl Planner<'_> {
         base: &Matrix,
         effect_transform: &Matrix,
         layer: ResolvedLayer<'_>,
-        shared_blurs: &mut FxHashMap<u64, SharedBlur>,
+        shared_backdrops: &mut FxHashMap<u64, SharedBackdrop>,
     ) -> Opened {
         let Some(rect) = self.layer_rect(base, layer.bounds) else {
             if layer.mask.is_some() {
@@ -209,7 +209,7 @@ impl Planner<'_> {
         // this ordering is the whole point of backdrop-as-a-layer-property:
         // the glass shows the real scene, not a fresh offscreen.
         let seed = layer.backdrop.map(|request| {
-            self.backdrop_seed(base, effect_transform, &rect, request, shared_blurs)
+            self.backdrop_seed(base, effect_transform, &rect, request, shared_backdrops)
         });
         // The layer paint's σ is local at the SAVE POINT, so the save-point
         // transform scales it to device — the same transform the recorder
@@ -237,24 +237,23 @@ impl Planner<'_> {
         Opened::Layer
     }
 
-    /// `backdrop_seed` blurs what is already painted beneath `rect`: a
-    /// same-key tile reuses the first tile's blur; otherwise the region
-    /// (the keyed group's union, or just this layer) is padded by 3σ so
-    /// edge taps read real scene, snapshotted from the parent target, and
-    /// run through the blur chain.
+    /// `backdrop_seed` filters the scene beneath `rect`. Matching keyed tiles
+    /// reuse the first snapshot. Otherwise, filter padding expands the sampled
+    /// region so edge taps read the parent scene before the filter chain runs.
     fn backdrop_seed(
         &mut self,
         base: &Matrix,
         effect_transform: &Matrix,
         rect: &Rect,
         request: BackdropRequest,
-        shared_blurs: &mut FxHashMap<u64, SharedBlur>,
+        shared_backdrops: &mut FxHashMap<u64, SharedBackdrop>,
     ) -> BackdropSeed {
-        let sigma = (request.sigma_local * effect_transform.max_scale()).max(0.05);
+        let [a, b, c, d, ..] = effect_transform.to_affine();
+        let basis = [a, b, c, d];
         if let Some(shared) = request
             .key
-            .and_then(|key| shared_blurs.get(&key))
-            .filter(|shared| (shared.sigma - sigma).abs() < 1e-3)
+            .and_then(|key| shared_backdrops.get(&key))
+            .filter(|shared| shared.filter == request.filter && shared.basis == basis)
             .filter(|shared| shared.source == self.frame().src_texture)
         {
             self.stats.shared_backdrops += 1;
@@ -268,18 +267,24 @@ impl Planner<'_> {
             .group_bounds
             .and_then(|union| base.map_rect(&union).intersect(&self.frame().cull_rect))
             .unwrap_or(*rect);
-        let padded = bounds.expand((sigma * 3.0).ceil());
+        let padding = Paint {
+            image_filter: Some(request.filter.clone()),
+            ..Paint::default()
+        }
+        .device_effect_padding(effect_transform);
+        let padded = bounds.expand(padding);
         let region = padded.intersect(&self.frame().cull_rect).unwrap_or(bounds);
-        let blur = self.blur_of_target_region(&region, sigma);
+        let blur = self.filter_of_target_region(&region, &request.filter, basis);
         if let Some(key) = request.key {
-            // First tile wins, as documented: a σ- or target-mismatched
+            // First tile wins: a filter-, transform-, or target-mismatched
             // tile blurs independently WITHOUT evicting the entry later
             // matching tiles reuse.
-            shared_blurs.entry(key).or_insert(SharedBlur {
+            shared_backdrops.entry(key).or_insert(SharedBackdrop {
                 view: blur.view.clone(),
                 region,
                 uv_max: blur.uv_max,
-                sigma,
+                filter: request.filter,
+                basis,
                 source: self.frame().src_texture.clone(),
             });
         }

@@ -7,8 +7,8 @@
 //! [`Font`]s and picks the instance nearest the request, so it builds anywhere
 //! `valo-text` does, wasm included.
 
-use valo_fontmgr::{FontManager, Slant, Style, Typeface};
 pub use valo_fontmgr::{self as fontmgr, Watch};
+use valo_fontmgr::{FontManager, Slant, Style, Typeface};
 use valo_text::{FaceSet, Font, FontAttrs, FontDemand, FontSource};
 
 /// `SystemFonts` is a [`FontSource`] over the platform's font manager.

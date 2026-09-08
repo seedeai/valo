@@ -29,7 +29,7 @@ mod surface;
 pub use context::Context;
 pub use export::unpremultiply;
 #[cfg(target_os = "macos")]
-pub use surface::{metal_device_of, wrap_metal_texture, ExternalMetalTexture};
+pub use surface::{ExternalMetalTexture, metal_device_of, wrap_metal_texture};
 pub use surface::{Offscreen, PersistentCanvas, Surface, SurfaceFrame};
 
 pub use valo_dl::{
@@ -38,9 +38,9 @@ pub use valo_dl::{
     MipmapMode, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
 };
 pub use valo_geometry::{
-    constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,
     Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathSample, Point,
-    Rect, Size, Stroke, Winding,
+    Rect, Size, Stroke, Winding, constrain_radii, constrain_radii_elliptical, dash_contours,
+    local_tolerance, stroke_contains,
 };
 pub use valo_renderer::{
     AtlasReport, ImageDesc, MemoryReport, PoolReport, RenderStats, RenderTarget, TextTiers,
@@ -48,9 +48,9 @@ pub use valo_renderer::{
 };
 pub use valo_text::{
     Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
-    FontId, FontSource, FontUid, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle,
-    GlyphImage, GlyphRaster, GlyphStroke, PlacedRun, PositionWithAffinity, Rasterizer, Shadow,
-    TextAlign, TextDirection, TextStyle, VariantCaps,
+    FontId, FontSource, FontUid, GlyphImage, GlyphRaster, GlyphStroke, Line, LineMetrics,
+    Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PositionWithAffinity, Rasterizer,
+    Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
 };
 
 mod text;

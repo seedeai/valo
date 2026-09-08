@@ -10,24 +10,24 @@ use std::ffi::c_void;
 use std::path::Path;
 
 use core_foundation::array::CFArray;
+use core_foundation::base::CFType;
 use core_foundation::base::{CFRange, TCFType};
+use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation_sys::notification_center::{
     CFNotificationCallback, CFNotificationCenterAddObserver, CFNotificationCenterGetLocalCenter,
-    CFNotificationCenterRemoveObserver, CFNotificationCenterRef,
+    CFNotificationCenterRef, CFNotificationCenterRemoveObserver,
     CFNotificationSuspensionBehaviorDeliverImmediately,
 };
-use core_foundation::base::CFType;
-use core_foundation::dictionary::CFDictionary;
-use core_text::font::{self, kCTFontSystemFontType, CTFont, CTFontRef};
+use core_text::font::{self, CTFont, CTFontRef, kCTFontSystemFontType};
 use core_text::font_collection;
 use core_text::font_descriptor::{
-    self, kCTFontItalicTrait, CTFontDescriptor, CTFontTraits, TraitAccessors,
+    self, CTFontDescriptor, CTFontTraits, TraitAccessors, kCTFontItalicTrait,
 };
 use core_text::font_manager;
 
 use crate::files::{self, Files};
-use crate::{nearest, FontManager, Slant, Style, Typeface, Watch};
+use crate::{FontManager, Slant, Style, Typeface, Watch, nearest};
 
 #[link(name = "CoreText", kind = "framework")]
 extern "C" {
@@ -163,7 +163,9 @@ impl FontManager for CoreText {
     fn face_count(&self) -> usize {
         // SAFETY: a plain CoreText call whose result is owned by the create rule.
         let names: CFArray<CFString> = unsafe {
-            CFArray::wrap_under_create_rule(font_manager::CTFontManagerCopyAvailablePostScriptNames())
+            CFArray::wrap_under_create_rule(
+                font_manager::CTFontManagerCopyAvailablePostScriptNames(),
+            )
         };
         names.len() as usize
     }
@@ -176,7 +178,10 @@ impl FontManager for CoreText {
 /// The platform's default font: what an empty descriptor resolves to.
 fn default_font() -> CTFont {
     let no_attributes: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[]);
-    font::new_from_descriptor(&font_descriptor::new_from_attributes(&no_attributes), LOOKUP_SIZE)
+    font::new_from_descriptor(
+        &font_descriptor::new_from_attributes(&no_attributes),
+        LOOKUP_SIZE,
+    )
 }
 
 /// CoreText's normalized weight, -1 to 1, against CSS weights: Skia's table for its

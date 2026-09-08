@@ -68,18 +68,18 @@ impl LayerEffects {
     }
 }
 
-/// `SharedBlur` is one shared backdrop key's blur.
+/// `SharedBackdrop` holds one shared key's filtered snapshot.
 ///
 /// Registered by the first tile replayed; later same-key layers in the
 /// same target seed from it without another pass break.
-pub(super) struct SharedBlur {
+pub(super) struct SharedBackdrop {
     pub view: wgpu::TextureView,
     /// The blurred region, absolute replay coords.
     pub region: Rect,
     pub uv_max: [f32; 2],
-    /// Device σ the blur ran at — a tile whose σ differs (a transform can
-    /// split record-time-equal σs) blurs independently instead.
-    pub sigma: f32,
+    /// The filter and device-space basis must agree before a snapshot is reused.
+    pub filter: ImageFilter,
+    pub basis: [f32; 4],
     /// The target the blur snapshotted. A same-key tile in a DIFFERENT
     /// target (a materialized layer vs the main frame) must not reuse it:
     /// the coords and the pixels both belong to the other texture.
@@ -276,11 +276,14 @@ impl Planner<'_> {
         }
     }
 
-    /// `blur_of_target_region` ends the current segment, snapshots `region`
-    /// (absolute replay coords) from the live target, and blurs it — the
-    /// copy rides the blur chain's FIRST pass (which runs between this
-    /// frame's segments), not the frame's next segment.
-    pub(super) fn blur_of_target_region(&mut self, region: &Rect, sigma: f32) -> FilteredTexture {
+    /// `filter_of_target_region` snapshots the parent before the layer opens,
+    /// then applies the same image-filter chain used by ordinary filtered layers.
+    pub(super) fn filter_of_target_region(
+        &mut self,
+        region: &Rect,
+        filter: &ImageFilter,
+        basis: [f32; 4],
+    ) -> FilteredTexture {
         self.emit_segment();
         self.stats.snapshots += 1;
         let (size, origin, src) = {
@@ -304,7 +307,35 @@ impl Planner<'_> {
             region.width,
             region.height,
         );
-        self.plan_blur(&snapshot.view, size, &local, sigma, copies)
+        // Preserve the direct snapshot-to-blur path for the common isotropic case.
+        if let ImageFilter::Blur { sigma_x, sigma_y } = filter {
+            let [x, y] = device_sigma(basis, *sigma_x, *sigma_y);
+            if x == y && x > 0.0 {
+                return self.plan_blur(&snapshot.view, size, &local, x, copies);
+            }
+        }
+        // Materialize the sampled region at the origin expected by the shared
+        // image-filter planner. Copies run before this pass reads the snapshot.
+        let work = [local.width, local.height];
+        let (view, bucket) = self.push_filter_pass(
+            &snapshot.view,
+            source_region_uv(&local, size, work),
+            work,
+            0.0,
+            [0.0, 0.0],
+            copies,
+        );
+        let source = FilteredTexture {
+            view,
+            uv_max: [work[0] / bucket[0], work[1] / bucket[1]],
+            size: [bucket[0] as u32, bucket[1] as u32],
+        };
+        self.push_image_filter(
+            &source,
+            &Rect::new(0.0, 0.0, work[0], work[1]),
+            filter,
+            basis,
+        )
     }
 
     /// `plan_blur` blurs `region` (px inside `source`, sized `source_size`):

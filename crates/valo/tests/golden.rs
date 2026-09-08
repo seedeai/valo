@@ -2075,7 +2075,7 @@ fn m5_backdrop_scene() -> valo::DisplayList {
             Some(rect),
             &Paint::default(),
             Backdrop {
-                sigma,
+                filter: valo::ImageFilter::blur(sigma, sigma),
                 shared_key: shared,
             },
         );

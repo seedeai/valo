@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use valo_geometry::{FillRule, Matrix, Path, PathBuilder, Rect};
 
-use crate::{ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling};
+use crate::{ClipOp, DisplayList, Image, ImageFilter, MaskKind, Op, Paint, Sampling};
 
 /// `DisplayListBuilder` records drawing commands into an immutable display list.
 ///
@@ -32,31 +32,31 @@ pub struct DisplayListBuilder {
     backdrop_reads: u32,
 }
 
-/// `Backdrop` describes what a backdrop save layer samples from the scene
-/// beneath it.
+/// `Backdrop` filters the sampled scene before a save layer's children paint.
 ///
-/// Today that is a gaussian blur. Further seed-only stages (a color matrix
-/// for iOS glass saturation) join as fields here, never as effects on the
-/// layer paint — a paint effect would filter the children too.
-#[derive(Clone, Copy, Debug)]
+/// Compose image filters to control the order of backdrop effects. The layer's
+/// paint separately controls how the filtered backdrop and children composite.
+#[derive(Clone, Debug)]
 pub struct Backdrop {
-    /// Gaussian σ in local units at record; replay scales it into device
-    /// px. σ ≤ 0 records a plain save layer (nothing to blur — the scene
-    /// already shows through).
-    pub sigma: f32,
-    /// Tiles sharing a key reuse the FIRST tile's blur — and see the scene
-    /// as of that tile. Use one key only for tiles over the same
-    /// background.
+    /// `filter` transforms the sampled scene in local coordinates.
+    pub filter: ImageFilter,
+    /// `shared_key` lets tiles reuse the first matching filtered snapshot.
+    /// Use one key only for tiles over the same background with the same filter.
     pub shared_key: Option<u64>,
 }
 
 impl Backdrop {
-    /// `blur` is a gaussian backdrop blur of `sigma` local units.
-    pub fn blur(sigma: f32) -> Self {
+    /// `new` filters the backdrop with `filter` before foreground content paints.
+    pub fn new(filter: ImageFilter) -> Self {
         Self {
-            sigma,
+            filter,
             shared_key: None,
         }
+    }
+
+    /// `blur` creates an isotropic Gaussian backdrop blur in local units.
+    pub fn blur(sigma: f32) -> Self {
+        Self::new(ImageFilter::blur(sigma, sigma))
     }
 
     /// `shared` marks this backdrop as one tile of a keyed group.
@@ -89,10 +89,8 @@ struct LayerScope {
     compatible: bool,
     /// ±3σ (device units) when the composite paint blurs.
     blur_pad: f32,
-    /// `(sigma, shared_key)` when this layer opens pre-filled with a blur
-    /// of what's beneath it. The keyed group is noted at close, when the
-    /// layer's region is known.
-    backdrop: Option<(f32, Option<u64>)>,
+    /// The sampled-scene filter and optional shared group, recorded at save time.
+    backdrop: Option<Backdrop>,
     /// A caller-supplied bounds hint is a CROP; eliding a hinted layer
     /// would un-crop it. Conservative — Flutter tracks whether the bounds
     /// actually clipped (`kMayClipContents`); valo vetoes on any hint until
@@ -184,9 +182,7 @@ impl DisplayListBuilder {
         paint: &Paint,
         backdrop: Backdrop,
     ) {
-        // σ ≤ 0 has nothing to sample: keep the layer semantics, drop the
-        // read (and the raster-cache poison that rides every real read).
-        let backdrop = (backdrop.sigma > 0.0).then_some((backdrop.sigma, backdrop.shared_key));
+        let backdrop = (!backdrop.filter.is_nop()).then_some(backdrop);
         self.save_layer_inner(bounds_hint, paint, None, backdrop);
     }
 
@@ -195,7 +191,7 @@ impl DisplayListBuilder {
         bounds_hint: Option<Rect>,
         paint: &Paint,
         mask_composite: Option<MaskKind>,
-        backdrop: Option<(f32, Option<u64>)>,
+        backdrop: Option<Backdrop>,
     ) {
         let device_hint = bounds_hint.map(|h| self.top().transform.map_rect(&h));
         let mut scope = Scope {
@@ -240,7 +236,7 @@ impl DisplayListBuilder {
             // Blurred layers spread ink past their children:
             // pad the recorded bounds so the texture holds the falloff.
             blur_pad: paint.device_effect_padding(&self.top().transform),
-            backdrop,
+            backdrop: backdrop.clone(),
             hinted: device_hint.is_some(),
         });
         // Children keep counting on the SAME depth line (Impeller's global
@@ -252,8 +248,8 @@ impl DisplayListBuilder {
             base_slot: self.slots,
             composite_slot: 0,
             can_elide: false,
-            backdrop_sigma: backdrop.map(|(sigma, _)| sigma),
-            backdrop_key: backdrop.and_then(|(_, key)| key),
+            backdrop_key: backdrop.as_ref().and_then(|b| b.shared_key),
+            backdrop_filter: backdrop.map(|b| b.filter),
         });
     }
 
@@ -648,8 +644,12 @@ impl DisplayListBuilder {
         // elide over a backdrop layer: the alpha lands once, on the glass
         // and its children together.
         let supports = paint.blend_mode == crate::BlendMode::SrcOver;
-        if let Some((sigma, Some(key))) = layer.backdrop {
-            self.note_backdrop_group(key, scope_bounds, sigma);
+        if let Some(Backdrop {
+            filter,
+            shared_key: Some(key),
+        }) = layer.backdrop
+        {
+            self.note_backdrop_group(key, scope_bounds, filter);
         }
         self.draw_count += 1; // the composite draws
         self.union_bounds(scope_bounds);
@@ -671,18 +671,18 @@ impl DisplayListBuilder {
         });
     }
 
-    fn note_backdrop_group(&mut self, key: u64, bounds: Rect, sigma: f32) {
+    fn note_backdrop_group(&mut self, key: u64, bounds: Rect, filter: ImageFilter) {
         match self.backdrop_groups.iter_mut().find(|g| g.key == key) {
             Some(group) => {
                 group.union_bounds = group.union_bounds.union(&bounds);
-                if group.sigma != Some(sigma) {
-                    group.sigma = None; // mixed σ under one key: no sharing
+                if group.filter.as_ref() != Some(&filter) {
+                    group.filter = None; // Different filters cannot share one snapshot.
                 }
             }
             None => self.backdrop_groups.push(crate::BackdropGroup {
                 key,
                 union_bounds: bounds,
-                sigma: Some(sigma),
+                filter: Some(filter),
             }),
         }
     }
@@ -1209,7 +1209,7 @@ mod tests {
             Some(rect),
             &Paint::default(),
             Backdrop {
-                sigma,
+                filter: ImageFilter::blur(sigma, sigma),
                 shared_key: key,
             },
         );
@@ -1226,7 +1226,11 @@ mod tests {
         let group = dl.backdrop_group(7).expect("key 7 recorded");
         // Each layer joins its group at close, contributing its scope bounds.
         assert_eq!(group.union_bounds, Rect::new(0.0, 0.0, 150.0, 50.0));
-        assert_eq!(group.sigma, Some(8.0), "one σ across the key: shareable");
+        assert_eq!(
+            group.filter,
+            Some(ImageFilter::blur(8.0, 8.0)),
+            "one σ across the key: shareable"
+        );
         assert_eq!(dl.draw_count(), 3, "each layer's composite is a draw");
         assert_eq!(dl.depth_slots(), 3);
     }
@@ -1238,7 +1242,7 @@ mod tests {
         glass(&mut b, Rect::new(100.0, 0.0, 50.0, 50.0), 12.0, Some(7));
         let dl = b.build();
         let group = dl.backdrop_group(7).expect("key 7 recorded");
-        assert_eq!(group.sigma, None, "disagreeing σ cannot share one blur");
+        assert_eq!(group.filter, None, "disagreeing σ cannot share one blur");
     }
 
     #[test]

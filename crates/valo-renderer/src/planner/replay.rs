@@ -20,7 +20,7 @@ use valo_geometry::{Matrix, Rect};
 
 use crate::raster::{FillTarget, QuadSource, RasterVerdict};
 
-use super::filters::SharedBlur;
+use super::filters::SharedBackdrop;
 use super::layers::{BackdropRequest, Opened, ResolvedLayer};
 use super::route::{DrawSource, GlyphRun};
 use super::Planner;
@@ -45,7 +45,7 @@ pub(super) struct ReplayState {
     /// Keyed backdrop blurs already computed for THIS list replay — later
     /// same-key layers seed from the first tile's blur (and see the scene as
     /// of that tile).
-    shared_blurs: FxHashMap<u64, SharedBlur>,
+    shared_backdrops: FxHashMap<u64, SharedBackdrop>,
 }
 
 struct ScopeEntry {
@@ -88,7 +88,7 @@ impl ReplayState {
             }],
             slot_offset,
             base,
-            shared_blurs: FxHashMap::default(),
+            shared_backdrops: FxHashMap::default(),
         }
     }
 
@@ -123,16 +123,15 @@ impl Planner<'_> {
                     base_slot,
                     composite_slot,
                     can_elide,
-                    backdrop_sigma,
+                    backdrop_filter,
                     backdrop_key,
                 } => {
-                    let backdrop = backdrop_sigma.map(|sigma_local| {
-                        // A key whose tiles disagree on σ never shares (the
-                        // recorder cleared the group's σ).
+                    let backdrop = backdrop_filter.as_ref().map(|filter| {
+                        // Different filters under one key cannot share a snapshot.
                         let key = backdrop_key
-                            .filter(|&k| dl.backdrop_group(k).is_some_and(|g| g.sigma.is_some()));
+                            .filter(|&k| dl.backdrop_group(k).is_some_and(|g| g.filter.is_some()));
                         BackdropRequest {
-                            sigma_local,
+                            filter: filter.clone(),
                             key,
                             group_bounds: key
                                 .and_then(|k| dl.backdrop_group(k))
@@ -157,7 +156,7 @@ impl Planner<'_> {
                             can_elide: *can_elide,
                             backdrop,
                         },
-                        &mut state.shared_blurs,
+                        &mut state.shared_backdrops,
                     ) {
                         Opened::Skip => {
                             i = skip_scope(ops, i) + 1;
