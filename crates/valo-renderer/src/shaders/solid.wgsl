@@ -99,6 +99,14 @@ fn stop_offset(i: u32) -> f32 {
 /// Impeller both interpolate first, then premultiply the resulting color.
 fn ramp(t: f32) -> vec4<f32> {
     let count = u32(u.payload[2].x);
+    // Preserve both endpoint colors, as Impeller's CreateGradientBuffer does.
+    // Test these before stop intervals: coincident stops can match either interval.
+    if t <= 0.0 {
+        return u.payload[5u];
+    }
+    if t >= 1.0 {
+        return u.payload[5u + count - 1u];
+    }
     var prev_off = stop_offset(0u);
     var prev_col = u.payload[5u];
     if t <= prev_off {
@@ -250,7 +258,7 @@ fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
 // ── ramp gradients (>8 stops): Impeller's texture path ──────────────────────
 // The stop list lives in a baked N×1 straight-color texture; payload[2].x
 // carries N so t maps to texel CENTERS (linear filtering interpolates
-// between them exactly like the analytic ramp).
+// between baked samples; hard stops can soften within one texel interval).
 
 fn sample_ramp(t: f32) -> vec4<f32> {
     let n = u.payload[2].x;

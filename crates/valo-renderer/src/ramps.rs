@@ -106,6 +106,14 @@ fn bake(stops: &[GradientStop]) -> (Vec<u8>, u32) {
 
 fn sample(stops: &[GradientStop], t: f32) -> valo_geometry::Color {
     let first = stops.first().expect("recorder rejects empty stops");
+    let last = stops.last().expect("recorder rejects empty stops");
+    // CreateGradientBuffer preserves the supplied colors in the first and last texels.
+    if t <= 0.0 {
+        return first.color;
+    }
+    if t >= 1.0 {
+        return last.color;
+    }
     if t <= first.offset {
         return first.color;
     }
@@ -187,7 +195,45 @@ mod tests {
     use valo_dl::GradientStop;
     use valo_geometry::Color;
 
-    use super::sample;
+    use super::{bake, sample};
+
+    #[test]
+    fn coincident_stops_do_not_replace_either_texture_endpoint() {
+        let first = Color::rgba(1.0, 0.0, 0.0, 0.5);
+        let last = Color::rgba(0.0, 0.0, 1.0, 0.25);
+        for offset in [0.0, 1.0] {
+            for count in [2, 9] {
+                let mut stops = vec![
+                    GradientStop {
+                        offset,
+                        color: first
+                    };
+                    count
+                ];
+                stops.last_mut().unwrap().color = last;
+                let (bytes, _) = bake(&stops);
+                assert_eq!(&bytes[..4], &[255, 0, 0, 128]);
+                assert_eq!(&bytes[bytes.len() - 4..], &[0, 0, 255, 64]);
+            }
+        }
+    }
+
+    #[test]
+    fn coincident_end_stops_preserve_the_final_pad_color() {
+        let stops = [
+            GradientStop {
+                offset: 1.0,
+                color: Color::rgba(0.0, 0.0, 1.0, 1.0),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color::rgba(0.0, 0.0, 0.0, 0.1),
+            },
+        ];
+        assert_eq!(sample(&stops, 0.5), stops[0].color);
+        assert_eq!(sample(&stops, 1.0), stops[1].color);
+        assert_eq!(sample(&stops, 2.0), stops[1].color);
+    }
 
     #[test]
     fn translucent_stops_interpolate_before_premultiplication() {
