@@ -1425,7 +1425,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.13.0",
+ "block2 0.6.2",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -1435,6 +1437,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
+ "bitflags 2.13.0",
  "dispatch2",
  "objc2 0.6.4",
  "objc2-core-foundation",
@@ -1463,6 +1466,21 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-contacts",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-core-video"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
+dependencies = [
+ "bitflags 2.13.0",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
 ]
 
 [[package]]
@@ -2590,6 +2608,53 @@ dependencies = [
  "valo-harness",
  "valo-system-fonts",
  "wgpu",
+]
+
+[[package]]
+name = "valo-codec"
+version = "0.4.1"
+dependencies = [
+ "pollster",
+ "valo",
+ "valo-harness",
+ "wgpu",
+]
+
+[[package]]
+name = "valo-codec-imageio"
+version = "0.4.1"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "core-graphics 0.24.0",
+ "foreign-types",
+ "gif",
+ "image",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-video",
+ "objc2-metal 0.3.2",
+ "pollster",
+ "valo",
+ "valo-codec",
+ "valo-codec-software",
+ "valo-harness",
+ "wgpu",
+]
+
+[[package]]
+name = "valo-codec-software"
+version = "0.4.1"
+dependencies = [
+ "gif",
+ "image",
+ "image-webp",
+ "moxcms",
+ "png 0.18.1",
+ "pollster",
+ "valo",
+ "valo-codec",
+ "valo-harness",
 ]
 
 [[package]]

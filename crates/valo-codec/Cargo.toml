@@ -1,0 +1,26 @@
+[package]
+name = "valo-codec"
+description = "Image decoding for Valo: a decoder interface, ordered fallback, and inline or worker-thread execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+# `ImageLoader::with_worker`: one std thread that decodes and uploads. Native only.
+worker = []
+
+[dependencies]
+valo = { workspace = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+valo-harness = { workspace = true }
+pollster = { workspace = true }
+
+[lints]

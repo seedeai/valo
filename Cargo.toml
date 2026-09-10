@@ -29,6 +29,7 @@ valo = { path = "crates/valo", version = "0.4.1" }
 valo-svg = { path = "crates/valo-svg", version = "0.4.1" }
 valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.4.1" }
 valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.4.1" }
+valo-codec = { path = "crates/valo-codec", version = "0.4.1" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
 # text — one crate per role in Skia's stack, each an intended swap seam:
@@ -44,10 +45,15 @@ unicode-segmentation = "1"
 # directory scan (fontdb) — native hosts only, never a wasm dependency
 fontdb = "0.23"
 core-text = "21"
+core-graphics = "0.24"
+foreign-types = "0.5"
 memmap2 = "0.9"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 rustc-hash = "2"
+# image decoding — only valo-codec-software links it into a shipping crate;
+# elsewhere it encodes test fixtures. That crate picks formats per feature.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 etagere = "0.2"
 bytemuck = { version = "1", features = ["derive"] }
 # 4x4 matrices: column-major f32, Flutter/Impeller-identical layout,

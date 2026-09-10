@@ -1,0 +1,38 @@
+[package]
+name = "valo-codec-imageio"
+description = "Apple ImageIO decoding for Valo, delivering frames as shared Metal textures where possible"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+valo = { workspace = true }
+valo-codec = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+core-foundation = { workspace = true }
+core-foundation-sys = { workspace = true }
+core-graphics = { workspace = true }
+foreign-types = { workspace = true }
+# CoreVideo owns the shared raster allocation; versions must match wgpu-hal's objc2.
+objc2 = "0.6"
+objc2-core-foundation = "0.3.2"
+objc2-core-video = { version = "0.3.2", features = ["CVPixelBuffer", "CVMetalTextureCache", "CVMetalTexture", "objc2-metal"] }
+objc2-metal = "0.3.2"
+wgpu = { workspace = true }
+
+[dev-dependencies]
+valo-harness = { workspace = true }
+valo-codec-software = { path = "../valo-codec-software" }
+image = { workspace = true }
+pollster = { workspace = true }
+# Writes the partial-frame animation the composition test needs; the `image` encoder writes only
+# whole frames.
+gif = "0.14"
+
+[lints]

@@ -23,6 +23,9 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 | `valo-svg` | SVG → display list translation |
 | `valo-fontmgr` | installed fonts in Skia's `SkFontMgr` shape: faces by family and style, a face covering a character in a language, the platform's UI font. CoreText on Apple systems, a directory scan elsewhere, trait-only on wasm. The one crate that opens font files (memory-mapped), and it carries no text stack, so a host can forward fonts with it alone |
 | `valo-system-fonts` | the adapter from a `valo-fontmgr` manager to `FontSource`, so a collection resolves its misses. Builds anywhere `valo-text` does |
+| `valo-codec` | image decoding for hosts that want the engine to do it: a `Decoder` trait codec libraries implement, an `ImageLoader` that tries decoders in order and turns their pixels or textures into `Image`s, and `Pending` futures for the results. Decodes inline (inside the poll, for wasm and single-threaded hosts) or on one worker thread (`worker` feature). No codecs of its own, no file IO |
+| `valo-codec-imageio` | Apple's ImageIO as a `Decoder`: frames rasterised into IOSurface-backed CoreVideo buffers that Metal samples directly (no readback), CPU pixels when that is unavailable. Animations included — ImageIO composites them itself |
+| `valo-codec-software` | the `image` crate as a `Decoder`, one Cargo feature per format; composites animations and converts ICC, PNG gamma and CICP colour to sRGB. The fallback behind any native decoder, and the only decoder on platforms without one |
 | `valo-capi` | C ABI for non-Rust embedders; the committed header is `crates/valo-capi/include/valo.h` |
 | `valo-web` | wasm-bindgen bindings: the raw API, canvas attach, image upload. Ships to npm as `valo-web`; the `webgl` feature builds the WebGL2-fallback compat artifact |
 | `valo-web-demo` | dev only: the browser playground chapters (`npm run dev:web`) |
@@ -51,6 +54,8 @@ Not rules — facts about how the engine works that are cheap to know and expens
 - Draws render into 4-sample scratch textures that hardware-resolve into single-sample persistent targets. The scratch is kept only when a later render section resumes the same target; the final section discards it, which lets tiled GPUs (phones, Apple Silicon) skip writing it to memory.
 - Recording may hold existing GPU texture handles, but never needs a GPU device — display lists and text stay recordable from any thread. Hosts create and upload GPU resources before recording refers to them.
 - When one paint carries both a colour filter and a blur, the order applied depends on what the filter is attached to — the reasoning lives beside `LayerEffects` in `planner/filters.rs`.
+- Image decoders never make `Image`s. A `valo-codec` decoder returns CPU pixels or a texture on the device; only `ImageLoader` turns either into an `Image` through `ImageContext`. That single point is what keeps native zero-copy decoding (a texture in) and software decoding (pixels in) on the same path, and why no decoder needs the renderer.
+- Rule 5 still holds with `valo-codec`: the host chooses to add it, hands it the bytes it read, and the engine core never depends on it.
 
 ## Working here
 

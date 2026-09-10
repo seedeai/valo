@@ -1,0 +1,36 @@
+[package]
+name = "valo-codec-software"
+description = "Portable image codecs for Valo: PNG, JPEG, GIF, WebP and BMP decoded on the CPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = ["png", "jpeg", "gif", "webp", "bmp"]
+png = ["image/png", "dep:png"]
+jpeg = ["image/jpeg"]
+gif = ["image/gif", "dep:gif"]
+webp = ["image/webp", "dep:image-webp"]
+bmp = ["image/bmp"]
+
+[dependencies]
+valo = { workspace = true }
+valo-codec = { workspace = true }
+image = { version = "0.25", default-features = false }
+# ICC profile conversion to sRGB; the image crate only handles CICP.
+moxcms = { version = "0.8", features = ["in_place"] }
+# Container-level animation metadata the image crate does not expose.
+gif = { version = "0.14", optional = true }
+png = { version = "0.18", optional = true }
+image-webp = { version = "0.2", optional = true }
+
+[dev-dependencies]
+valo-harness = { workspace = true }
+pollster = { workspace = true }
+
+[lints]

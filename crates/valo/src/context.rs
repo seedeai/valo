@@ -103,6 +103,11 @@ impl Context {
         frame.present(&self.queue);
     }
 
+    /// `image_context` returns upload/import operations that can run independently of rendering.
+    pub fn image_context(&self) -> crate::ImageContext {
+        self.renderer.image_context()
+    }
+
     /// `upload_image` uploads RGBA8 pixels and returns a retained [`Image`].
     ///
     /// Alpha conversion and mip generation follow the supplied [`ImageDesc`].

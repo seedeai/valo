@@ -24,13 +24,18 @@
 mod context;
 mod export;
 mod hud;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod metal;
 mod surface;
 
 pub use context::Context;
 pub use export::unpremultiply;
-#[cfg(target_os = "macos")]
-pub use surface::{ExternalMetalTexture, metal_device_of, wrap_metal_texture};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use metal::{ExternalMetalTexture, import_metal_texture, metal_device_of, wrap_metal_texture};
 pub use surface::{Offscreen, PersistentCanvas, Surface, SurfaceFrame};
+pub use valo_renderer::{
+    AlphaType, ImageContext, ImageError, PixelBuffer, PixelFormat, PixelLayout,
+};
 
 pub use valo_dl::{
     Backdrop, BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList,

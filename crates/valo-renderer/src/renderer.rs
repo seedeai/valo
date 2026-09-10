@@ -166,6 +166,11 @@ impl RendererCore {
         }
     }
 
+    /// `image_context` shares image creation without sharing the mutable drawing caches.
+    pub fn image_context(&self) -> crate::ImageContext {
+        self.images.context.clone()
+    }
+
     /// `images` returns the image store used for uploads and sampling.
     pub fn images(&mut self) -> &mut ImageStore {
         &mut self.images
