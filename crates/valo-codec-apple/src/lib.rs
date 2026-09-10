@@ -21,18 +21,18 @@ use valo_codec::{
     DecodeError, DecodedFrame, Decoder, FramePixels, FrameReader, ImageInfo, OpenError, OpenRequest,
 };
 
-/// ImageIoDecoder reads still images with the platform's codecs.
+/// AppleDecoder reads images with the platform's own codecs.
 ///
 /// Register it before a software decoder: it declines what it does not read, and the software
 /// decoder picks those up.
 #[derive(Clone, Copy, Debug)]
-pub struct ImageIoDecoder {
+pub struct AppleDecoder {
     /// `prefer_shared` rasterises into GPU-shared memory when Metal can sample it, avoiding an
     /// upload. Turn it off to force the CPU path, for comparison or on a non-Metal device.
     pub prefer_shared: bool,
 }
 
-impl Default for ImageIoDecoder {
+impl Default for AppleDecoder {
     fn default() -> Self {
         Self {
             prefer_shared: true,
@@ -40,9 +40,9 @@ impl Default for ImageIoDecoder {
     }
 }
 
-impl Decoder for ImageIoDecoder {
+impl Decoder for AppleDecoder {
     fn name(&self) -> &'static str {
-        "imageio"
+        "apple"
     }
 
     fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
@@ -54,7 +54,7 @@ impl Decoder for ImageIoDecoder {
             frame_count: source.frame_count(),
             repetition: source.repetition(),
         };
-        Ok(Box::new(ImageIoReader {
+        Ok(Box::new(AppleReader {
             source,
             info,
             next: 0,
@@ -64,7 +64,7 @@ impl Decoder for ImageIoDecoder {
     }
 }
 
-struct ImageIoReader {
+struct AppleReader {
     source: Source,
     info: ImageInfo,
     /// The frame the next request decodes; an animation wraps round to the first after the last.
@@ -73,7 +73,7 @@ struct ImageIoReader {
     prefer_shared: bool,
 }
 
-impl ImageIoReader {
+impl AppleReader {
     fn rasterize(&self, image: &core_graphics::image::CGImage) -> Result<FramePixels, DecodeError> {
         if self.prefer_shared {
             match shared::rasterize_to_metal(image, self.info.size, &self.device) {
@@ -89,7 +89,7 @@ impl ImageIoReader {
     }
 }
 
-impl FrameReader for ImageIoReader {
+impl FrameReader for AppleReader {
     fn info(&self) -> ImageInfo {
         self.info
     }

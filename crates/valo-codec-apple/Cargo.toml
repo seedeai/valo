@@ -1,6 +1,6 @@
 [package]
-name = "valo-codec-imageio"
-description = "Apple ImageIO decoding for Valo, delivering frames as shared Metal textures where possible"
+name = "valo-codec-apple"
+description = "Apple's system image codecs for Valo, delivering frames as shared Metal textures where possible"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

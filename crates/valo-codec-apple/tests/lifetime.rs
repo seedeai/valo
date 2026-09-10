@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use valo_codec::{DecodeOptions, ImageLoader};
-use valo_codec_imageio::ImageIoDecoder;
+use valo_codec_apple::AppleDecoder;
 
 fn red_png() -> Arc<[u8]> {
     let mut bytes = Vec::new();
@@ -69,7 +69,7 @@ fn record_sample(device: &wgpu::Device, image: &valo::Image) -> wgpu::CommandBuf
 fn native_backing_is_held_by_recorded_commands_until_the_gpu_retires_them() {
     let (device, queue) = valo_harness::headless_device().unwrap();
     let images = valo::ImageContext::new(device.clone(), queue.clone());
-    let loader = ImageLoader::new(images, vec![Box::new(ImageIoDecoder::default())]);
+    let loader = ImageLoader::new(images, vec![Box::new(AppleDecoder::default())]);
     let decoded = block_on(loader.decode(red_png(), DecodeOptions::default())).unwrap();
     assert_eq!(decoded.texture().format(), wgpu::TextureFormat::Bgra8Unorm);
 

@@ -4,7 +4,7 @@ use pollster::block_on;
 use std::{io::Cursor, sync::Arc, time::Duration};
 use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
 use valo_codec::{DecodeError, DecodeOptions, Decoder, ImageLoader, Repetition};
-use valo_codec_imageio::ImageIoDecoder;
+use valo_codec_apple::AppleDecoder;
 use valo_codec_software::SoftwareDecoder;
 
 fn setup(decoders: Vec<Box<dyn Decoder>>) -> (ImageLoader, Context) {
@@ -13,8 +13,8 @@ fn setup(decoders: Vec<Box<dyn Decoder>>) -> (ImageLoader, Context) {
     (ImageLoader::new(context.image_context(), decoders), context)
 }
 
-fn imageio(prefer_shared: bool) -> Box<dyn Decoder> {
-    Box::new(ImageIoDecoder { prefer_shared })
+fn apple(prefer_shared: bool) -> Box<dyn Decoder> {
+    Box::new(AppleDecoder { prefer_shared })
 }
 
 fn render(context: &mut Context, image: &valo::Image) -> Vec<u8> {
@@ -46,7 +46,7 @@ fn png_3x2() -> Arc<[u8]> {
 fn shared_bgra_and_uploaded_rgba_paths_draw_the_same_pixels() {
     let mut results = Vec::new();
     for shared in [false, true] {
-        let (loader, mut context) = setup(vec![imageio(shared)]);
+        let (loader, mut context) = setup(vec![apple(shared)]);
         let image = block_on(loader.decode(png_3x2(), DecodeOptions::default())).unwrap();
         assert_eq!(
             image.texture().format(),
@@ -67,7 +67,7 @@ fn shared_bgra_and_uploaded_rgba_paths_draw_the_same_pixels() {
 
 #[test]
 fn mipmaps_are_added_by_gpu_copy_and_max_size_scales_during_decode() {
-    let (loader, _) = setup(vec![imageio(true)]);
+    let (loader, _) = setup(vec![apple(true)]);
     let with_mips = block_on(loader.decode(
         png_3x2(),
         DecodeOptions {
@@ -111,7 +111,7 @@ fn a_one_frame_animation_keeps_its_timing_and_loop_count() {
             ))
             .unwrap();
     }
-    let (loader, _) = setup(vec![imageio(true), Box::new(SoftwareDecoder)]);
+    let (loader, _) = setup(vec![apple(true), Box::new(SoftwareDecoder)]);
     let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     let frame = block_on(codec.next_frame()).unwrap();
@@ -142,7 +142,7 @@ fn exif_orientation_is_applied_on_the_shared_path() {
             image::ExtendedColorType::Rgba8,
         )
         .unwrap();
-    let (loader, mut context) = setup(vec![imageio(true)]);
+    let (loader, mut context) = setup(vec![apple(true)]);
     let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().size, [1, 2]);
     let frame = block_on(codec.next_frame()).unwrap();
@@ -199,7 +199,7 @@ fn webp_animations_keep_loop_counts_with_and_without_a_native_decoder() {
         for native in [false, true] {
             let mut decoders: Vec<Box<dyn Decoder>> = Vec::new();
             if native {
-                decoders.push(imageio(true));
+                decoders.push(apple(true));
             }
             decoders.push(Box::new(SoftwareDecoder));
             let (loader, _) = setup(decoders);
@@ -224,12 +224,12 @@ fn webp_animations_keep_loop_counts_with_and_without_a_native_decoder() {
 
 #[test]
 fn unrecognised_bytes_are_declined_not_reported_as_damaged() {
-    let (loader, _) = setup(vec![imageio(true)]);
+    let (loader, _) = setup(vec![apple(true)]);
     match block_on(loader.decode(
         Arc::from(*b"definitely not an image"),
         DecodeOptions::default(),
     )) {
-        Err(DecodeError::Unsupported(declined)) => assert_eq!(declined[0].decoder, "imageio"),
+        Err(DecodeError::Unsupported(declined)) => assert_eq!(declined[0].decoder, "apple"),
         other => panic!("{other:?}"),
     }
 }
@@ -268,7 +268,7 @@ fn animated_gif() -> Arc<[u8]> {
 
 #[test]
 fn the_platform_composites_an_animation_and_reports_its_timing() {
-    let (loader, mut context) = setup(vec![imageio(true)]);
+    let (loader, mut context) = setup(vec![apple(true)]);
     let codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 4);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
@@ -298,7 +298,7 @@ fn the_platform_composites_an_animation_and_reports_its_timing() {
 fn the_platform_and_software_decoders_agree_on_every_frame() {
     let mut rendered = Vec::new();
     for decoders in [
-        vec![imageio(true)],
+        vec![apple(true)],
         vec![Box::new(SoftwareDecoder) as Box<dyn Decoder>],
     ] {
         let (loader, mut context) = setup(decoders);

@@ -2621,7 +2621,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "valo-codec-imageio"
+name = "valo-codec-apple"
 version = "0.4.2"
 dependencies = [
  "core-foundation 0.10.1",
