@@ -1,8 +1,18 @@
 //! The contract a codec library implements to plug into an [`ImageLoader`](crate::ImageLoader).
 use crate::{DecodeError, DecodeOptions, ImageInfo};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use valo::PixelBuffer;
+
+/// Decoding is an answer a decoder is still working on.
+///
+/// Every answer here is a future because a browser hands back a promise for everything it
+/// decodes; a decoder that already has its answer returns [`std::future::ready`], which costs one
+/// poll. The future is made and driven on the thread that owns the decoder and never leaves it,
+/// so it carries no `Send` bound.
+pub type Decoding<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Decoder is one codec library, such as Apple's ImageIO or the portable `image` crate.
 ///
@@ -18,7 +28,10 @@ pub trait Decoder: Send + Sync {
     ///
     /// Return [`OpenError::Unsupported`] for a format or variant this decoder does not read, so
     /// the next decoder gets its turn. Anything else stops the search.
-    fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError>;
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>>;
 }
 
 /// OpenRequest is everything a decoder needs to open one image.
@@ -63,7 +76,10 @@ pub trait FrameReader {
     fn info(&self) -> ImageInfo;
 
     /// `next_frame` decodes the next frame, wrapping to the first after the last.
-    fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError>;
+    ///
+    /// One frame is decoded at a time: a reader is asked again only once the answer it gave has
+    /// been waited for.
+    fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>>;
 }
 
 /// DecodedFrame is one complete frame as a decoder produced it, before it becomes an image.

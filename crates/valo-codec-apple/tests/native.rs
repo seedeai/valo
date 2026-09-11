@@ -112,7 +112,7 @@ fn a_one_frame_animation_keeps_its_timing_and_loop_count() {
             .unwrap();
     }
     let (loader, _) = setup(vec![apple(true), Box::new(SoftwareDecoder)]);
-    let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     let frame = block_on(codec.next_frame()).unwrap();
     assert_eq!(frame.duration, Duration::from_millis(80));
@@ -143,7 +143,7 @@ fn exif_orientation_is_applied_on_the_shared_path() {
         )
         .unwrap();
     let (loader, mut context) = setup(vec![apple(true)]);
-    let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().size, [1, 2]);
     let frame = block_on(codec.next_frame()).unwrap();
     assert_eq!(frame.image.size(), [1, 2]);
@@ -203,7 +203,7 @@ fn webp_animations_keep_loop_counts_with_and_without_a_native_decoder() {
             }
             decoders.push(Box::new(SoftwareDecoder));
             let (loader, _) = setup(decoders);
-            let codec =
+            let mut codec =
                 block_on(loader.open(animated_webp(count), DecodeOptions::default())).unwrap();
             assert_eq!(codec.info().frame_count, count);
             assert_eq!(codec.info().repetition, Repetition::Times(2));
@@ -269,7 +269,7 @@ fn animated_gif() -> Arc<[u8]> {
 #[test]
 fn the_platform_composites_an_animation_and_reports_its_timing() {
     let (loader, mut context) = setup(vec![apple(true)]);
-    let codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 4);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     let frames: Vec<_> = (0..5)
@@ -302,7 +302,7 @@ fn the_platform_and_software_decoders_agree_on_every_frame() {
         vec![Box::new(SoftwareDecoder) as Box<dyn Decoder>],
     ] {
         let (loader, mut context) = setup(decoders);
-        let codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
+        let mut codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
         let frames: Vec<_> = (0..4)
             .map(|_| render(&mut context, &block_on(codec.next_frame()).unwrap().image))
             .collect();

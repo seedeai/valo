@@ -19,15 +19,15 @@ use core_foundation_sys::notification_center::{
     CFNotificationCenterRef, CFNotificationCenterRemoveObserver,
     CFNotificationSuspensionBehaviorDeliverImmediately,
 };
-use core_text::font::{self, CTFont, CTFontRef, kCTFontSystemFontType};
+use core_text::font::{self, kCTFontSystemFontType, CTFont, CTFontRef};
 use core_text::font_collection;
 use core_text::font_descriptor::{
-    self, CTFontDescriptor, CTFontTraits, TraitAccessors, kCTFontItalicTrait,
+    self, kCTFontItalicTrait, CTFontDescriptor, CTFontTraits, TraitAccessors,
 };
 use core_text::font_manager;
 
 use crate::files::{self, Files};
-use crate::{FontManager, Slant, Style, Typeface, Watch, nearest};
+use crate::{nearest, FontManager, Slant, Style, Typeface, Watch};
 
 #[link(name = "CoreText", kind = "framework")]
 extern "C" {

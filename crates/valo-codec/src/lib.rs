@@ -40,7 +40,9 @@ mod service;
 #[cfg(all(feature = "worker", not(target_arch = "wasm32")))]
 mod worker;
 
-pub use backend::{DecodedFrame, Decoder, FramePixels, FrameReader, OpenError, OpenRequest};
+pub use backend::{
+    DecodedFrame, Decoder, Decoding, FramePixels, FrameReader, OpenError, OpenRequest,
+};
 pub use error::{Declined, DecodeError};
 pub use loader::{Codec, Frame, ImageLoader};
 pub use options::{fit_within, DecodeLimits, DecodeOptions, ImageInfo, Repetition};

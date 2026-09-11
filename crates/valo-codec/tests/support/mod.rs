@@ -1,11 +1,14 @@
 //! A scripted decoder for exercising the loader without any real codec.
 #![allow(dead_code)]
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 use valo::{AlphaType, ImageContext, PixelBuffer, PixelFormat, PixelLayout};
 use valo_codec::{
-    DecodeError, DecodedFrame, Decoder, FramePixels, FrameReader, ImageInfo, OpenError,
+    DecodeError, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader, ImageInfo, OpenError,
     OpenRequest, Repetition,
 };
 
@@ -103,7 +106,16 @@ impl Decoder for FakeDecoder {
         self.name
     }
 
-    fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+        Box::pin(std::future::ready(self.open_now(request)))
+    }
+}
+
+impl FakeDecoder {
+    fn open_now(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
         self.log.record(format!("open:{}", self.name));
         if let Some(gate) = &self.open_gate {
             gate.lock()
@@ -140,7 +152,13 @@ impl FrameReader for FakeReader {
         }
     }
 
-    fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError> {
+    fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>> {
+        Box::pin(std::future::ready(self.decode_next()))
+    }
+}
+
+impl FakeReader {
+    fn decode_next(&mut self) -> Result<DecodedFrame, DecodeError> {
         assert_eq!(
             self.owner,
             thread::current().id(),
@@ -177,6 +195,80 @@ impl Drop for FakeReader {
 }
 
 /// `solid` is a straight-alpha RGBA buffer of one colour.
+/// A decoder that answers only once someone calls [`Release::release`], the shape of a browser
+/// codec: the work is under way somewhere else and the answer arrives later.
+pub struct DelayedDecoder {
+    decoder: FakeDecoder,
+    release: Release,
+}
+
+impl DelayedDecoder {
+    pub fn new(name: &'static str) -> (DelayedDecoder, Release) {
+        let release = Release::default();
+        (
+            DelayedDecoder {
+                decoder: FakeDecoder::new(name),
+                release: release.clone(),
+            },
+            release,
+        )
+    }
+}
+
+impl Decoder for DelayedDecoder {
+    fn name(&self) -> &'static str {
+        self.decoder.name()
+    }
+
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+        let release = self.release.clone();
+        Box::pin(async move {
+            release.await;
+            self.decoder.open_now(request)
+        })
+    }
+}
+
+/// The handle a test uses to let a [`DelayedDecoder`] answer.
+#[derive(Clone, Default)]
+pub struct Release(Arc<Mutex<Released>>);
+
+#[derive(Default)]
+pub struct Released {
+    released: bool,
+    waiting: Option<Waker>,
+}
+
+impl Release {
+    /// Lets the decode finish, waking whoever is waiting for it.
+    pub fn release(&self) {
+        let waiting = {
+            let mut state = self.0.lock().unwrap();
+            state.released = true;
+            state.waiting.take()
+        };
+        if let Some(waiting) = waiting {
+            waiting.wake();
+        }
+    }
+}
+
+impl Future for Release {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let mut state = self.0.lock().unwrap();
+        if state.released {
+            return Poll::Ready(());
+        }
+        state.waiting = Some(context.waker().clone());
+        Poll::Pending
+    }
+}
+
 pub fn solid(size: [u32; 2], rgba: [u8; 4]) -> PixelBuffer {
     let count = (size[0] * size[1]) as usize;
     PixelBuffer::new(

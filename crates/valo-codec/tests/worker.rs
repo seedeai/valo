@@ -47,7 +47,7 @@ fn a_codec_keeps_its_reader_on_the_worker_and_releases_it_when_dropped() {
             .sharing_log(&log)]),
     )
     .unwrap();
-    let codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
     let first = block_on(codec.next_frame()).unwrap();
     let second = block_on(codec.next_frame()).unwrap();
     assert_eq!(first.duration, Duration::from_millis(10));
@@ -116,10 +116,11 @@ fn a_worker_that_dies_resolves_waiting_and_later_requests_with_closed() {
         fn name(&self) -> &'static str {
             "panics"
         }
-        fn open(
-            &self,
-            _: &valo_codec::OpenRequest,
-        ) -> Result<Box<dyn valo_codec::FrameReader>, valo_codec::OpenError> {
+        fn open<'a>(
+            &'a self,
+            _: &'a valo_codec::OpenRequest,
+        ) -> valo_codec::Decoding<'a, Result<Box<dyn valo_codec::FrameReader>, valo_codec::OpenError>>
+        {
             panic!("decoder bug");
         }
     }
@@ -129,4 +130,18 @@ fn a_worker_that_dies_resolves_waiting_and_later_requests_with_closed() {
     thread::sleep(Duration::from_millis(20));
     let later = loader.decode(bytes(), DecodeOptions::default());
     assert!(matches!(block_on(later), Err(DecodeError::Closed)));
+}
+
+#[test]
+fn the_worker_sleeps_through_a_decode_that_answers_later_and_wakes_for_the_answer() {
+    let (decoder, release) = DelayedDecoder::new("browser");
+    let loader = ImageLoader::with_worker(images(), vec![Box::new(decoder)]).unwrap();
+    let decoding = loader.decode(bytes(), DecodeOptions::default());
+    let releaser = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        release.release();
+    });
+    let image = block_on(decoding).unwrap();
+    assert_eq!(image.size(), [1, 1]);
+    releaser.join().unwrap();
 }

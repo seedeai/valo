@@ -31,7 +31,7 @@ mod surface;
 pub use context::Context;
 pub use export::unpremultiply;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub use metal::{ExternalMetalTexture, import_metal_texture, metal_device_of, wrap_metal_texture};
+pub use metal::{import_metal_texture, metal_device_of, wrap_metal_texture, ExternalMetalTexture};
 pub use surface::{Offscreen, PersistentCanvas, Surface, SurfaceFrame};
 pub use valo_renderer::{
     AlphaType, ImageContext, ImageError, PixelBuffer, PixelFormat, PixelLayout,
@@ -43,9 +43,9 @@ pub use valo_dl::{
     MipmapMode, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
 };
 pub use valo_geometry::{
+    constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,
     Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathSample, Point,
-    Rect, Size, Stroke, Winding, constrain_radii, constrain_radii_elliptical, dash_contours,
-    local_tolerance, stroke_contains,
+    Rect, Size, Stroke, Winding,
 };
 pub use valo_renderer::{
     AtlasReport, ImageDesc, MemoryReport, PoolReport, RenderStats, RenderTarget, TextTiers,

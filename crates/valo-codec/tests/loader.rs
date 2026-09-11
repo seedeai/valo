@@ -107,7 +107,7 @@ fn a_codec_hands_out_frames_in_order_and_wraps_after_the_last() {
         images(),
         decoders([FakeDecoder::new("software").frames(3, Repetition::Times(2))]),
     );
-    let codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 3);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     let durations: Vec<_> = (0..4)
@@ -121,7 +121,7 @@ fn a_frame_failure_is_reported_and_the_codec_stays_usable() {
     let mut decoder = FakeDecoder::new("software").frames(2, Repetition::Forever);
     decoder.fail_frame = Some((1, DecodeError::InvalidData("bad chunk".into())));
     let loader = ImageLoader::new(images(), decoders([decoder]));
-    let codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
     assert!(block_on(codec.next_frame()).is_ok());
     assert!(matches!(
         block_on(codec.next_frame()),
@@ -140,7 +140,7 @@ fn max_size_is_passed_to_the_decoder_and_frames_come_back_at_that_size() {
         mipmaps: true,
         ..Default::default()
     };
-    let codec = block_on(loader.open(bytes(), options)).unwrap();
+    let mut codec = block_on(loader.open(bytes(), options)).unwrap();
     assert_eq!(codec.info().size, [100, 50]);
     let frame = block_on(codec.next_frame()).unwrap();
     assert_eq!(frame.image.size(), [100, 50]);
@@ -178,4 +178,18 @@ fn limits_on_frames_and_pixels_apply_to_what_the_decoder_reports() {
         block_on(loader.decode(bytes(), few_pixels)),
         Err(DecodeError::LimitExceeded("decoded pixels"))
     ));
+}
+
+#[test]
+fn a_decoder_that_answers_later_is_waited_for_rather_than_assumed_ready() {
+    let (decoder, release) = DelayedDecoder::new("browser");
+    let loader = ImageLoader::new(images(), vec![Box::new(decoder)]);
+    let mut decoding = loader.decode(bytes(), DecodeOptions::default());
+    assert!(
+        decoding.try_take().is_none(),
+        "nothing to take while the decoder is still working"
+    );
+    release.release();
+    let image = decoding.try_take().expect("the answer arrived").unwrap();
+    assert_eq!(image.size(), [1, 1]);
 }

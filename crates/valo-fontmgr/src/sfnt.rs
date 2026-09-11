@@ -1,7 +1,7 @@
 //! A font's tables as a platform serves them, and an sfnt assembled from them.
 
-use skrifa::raw::FontRef;
 use skrifa::raw::types::Tag;
+use skrifa::raw::FontRef;
 
 /// The tables that hold glyph shapes and color glyphs. A platform keeps them: shapes are
 /// rasterized on request, and a font file never leaves it.

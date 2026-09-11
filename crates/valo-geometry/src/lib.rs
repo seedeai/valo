@@ -18,10 +18,10 @@ pub use color::Color;
 pub use matrix::{Matrix, MatrixKind};
 pub use measure::{ContourMeasure, PathSample};
 pub use path::{
-    Contour, FillRule, Path, PathBuilder, PathElement, Winding, constrain_radii,
-    constrain_radii_elliptical, local_tolerance,
+    constrain_radii, constrain_radii_elliptical, local_tolerance, Contour, FillRule, Path,
+    PathBuilder, PathElement, Winding,
 };
 pub use point::{Point, Size};
 pub use rect::Rect;
-pub use stroke::{Cap, Dash, Join, Stroke, dash_contours, stroke_contains, stroke_strip};
+pub use stroke::{dash_contours, stroke_contains, stroke_strip, Cap, Dash, Join, Stroke};
 pub use superellipse::RoundSuperellipse;

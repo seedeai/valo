@@ -22,7 +22,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use valo::{AlphaType, PixelBuffer, PixelFormat, PixelLayout};
 use valo_codec::{
-    DecodeError, DecodedFrame, Decoder, FramePixels, FrameReader, ImageInfo, OpenError, OpenRequest,
+    DecodeError, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader, ImageInfo, OpenError,
+    OpenRequest,
 };
 
 /// SoftwareDecoder reads the formats this crate was built with, entirely on the CPU.
@@ -37,8 +38,14 @@ impl Decoder for SoftwareDecoder {
         "software"
     }
 
-    fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
-        Ok(Box::new(SoftwareReader::open(request)?))
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+        // Every step of this decoder runs on the calling thread, so the answer is ready at once.
+        Box::pin(std::future::ready(
+            SoftwareReader::open(request).map(|reader| Box::new(reader) as Box<dyn FrameReader>),
+        ))
     }
 }
 
@@ -121,7 +128,13 @@ impl FrameReader for SoftwareReader {
         }
     }
 
-    fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError> {
+    fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>> {
+        Box::pin(std::future::ready(self.decode_next()))
+    }
+}
+
+impl SoftwareReader {
+    fn decode_next(&mut self) -> Result<DecodedFrame, DecodeError> {
         let index = self.next;
         self.next = (index + 1) % self.probe.frame_count;
         let (image, duration) = self.decoded(index)?;

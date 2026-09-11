@@ -4,7 +4,10 @@ use crate::pending::{reply, Reply};
 use crate::service::DecodeService;
 use crate::{Codec, DecodeError, DecodeOptions, Frame, FrameReader, ImageInfo, Pending};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::pin;
 use std::sync::{mpsc, Arc};
+use std::task::{Context, Poll, Wake, Waker};
 use valo::Image;
 
 /// Names one reader held by the worker.
@@ -51,7 +54,11 @@ impl Worker {
         Ok(Self { sender })
     }
 
-    pub(crate) fn decode(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<Image> {
+    pub(crate) fn decode(
+        &self,
+        encoded: Arc<[u8]>,
+        options: DecodeOptions,
+    ) -> Pending<'static, Image> {
         let (awaiting, reply) = reply();
         self.submit(Job::Decode {
             encoded,
@@ -61,7 +68,11 @@ impl Worker {
         Pending::from_future(awaiting)
     }
 
-    pub(crate) fn open(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<Codec> {
+    pub(crate) fn open(
+        &self,
+        encoded: Arc<[u8]>,
+        options: DecodeOptions,
+    ) -> Pending<'static, Codec> {
         let (awaiting, reply) = reply();
         self.submit(Job::Open {
             encoded,
@@ -94,7 +105,7 @@ pub(crate) struct RemoteReader {
 }
 
 impl RemoteReader {
-    pub(crate) fn next_frame(&self) -> Pending<Frame> {
+    pub(crate) fn next_frame(&self) -> Pending<'static, Frame> {
         let (awaiting, reply) = reply();
         let _ = self.sender.send(Job::Next {
             reader: self.id,
@@ -142,7 +153,7 @@ impl Thread {
                 reply,
             } => {
                 if !reply.is_cancelled() {
-                    let _ = reply.send(self.service.decode_still(encoded, options));
+                    let _ = reply.send(block_on(self.service.decode_still(encoded, options)));
                 }
             }
             Job::Open {
@@ -170,7 +181,7 @@ impl Thread {
     }
 
     fn open(&mut self, encoded: Arc<[u8]>, options: DecodeOptions, reply: Reply<Opened>) {
-        let reader = match self.service.open(encoded, options) {
+        let reader = match block_on(self.service.open(encoded, options)) {
             Ok(reader) => reader,
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -190,6 +201,35 @@ impl Thread {
 
     fn next_frame(&mut self, id: ReaderId, mipmaps: bool) -> Result<Frame, DecodeError> {
         let reader = self.readers.get_mut(&id).ok_or(DecodeError::Closed)?;
-        self.service.next_frame(reader.as_mut(), mipmaps)
+        block_on(self.service.next_frame(reader.as_mut(), mipmaps))
+    }
+}
+
+/// Runs `work` to completion on this thread, sleeping while it has nothing to do.
+///
+/// The thread decodes one job at a time, so it has nothing else to get on with while a decode is
+/// in flight; a decoder that answers at once never sleeps here at all.
+fn block_on<T>(work: impl Future<Output = T>) -> T {
+    struct WakeThread(std::thread::Thread);
+
+    impl Wake for WakeThread {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut work = pin!(work);
+    loop {
+        match work.as_mut().poll(&mut context) {
+            Poll::Ready(answer) => return answer,
+            // `park` may return without a wake, which is why this is a loop.
+            Poll::Pending => std::thread::park(),
+        }
     }
 }

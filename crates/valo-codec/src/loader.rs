@@ -1,8 +1,6 @@
 //! The host-facing API: a loader that decodes bytes, and the codec it opens for animations.
 use crate::service::DecodeService;
 use crate::{DecodeOptions, Decoder, FrameReader, ImageInfo, Pending};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use valo::{Image, ImageContext};
@@ -55,11 +53,11 @@ impl ImageLoader {
     }
 
     /// `decode` produces the first frame of `encoded` as an image: the still-image path.
-    pub fn decode(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<Image> {
+    pub fn decode(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<'static, Image> {
         match &self.runner {
             Runner::Inline => {
                 let service = self.service.clone();
-                Pending::inline(move || service.decode_still(encoded, options))
+                Pending::from_future(async move { service.decode_still(encoded, options).await })
             }
             #[cfg(all(feature = "worker", not(target_arch = "wasm32")))]
             Runner::Worker(worker) => worker.decode(encoded, options),
@@ -69,12 +67,12 @@ impl ImageLoader {
     /// `open` reads the image's header and returns a [`Codec`] that decodes frames on demand.
     ///
     /// Use it when frame count or repetition matter — animations — or to defer the first decode.
-    pub fn open(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<Codec> {
+    pub fn open(&self, encoded: Arc<[u8]>, options: DecodeOptions) -> Pending<'static, Codec> {
         match &self.runner {
             Runner::Inline => {
                 let service = self.service.clone();
-                Pending::inline(move || {
-                    let reader = service.open(encoded, options)?;
+                Pending::from_future(async move {
+                    let reader = service.open(encoded, options).await?;
                     Ok(Codec::inline(service, reader, options.mipmaps))
                 })
             }
@@ -97,7 +95,7 @@ pub struct Codec {
 enum Reader {
     Inline {
         service: Arc<DecodeService>,
-        reader: Rc<RefCell<Box<dyn FrameReader>>>,
+        reader: Box<dyn FrameReader>,
     },
     #[cfg(all(feature = "worker", not(target_arch = "wasm32")))]
     Remote(crate::worker::RemoteReader),
@@ -108,10 +106,7 @@ impl Codec {
         Self {
             info: reader.info(),
             mipmaps,
-            reader: Reader::Inline {
-                service,
-                reader: Rc::new(RefCell::new(reader)),
-            },
+            reader: Reader::Inline { service, reader },
         }
     }
 
@@ -135,15 +130,13 @@ impl Codec {
 
     /// `next_frame` decodes the next frame, wrapping to the first after the last.
     ///
-    /// The returned future owns what it needs and does not borrow the codec, so it can be held
-    /// across an await. Requests on one codec complete in the order they were made.
-    pub fn next_frame(&self) -> Pending<Frame> {
-        match &self.reader {
+    /// The frame borrows the codec until it arrives, so one codec decodes one frame at a time and
+    /// a second request cannot be made while the first is in flight.
+    pub fn next_frame(&mut self) -> Pending<'_, Frame> {
+        let mipmaps = self.mipmaps;
+        match &mut self.reader {
             Reader::Inline { service, reader } => {
-                let service = service.clone();
-                let reader = reader.clone();
-                let mipmaps = self.mipmaps;
-                Pending::inline(move || service.next_frame(reader.borrow_mut().as_mut(), mipmaps))
+                Pending::from_future(service.next_frame(reader.as_mut(), mipmaps))
             }
             #[cfg(all(feature = "worker", not(target_arch = "wasm32")))]
             Reader::Remote(remote) => remote.next_frame(),

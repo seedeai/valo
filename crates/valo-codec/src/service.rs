@@ -20,7 +20,7 @@ impl DecodeService {
     }
 
     /// `open` finds the first decoder that accepts the bytes and checks what it reports.
-    pub(crate) fn open(
+    pub(crate) async fn open(
         &self,
         encoded: Arc<[u8]>,
         options: DecodeOptions,
@@ -31,29 +31,32 @@ impl DecodeService {
             options,
             device: self.images.device().clone(),
         };
-        let reader = self.first_accepting_decoder(&request)?;
+        let reader = self.first_accepting_decoder(&request).await?;
         self.check_info(reader.info(), options)?;
         Ok(reader)
     }
 
     /// `decode_still` opens and reads the first frame in one step, the shape of a still image.
-    pub(crate) fn decode_still(
+    pub(crate) async fn decode_still(
         &self,
         encoded: Arc<[u8]>,
         options: DecodeOptions,
     ) -> Result<Image, DecodeError> {
-        let mut reader = self.open(encoded, options)?;
-        Ok(self.next_frame(reader.as_mut(), options.mipmaps)?.image)
+        let mut reader = self.open(encoded, options).await?;
+        Ok(self
+            .next_frame(reader.as_mut(), options.mipmaps)
+            .await?
+            .image)
     }
 
     /// `next_frame` reads one frame and turns it into an image of the size the reader promised.
-    pub(crate) fn next_frame(
+    pub(crate) async fn next_frame(
         &self,
         reader: &mut dyn FrameReader,
         mipmaps: bool,
     ) -> Result<Frame, DecodeError> {
         let expected = reader.info().size;
-        let DecodedFrame { pixels, duration } = reader.next_frame()?;
+        let DecodedFrame { pixels, duration } = reader.next_frame().await?;
         let image = self.make_image(pixels, mipmaps)?;
         if image.size() != expected {
             return Err(DecodeError::InvalidData(
@@ -91,13 +94,13 @@ impl DecodeService {
         Ok(())
     }
 
-    fn first_accepting_decoder(
+    async fn first_accepting_decoder(
         &self,
         request: &OpenRequest,
     ) -> Result<Box<dyn FrameReader>, DecodeError> {
         let mut declined = Vec::new();
         for decoder in &self.decoders {
-            match decoder.open(request) {
+            match decoder.open(request).await {
                 Ok(reader) => return Ok(reader),
                 Err(OpenError::Unsupported(reason)) => declined.push(Declined {
                     decoder: decoder.name(),

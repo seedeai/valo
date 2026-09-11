@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 type Outcome<T> = Result<T, DecodeError>;
-type BoxedFuture<T> = Pin<Box<dyn Future<Output = Outcome<T>>>>;
+type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = Outcome<T>> + 'a>>;
 
 /// Pending is a decode result on its way.
 ///
@@ -13,22 +13,18 @@ type BoxedFuture<T> = Pin<Box<dyn Future<Output = Outcome<T>>>>;
 /// wakes an event loop. A host that runs a frame loop instead calls [`try_take`](Self::try_take)
 /// once a frame. Dropping a `Pending` cancels the work if it has not started.
 ///
+/// The lifetime is what a frame borrows from its [`Codec`](crate::Codec): opening an image
+/// answers a `Pending<'static, _>`, while a frame keeps the codec borrowed until it arrives, so
+/// one codec cannot be decoding two frames at once.
+///
 /// The type is `!Send` on purpose: the inline loader runs the decode inside `poll`, on the
-/// polling thread, and an opened [`Codec`](crate::Codec) belongs to that thread too.
-pub struct Pending<T> {
-    future: Option<BoxedFuture<T>>,
+/// polling thread, and an opened codec belongs to that thread too.
+pub struct Pending<'a, T> {
+    future: Option<BoxedFuture<'a, T>>,
 }
 
-impl<T> Pending<T> {
-    /// `inline` runs `job` on the first poll and is ready immediately after.
-    pub(crate) fn inline(job: impl FnOnce() -> Outcome<T> + 'static) -> Self
-    where
-        T: 'static,
-    {
-        Self::from_future(async move { job() })
-    }
-
-    pub(crate) fn from_future(future: impl Future<Output = Outcome<T>> + 'static) -> Self {
+impl<'a, T> Pending<'a, T> {
+    pub(crate) fn from_future(future: impl Future<Output = Outcome<T>> + 'a) -> Self {
         Self {
             future: Some(Box::pin(future)),
         }
@@ -62,7 +58,7 @@ impl<T> Pending<T> {
     }
 }
 
-impl<T> Future for Pending<T> {
+impl<T> Future for Pending<'_, T> {
     type Output = Outcome<T>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
@@ -70,7 +66,7 @@ impl<T> Future for Pending<T> {
     }
 }
 
-impl<T> std::fmt::Debug for Pending<T> {
+impl<T> std::fmt::Debug for Pending<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pending")
             .field("completed", &self.future.is_none())

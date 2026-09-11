@@ -18,7 +18,8 @@ mod source;
 
 use source::Source;
 use valo_codec::{
-    DecodeError, DecodedFrame, Decoder, FramePixels, FrameReader, ImageInfo, OpenError, OpenRequest,
+    DecodeError, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader, ImageInfo, OpenError,
+    OpenRequest,
 };
 
 /// AppleDecoder reads images with the platform's own codecs.
@@ -45,7 +46,17 @@ impl Decoder for AppleDecoder {
         "apple"
     }
 
-    fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+        // ImageIO answers on the calling thread, so the answer is ready before anyone waits.
+        Box::pin(std::future::ready(self.read_header(request)))
+    }
+}
+
+impl AppleDecoder {
+    fn read_header(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
         let source = Source::open(&request.encoded)?;
         let oriented_size = source.oriented_size();
         request.options.limits.check_source_size(oriented_size)?;
@@ -94,7 +105,13 @@ impl FrameReader for AppleReader {
         self.info
     }
 
-    fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError> {
+    fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>> {
+        Box::pin(std::future::ready(self.decode_next()))
+    }
+}
+
+impl AppleReader {
+    fn decode_next(&mut self) -> Result<DecodedFrame, DecodeError> {
         let index = self.next as usize;
         self.next = (self.next + 1) % self.info.frame_count.max(1);
         let longest_side = self.info.size[0].max(self.info.size[1]);

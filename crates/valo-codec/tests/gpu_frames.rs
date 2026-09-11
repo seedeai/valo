@@ -5,8 +5,8 @@ use pollster::block_on;
 use support::*;
 use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
 use valo_codec::{
-    DecodeError, DecodeOptions, DecodedFrame, Decoder, FramePixels, FrameReader, ImageInfo,
-    ImageLoader, OpenError, OpenRequest, Repetition,
+    DecodeError, DecodeOptions, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader,
+    ImageInfo, ImageLoader, OpenError, OpenRequest, Repetition,
 };
 
 /// Writes a 2×1 red/green texture on the request's device and returns it as the frame.
@@ -17,10 +17,13 @@ impl Decoder for TextureDecoder {
         "texture"
     }
 
-    fn open(&self, request: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
-        Ok(Box::new(TextureReader {
+    fn open<'a>(
+        &'a self,
+        request: &'a OpenRequest,
+    ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+        Box::pin(std::future::ready(Ok(Box::new(TextureReader {
             device: request.device.clone(),
-        }))
+        }) as Box<dyn FrameReader>)))
     }
 }
 
@@ -37,7 +40,13 @@ impl FrameReader for TextureReader {
         }
     }
 
-    fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError> {
+    fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>> {
+        Box::pin(std::future::ready(self.decode_next()))
+    }
+}
+
+impl TextureReader {
+    fn decode_next(&mut self) -> Result<DecodedFrame, DecodeError> {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -116,8 +125,13 @@ fn a_gpu_frame_of_the_wrong_size_is_rejected() {
         fn name(&self) -> &'static str {
             "wrong"
         }
-        fn open(&self, _: &OpenRequest) -> Result<Box<dyn FrameReader>, OpenError> {
-            Ok(Box::new(WrongSizeReader))
+        fn open<'a>(
+            &'a self,
+            _: &'a OpenRequest,
+        ) -> Decoding<'a, Result<Box<dyn FrameReader>, OpenError>> {
+            Box::pin(std::future::ready(Ok(
+                Box::new(WrongSizeReader) as Box<dyn FrameReader>
+            )))
         }
     }
     struct WrongSizeReader;
@@ -129,10 +143,9 @@ fn a_gpu_frame_of_the_wrong_size_is_rejected() {
                 repetition: Repetition::Once,
             }
         }
-        fn next_frame(&mut self) -> Result<DecodedFrame, DecodeError> {
-            Ok(DecodedFrame::still(FramePixels::Cpu(solid(
-                [2, 2],
-                [255; 4],
+        fn next_frame(&mut self) -> Decoding<'_, Result<DecodedFrame, DecodeError>> {
+            Box::pin(std::future::ready(Ok(DecodedFrame::still(
+                FramePixels::Cpu(solid([2, 2], [255; 4])),
             ))))
         }
     }

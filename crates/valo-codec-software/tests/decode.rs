@@ -49,7 +49,7 @@ fn png(profile: Option<Vec<u8>>, rotated: bool, size: [u32; 2], pixels: &[u8]) -
 fn png_is_oriented_once_and_keeps_straight_alpha() {
     let (loader, mut context) = loader();
     let bytes = png(None, true, [2, 1], &[255, 0, 0, 255, 0, 255, 0, 128]);
-    let codec = block_on(loader.open(bytes, DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes, DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().size, [1, 2]);
     let frame = block_on(codec.next_frame()).unwrap();
     assert_eq!(frame.image.size(), [1, 2]);
@@ -127,7 +127,7 @@ fn animated_gif() -> Arc<[u8]> {
 #[test]
 fn gif_composites_disposal_keeps_its_loop_count_and_replays_from_the_start() {
     let (loader, mut context) = loader();
-    let codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 4);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     let frames: Vec<_> = (0..5)
@@ -172,7 +172,7 @@ fn apng() -> Arc<[u8]> {
 #[test]
 fn apng_composites_frames_and_counts_additional_passes() {
     let (loader, mut context) = loader();
-    let codec = block_on(loader.open(apng(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(apng(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 3);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
     for expected in [
@@ -192,7 +192,7 @@ fn a_damaged_frame_is_an_error_and_the_frame_limit_bounds_header_scanning() {
     let mut bytes = apng().to_vec();
     let position = bytes.windows(4).position(|chunk| chunk == b"fdAT").unwrap();
     bytes[position + 8] ^= 255;
-    let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
+    let mut codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
     assert!(block_on(codec.next_frame()).is_ok());
     assert!(block_on(codec.next_frame()).is_err());
 
