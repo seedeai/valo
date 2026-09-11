@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "valo"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "criterion",
  "objc2 0.6.4",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "valo-capi"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "pollster",
  "valo",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "pollster",
  "valo",
@@ -2622,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec-apple"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec-software"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "gif",
  "image",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "valo-dl"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "valo-fontmgr"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "valo-geometry"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "glam",
  "serde",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "valo-harness"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "png 0.17.16",
  "pollster",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "valo-renderer"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "bytemuck",
  "etagere",
@@ -2718,7 +2718,7 @@ dependencies = [
 
 [[package]]
 name = "valo-svg"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "flate2",
  "image",
@@ -2729,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "valo-system-fonts"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "valo-fontmgr",
  "valo-geometry",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "valo-text"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "harfrust",
  "skrifa 0.35.0",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "valo-web"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "console_error_panic_hook",
  "valo",
@@ -2765,7 +2765,7 @@ dependencies = [
 
 [[package]]
 name = "valo-web-demo"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "console_error_panic_hook",
  "valo",
