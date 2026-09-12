@@ -27,6 +27,10 @@ License, Version 1.1, whose full text follows these notices.
     The font files are licensed under SIL OFL 1.1; Font Awesome's icons are
     CC BY 4.0 and its code is MIT. Only the font file is vendored here.
 
+  noto_sans_sc_ni.woff2
+    Copyright 2022 The Noto Project Authors
+    (https://github.com/notofonts/noto-cjk). Google Fonts CSS2 subset for U+4F60.
+
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007

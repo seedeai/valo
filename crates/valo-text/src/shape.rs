@@ -102,7 +102,8 @@ fn segment_span(
                 // Uncovered ink pulls a face from the sources; a char no
                 // source can render is skipped (its miss is recorded on
                 // the collection for the host's async loader).
-                if !ch.is_whitespace() && !collection.require_codepoint(ch, attrs) {
+                if !ch.is_whitespace() && !collection.require_codepoint(&style.families, ch, attrs)
+                {
                     demand.add_codepoint(ch, attrs);
                 }
                 let Some((font, _covered)) =

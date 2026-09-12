@@ -36,3 +36,18 @@ fn woff2_bytes_register_and_cover_their_icons() {
         id
     );
 }
+
+fn google_fonts_cjk_subset_woff2() -> Vec<u8> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/fonts/noto_sans_sc_ni.woff2"
+    );
+    std::fs::read(path).expect("noto_sans_sc_ni.woff2")
+}
+
+#[test]
+fn google_fonts_text_subset_with_overlap_bitmap_unwraps() {
+    let font = Font::from_bytes(google_fonts_cjk_subset_woff2())
+        .expect("transformed glyf with overlapSimpleBitmap unwraps");
+    assert!(font.covers('你'), "the subset is the Noto Sans SC glyph for 你");
+}

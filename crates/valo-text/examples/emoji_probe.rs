@@ -19,13 +19,13 @@ fn main() {
 
     // Container decode, inlined (WOFF2 → sfnt).
     let bytes = match raw.get(..4) {
-        Some(b"wOF2") => match woff2_patched::convert_woff2_to_ttf(&mut raw.as_slice()) {
-            Ok(ttf) => {
+        Some(b"wOF2") => match valo_text::woff2_to_sfnt_for_probe(&raw) {
+            Some(ttf) => {
                 println!("woff2 → sfnt: {} bytes", ttf.len());
                 ttf
             }
-            Err(e) => {
-                println!("woff2 DECODE FAILED: {e:?}");
+            None => {
+                println!("woff2 DECODE FAILED");
                 return;
             }
         },

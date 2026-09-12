@@ -26,12 +26,13 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 # WOFF2 unwrapping at registration (feature `woff2`): native hosts accept
 # compressed icon/web fonts directly; wasm hosts leave it off (the browser
 # or the pipeline decompresses) so the brotli decoder never ships.
-woff2-patched = { version = "0.4", optional = true }
+# allsorts reconstructs transformed glyf (including overlapSimpleBitmap).
+allsorts = { version = "0.17", optional = true, default-features = false, features = ["flate2_rust"] }
 
 [[example]]
 name = "emoji_probe"
 required-features = ["woff2"]
 
 [features]
-woff2 = ["dep:woff2-patched"]
+woff2 = ["dep:allsorts"]
 

@@ -400,8 +400,8 @@ impl FaceSet {
         attrs: FontAttrs,
         bytes: Vec<u8>,
     ) -> Option<FontId> {
-        let data = unwrapped(Arc::new(bytes))?;
-        let font = Font::parse(family, attrs, data, 0, Vec::new())?;
+        let (data, face_index) = unwrapped(Arc::new(bytes), 0)?;
+        let font = Font::parse(family, attrs, data, face_index, Vec::new())?;
         Some(self.add(font))
     }
 
@@ -481,9 +481,9 @@ impl FaceSet {
             // vendor's glyphs where tofu is the honest render.
             return false;
         }
-        if self.covers_anywhere(codepoint) {
-            // A family registered moments ago (or the host) already covers
-            // it — resolution will find that face without a new fallback.
+        if self.fallbacks_cover(codepoint) {
+            // Already in the chain — resolution will find that face without
+            // a second copy of it.
             return false;
         }
         let Some(font) = source.face_for_codepoint(codepoint, attrs) else {
@@ -494,8 +494,30 @@ impl FaceSet {
         true
     }
 
-    fn covers_anywhere(&self, codepoint: char) -> bool {
-        self.fonts.iter().any(|font| font.covers(codepoint))
+    /// Whether the global fallback chain covers `codepoint`.
+    ///
+    /// A fallback answer is only ever reached through this chain, so this —
+    /// not "some registered face" — decides whether another one is needed.
+    fn fallbacks_cover(&self, codepoint: char) -> bool {
+        self.fallbacks
+            .iter()
+            .any(|id| self.get(*id).covers(codepoint))
+    }
+
+    /// Whether resolution finds a face covering `ch`.
+    ///
+    /// This is the walk [`Self::resolve_covered`] makes, so a face resolution
+    /// cannot reach — registered under a name nobody asked for and absent from
+    /// the fallback chain, as an icon font is — does not pass for coverage it
+    /// will never supply. Asking "does some registered face cover it" instead
+    /// lets such a font suppress the fallback the text actually needs.
+    pub(crate) fn covered_by_resolution(
+        &self,
+        families: &[String],
+        attrs: FontAttrs,
+        ch: char,
+    ) -> bool {
+        matches!(self.resolve_covered_opt(families, attrs, ch), Some((_, true)))
     }
 
     /// `is_empty` reports whether no fonts are registered.
@@ -670,7 +692,7 @@ impl Font {
     /// Use face index zero for a single-face file. It returns `None` when the
     /// index or font data is invalid.
     pub fn from_data(data: FontData, face_index: u32) -> Option<Font> {
-        let data = unwrapped(data)?;
+        let (data, face_index) = unwrapped(data, face_index)?;
         Self::instance(data, face_index, Vec::new())
     }
 
@@ -679,7 +701,7 @@ impl Font {
     /// Static fonts produce one item. Variable fonts with named instances
     /// produce one [`Font`] per instance. Invalid data returns an empty vector.
     pub fn instances_from_data(data: FontData, face_index: u32) -> Vec<Font> {
-        let Some(data) = unwrapped(data) else {
+        let Some((data, face_index)) = unwrapped(data, face_index) else {
             return Vec::new();
         };
         let instances = named_instance_coordinates((*data).as_ref(), face_index);
@@ -788,19 +810,21 @@ fn stretch_distance(candidate: f32, wanted: f32) -> u32 {
 /// WOFF2 arrives brotli-wrapped; faces parse the unwrapped TrueType bytes
 /// (icon and web fonts ship compressed — the CoreText managers accept
 /// them, so registration here does too). Identity for everything else.
+/// A collection face is emitted as its own single-face SFNT, so the
+/// returned index is always zero after unwrap.
 #[cfg(feature = "woff2")]
-fn unwrapped(data: FontData) -> Option<FontData> {
+fn unwrapped(data: FontData, face_index: u32) -> Option<(FontData, u32)> {
     let bytes: &[u8] = (*data).as_ref();
-    if !woff2_patched::decode::is_woff2(bytes) {
-        return Some(data);
+    if !bytes.starts_with(b"wOF2") {
+        return Some((data, face_index));
     }
-    let unpacked = woff2_patched::decode::convert_woff2_to_ttf(&mut &bytes[..]).ok()?;
-    Some(Arc::new(unpacked))
+    let unpacked = crate::woff2::to_sfnt(bytes, face_index)?;
+    Some((Arc::new(unpacked), 0))
 }
 
 #[cfg(not(feature = "woff2"))]
-fn unwrapped(data: FontData) -> Option<FontData> {
-    Some(data)
+fn unwrapped(data: FontData, face_index: u32) -> Option<(FontData, u32)> {
+    Some((data, face_index))
 }
 
 /// name table: the primary is the en typographic family (then en family,
@@ -960,8 +984,13 @@ impl FontCollection {
     }
 
     /// The per-codepoint half (Skia's `defaultFallback(unicode, ..)`).
-    pub(crate) fn require_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> bool {
-        if self.faces.covers_anywhere(codepoint) {
+    pub(crate) fn require_codepoint(
+        &mut self,
+        families: &[String],
+        codepoint: char,
+        attrs: FontAttrs,
+    ) -> bool {
+        if self.faces.covered_by_resolution(families, attrs, codepoint) {
             return true;
         }
         for index in 0..self.sources.len() {

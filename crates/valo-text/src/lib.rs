@@ -13,6 +13,14 @@ mod sdf;
 mod shape;
 mod style;
 mod wrap;
+#[cfg(feature = "woff2")]
+mod woff2;
+
+#[cfg(feature = "woff2")]
+#[doc(hidden)]
+pub fn woff2_to_sfnt_for_probe(bytes: &[u8]) -> Option<Vec<u8>> {
+    woff2::to_sfnt(bytes, 0)
+}
 
 pub use font::{
     FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId, FontSource, FontUid,

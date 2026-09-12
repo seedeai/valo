@@ -11,6 +11,7 @@ Third-party fonts used by valo's golden tests and examples. **No valo crate embe
 | `noto_color_emoji_subset.ttf` | Noto Color Emoji, subset to 6 emoji | the CBDT color-bitmap path |
 | `noto_color_emoji_colrv1_subset.ttf` | Noto Color Emoji, COLRv1 subset | the skrifa COLRv1 paint-graph path |
 | `fa_regular_400.woff2` | Font Awesome Free | the WOFF2 decompression path, and icon-font fallback behavior |
+| `noto_sans_sc_ni.woff2` | Noto Sans SC, Google Fonts `text=你` subset | WOFF2 transformed glyf with `overlapSimpleBitmap` |
 
 All font files are licensed under the SIL Open Font License 1.1. Font Awesome's icons are additionally CC BY 4.0 and its code MIT; only the font file is vendored here.
 

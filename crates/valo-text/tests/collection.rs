@@ -198,6 +198,40 @@ fn fallback_chain_picks_nearest_attrs_among_covering() {
     assert_eq!(c.resolve(&families, FontAttrs::default(), 'A'), regular);
 }
 
+#[test]
+fn a_face_resolution_cannot_reach_does_not_answer_for_coverage() {
+    use valo_text::{ParagraphBuilder, TextStyle};
+    // An icon font is registered under its own name and joins no fallback
+    // chain, yet its cmap lists characters the UI text also uses. Counting
+    // that as coverage suppressed the fallback the text needed, and the
+    // character shaped as .notdef instead: spaced correctly, drawn as nothing.
+    let mut fonts = valo_text::FontCollection::new();
+    let latin = fonts.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
+    fonts.add_fallback(latin);
+    fonts
+        .register("Private Icons", asset("noto_sans_arabic.ttf"))
+        .unwrap();
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text(
+        "ع",
+        &TextStyle::new("Fira Sans", 16.0, valo_geometry::Color::BLACK),
+    );
+    let paragraph = b.build();
+
+    assert_eq!(
+        paragraph.demand().codepoints,
+        vec![('ع', FontAttrs::default())],
+        "the unreachable face must not stand in for a fallback"
+    );
+    assert!(
+        !paragraph
+            .faces()
+            .resolve_covered(&["Fira Sans".to_owned()], FontAttrs::default(), 'ع')
+            .1
+    );
+}
+
 /// A scripted [`FontSource`] standing in for the OS or the network — the
 /// growth policy must be provable without either.
 struct ScriptedSource {
