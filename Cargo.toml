@@ -6,7 +6,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/seedeai/valo"
@@ -20,16 +20,16 @@ categories = ["graphics", "rendering::engine"]
 # internal — path + version, because crates.io drops the path and needs the
 # version. valo-harness stays version-less on purpose: it is dev-only and a
 # version-less dev-dependency is stripped at publish instead of published.
-valo-geometry = { path = "crates/valo-geometry", version = "0.4.3" }
-valo-dl = { path = "crates/valo-dl", version = "0.4.3" }
-valo-text = { path = "crates/valo-text", version = "0.4.3" }
-valo-renderer = { path = "crates/valo-renderer", version = "0.4.3" }
+valo-geometry = { path = "crates/valo-geometry", version = "0.4.4" }
+valo-dl = { path = "crates/valo-dl", version = "0.4.4" }
+valo-text = { path = "crates/valo-text", version = "0.4.4" }
+valo-renderer = { path = "crates/valo-renderer", version = "0.4.4" }
 valo-harness = { path = "crates/valo-harness" }
-valo = { path = "crates/valo", version = "0.4.3" }
-valo-svg = { path = "crates/valo-svg", version = "0.4.3" }
-valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.4.3" }
-valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.4.3" }
-valo-codec = { path = "crates/valo-codec", version = "0.4.3" }
+valo = { path = "crates/valo", version = "0.4.4" }
+valo-svg = { path = "crates/valo-svg", version = "0.4.4" }
+valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.4.4" }
+valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.4.4" }
+valo-codec = { path = "crates/valo-codec", version = "0.4.4" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
 # text — one crate per role in Skia's stack, each an intended swap seam:
