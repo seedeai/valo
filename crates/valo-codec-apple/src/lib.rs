@@ -9,6 +9,9 @@
 //! Animations are read here too. ImageIO composites them itself: every frame comes back at the
 //! full canvas size with the frames before it already in place and their disposal applied, so
 //! nothing here assembles a canvas.
+//!
+//! The same `IOSurface` path is open to a host that already holds such a buffer, from
+//! ScreenCaptureKit or a camera: [`import_pixel_buffer`] wraps it as a texture without a copy.
 #![cfg(any(target_os = "macos", target_os = "ios"))]
 #![warn(missing_docs)]
 
@@ -16,6 +19,7 @@ mod raster;
 mod shared;
 mod source;
 
+pub use shared::{import_pixel_buffer, ImportError};
 use source::Source;
 use valo_codec::{
     DecodeError, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader, ImageInfo, OpenError,

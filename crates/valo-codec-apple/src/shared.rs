@@ -63,6 +63,50 @@ pub(crate) fn rasterize_to_metal(
     Ok(unsafe { valo::import_metal_texture(device, raw, Box::new(move || drop(backing))) }?)
 }
 
+/// ImportError says why a pixel buffer could not become a texture.
+#[derive(Debug)]
+pub enum ImportError {
+    /// NotBgra means the buffer's pixels are not 32-bit BGRA, the one layout sampled here.
+    NotBgra,
+    /// Unavailable means the device is not Metal, or the buffer is not one Metal can share:
+    /// it has no `IOSurface` behind it.
+    Unavailable,
+    /// Image means wgpu refused the texture.
+    Image(ImageError),
+}
+
+/// `import_pixel_buffer` wraps an `IOSurface`-backed 32-bit BGRA pixel buffer as a texture on
+/// `device` without copying it.
+///
+/// ScreenCaptureKit, the cameras and the video decoders hand out such buffers; the texture
+/// samples the buffer where it lies. The buffer must be finished with, since nothing may write
+/// to it afterwards, and it is kept alive until wgpu has finished every use of the texture.
+pub fn import_pixel_buffer(
+    device: &wgpu::Device,
+    pixel_buffer: CFRetained<CVPixelBuffer>,
+) -> Result<wgpu::Texture, ImportError> {
+    if CVPixelBufferGetPixelFormatType(&pixel_buffer) != kCVPixelFormatType_32BGRA {
+        return Err(ImportError::NotBgra);
+    }
+    let size = [
+        CVPixelBufferGetWidth(&pixel_buffer) as u32,
+        CVPixelBufferGetHeight(&pixel_buffer) as u32,
+    ];
+    let metal_device = metal_device_of(device).map_err(|_| ImportError::Unavailable)?;
+    let metal_texture = metal_texture_of(&pixel_buffer, size, &metal_device)
+        .map_err(|_| ImportError::Unavailable)?;
+    let raw = CVMetalTextureGetTexture(&metal_texture).ok_or(ImportError::Unavailable)?;
+    let raw = NonNull::new(Retained::as_ptr(&raw).cast_mut().cast()).expect("retained texture");
+    let backing = FrozenBacking {
+        _pixel_buffer: pixel_buffer,
+        _metal_texture: metal_texture,
+    };
+    // Safety: the caller promised the buffer is finished with, and `backing` keeps both
+    // CoreVideo objects alive until wgpu releases the texture, after its last GPU use.
+    unsafe { valo::import_metal_texture(device, raw, Box::new(move || drop(backing))) }
+        .map_err(ImportError::Image)
+}
+
 /// Only ownership crosses threads: CPU writes and attachment mutation ended before sealing.
 /// CoreVideo permits retaining these buffers through a Metal completion handler, which is what
 /// wgpu's release callback amounts to. No buffer reference or writable address is exposed.

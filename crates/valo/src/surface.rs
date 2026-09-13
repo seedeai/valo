@@ -2,15 +2,54 @@ use valo_dl::{DisplayList, DisplayListBuilder, Image};
 use valo_geometry::{Color, Rect};
 use valo_renderer::{RenderStats, RenderTarget};
 
+/// `SurfaceAlpha` says whether the compositor honours the surface's alpha channel.
+///
+/// Valo renders premultiplied alpha either way; this only decides whether the platform
+/// looks at it. With `Opaque` the surface hides everything behind it, which is right for an
+/// ordinary window. With `Transparent` the pixels a frame leaves clear show what is behind
+/// the surface: use it for a window or canvas the host has made non-opaque, such as one
+/// with a blur view behind it. Blending costs the compositor a pass per frame, so leave it
+/// off otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceAlpha {
+    /// The compositor ignores alpha; the surface hides everything behind it.
+    #[default]
+    Opaque,
+    /// The compositor honours alpha; clear pixels show what is behind the surface.
+    Transparent,
+}
+
+/// `SurfaceOptions` selects how a surface is configured beyond its size.
+///
+/// `SurfaceOptions::default()` is what the plain constructors use. Non-exhaustive so later
+/// choices can join without breaking callers: start from the default and set what differs,
+/// as in `SurfaceOptions::default().with_alpha(SurfaceAlpha::Transparent)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SurfaceOptions {
+    /// Whether the compositor honours the surface's alpha channel; `Opaque` by default.
+    pub alpha: SurfaceAlpha,
+}
+
+impl SurfaceOptions {
+    /// `with_alpha` returns these options asking for `alpha`.
+    pub fn with_alpha(mut self, alpha: SurfaceAlpha) -> Self {
+        self.alpha = alpha;
+        self
+    }
+}
+
 /// `Surface` manages a presentable native window or browser canvas.
 ///
 /// Render each frame by calling `acquire`, [`crate::Context::render`], and
 /// [`crate::Context::present`]. Valo selects a format that preserves its
-/// CSS/Skia-compatible sRGB blending.
+/// CSS/Skia-compatible sRGB blending. Pass [`SurfaceOptions`] to the `_with_options`
+/// constructors for a surface that shows what is behind it.
 pub struct Surface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
+    alpha: SurfaceAlpha,
 }
 
 impl Surface {
@@ -46,8 +85,30 @@ impl Surface {
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         size: [u32; 2],
     ) -> Result<Self, wgpu::CreateSurfaceError> {
+        Self::new_with_options(
+            instance,
+            adapter,
+            device,
+            target,
+            size,
+            SurfaceOptions::default(),
+        )
+    }
+
+    /// `new_with_options` creates and configures a surface over a window or canvas as
+    /// `options` asks.
+    pub fn new_with_options(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size: [u32; 2],
+        options: SurfaceOptions,
+    ) -> Result<Self, wgpu::CreateSurfaceError> {
         let surface = instance.create_surface(target)?;
-        Ok(Self::from_wgpu_surface(surface, adapter, device, size))
+        Ok(Self::from_wgpu_surface_with_options(
+            surface, adapter, device, size, options,
+        ))
     }
 
     /// `new_unsafe` creates a surface from raw platform handles.
@@ -64,8 +125,35 @@ impl Surface {
         target: wgpu::SurfaceTargetUnsafe,
         size: [u32; 2],
     ) -> Result<Self, wgpu::CreateSurfaceError> {
+        unsafe {
+            Self::new_unsafe_with_options(
+                instance,
+                adapter,
+                device,
+                target,
+                size,
+                SurfaceOptions::default(),
+            )
+        }
+    }
+
+    /// `new_unsafe_with_options` creates a surface from raw platform handles as `options`
+    /// asks.
+    ///
+    /// # Safety
+    /// Every raw handle in `target` must remain valid for the surface's lifetime.
+    pub unsafe fn new_unsafe_with_options(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        target: wgpu::SurfaceTargetUnsafe,
+        size: [u32; 2],
+        options: SurfaceOptions,
+    ) -> Result<Self, wgpu::CreateSurfaceError> {
         let surface = unsafe { instance.create_surface_unsafe(target)? };
-        Ok(Self::from_wgpu_surface(surface, adapter, device, size))
+        Ok(Self::from_wgpu_surface_with_options(
+            surface, adapter, device, size, options,
+        ))
     }
 
     /// `from_wgpu_surface` configures an existing wgpu surface for Valo.
@@ -78,7 +166,30 @@ impl Surface {
         device: &wgpu::Device,
         size: [u32; 2],
     ) -> Self {
+        Self::from_wgpu_surface_with_options(
+            surface,
+            adapter,
+            device,
+            size,
+            SurfaceOptions::default(),
+        )
+    }
+
+    /// `from_wgpu_surface_with_options` configures an existing wgpu surface for Valo as
+    /// `options` asks.
+    ///
+    /// A backend that cannot honour the alpha asked for gets the nearest it offers;
+    /// [`alpha`](Self::alpha) says what was in effect.
+    pub fn from_wgpu_surface_with_options(
+        surface: wgpu::Surface<'static>,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        size: [u32; 2],
+        options: SurfaceOptions,
+    ) -> Self {
         let caps = surface.get_capabilities(adapter);
+        let alpha_mode =
+            alpha_mode_for(options.alpha, adapter.get_info().backend, &caps.alpha_modes);
         let format = caps
             .formats
             .iter()
@@ -103,7 +214,7 @@ impl Surface {
             height: size[1].max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
         };
         surface.configure(device, &config);
@@ -111,7 +222,14 @@ impl Surface {
             surface,
             config,
             device: device.clone(),
+            alpha: alpha_in_effect(alpha_mode),
         }
+    }
+
+    /// `alpha` returns the alpha treatment in effect, which is what was asked for unless
+    /// the backend offers no way to honour it.
+    pub fn alpha(&self) -> SurfaceAlpha {
+        self.alpha
     }
 
     /// `resize` reconfigures the surface after its window or canvas changes size.
@@ -154,6 +272,45 @@ impl Surface {
             }
         }
         None
+    }
+}
+
+/// The wgpu mode that gives `alpha` on this backend, from the modes the surface offers.
+///
+/// Valo's pixels are premultiplied, so `PreMultiplied` is the mode where offered. Metal
+/// offers only `PostMultiplied`, which there does nothing but clear the layer's opaque
+/// flag, after which Core Animation composites premultiplied, so it is taken on Metal
+/// alone. WebGPU accepts `PreMultiplied` though its capabilities list `Opaque` only.
+fn alpha_mode_for(
+    alpha: SurfaceAlpha,
+    backend: wgpu::Backend,
+    offered: &[wgpu::CompositeAlphaMode],
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode as Mode;
+    let first = offered.first().copied().unwrap_or(Mode::Auto);
+    if alpha == SurfaceAlpha::Opaque {
+        return first;
+    }
+    if backend == wgpu::Backend::BrowserWebGpu {
+        return Mode::PreMultiplied;
+    }
+    if offered.contains(&Mode::PreMultiplied) {
+        return Mode::PreMultiplied;
+    }
+    if backend == wgpu::Backend::Metal && offered.contains(&Mode::PostMultiplied) {
+        return Mode::PostMultiplied;
+    }
+    if offered.contains(&Mode::Inherit) {
+        return Mode::Inherit;
+    }
+    first
+}
+
+/// What a configured mode amounts to for the caller.
+fn alpha_in_effect(mode: wgpu::CompositeAlphaMode) -> SurfaceAlpha {
+    match mode {
+        wgpu::CompositeAlphaMode::Opaque | wgpu::CompositeAlphaMode::Auto => SurfaceAlpha::Opaque,
+        _ => SurfaceAlpha::Transparent,
     }
 }
 
@@ -389,4 +546,90 @@ fn backing(context: &mut crate::Context, size: [u32; 2], format: wgpu::TextureFo
         view_formats: &[],
     });
     context.import_image(texture, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::Backend;
+    use wgpu::CompositeAlphaMode as Mode;
+
+    #[test]
+    fn opaque_takes_the_first_mode_offered() {
+        assert_eq!(
+            alpha_mode_for(
+                SurfaceAlpha::Opaque,
+                Backend::Metal,
+                &[Mode::Opaque, Mode::PostMultiplied]
+            ),
+            Mode::Opaque
+        );
+        assert_eq!(
+            alpha_mode_for(SurfaceAlpha::Opaque, Backend::Vulkan, &[]),
+            Mode::Auto
+        );
+    }
+
+    #[test]
+    fn transparent_takes_premultiplied_where_the_label_is_honest() {
+        let offered = [
+            Mode::Opaque,
+            Mode::PreMultiplied,
+            Mode::PostMultiplied,
+            Mode::Inherit,
+        ];
+        assert_eq!(
+            alpha_mode_for(SurfaceAlpha::Transparent, Backend::Vulkan, &offered),
+            Mode::PreMultiplied
+        );
+        assert_eq!(
+            alpha_mode_for(
+                SurfaceAlpha::Transparent,
+                Backend::Dx12,
+                &[Mode::Opaque, Mode::PreMultiplied]
+            ),
+            Mode::PreMultiplied
+        );
+    }
+
+    #[test]
+    fn transparent_takes_metals_post_multiplied_and_no_one_elses() {
+        let offered = [Mode::Opaque, Mode::PostMultiplied];
+        assert_eq!(
+            alpha_mode_for(SurfaceAlpha::Transparent, Backend::Metal, &offered),
+            Mode::PostMultiplied
+        );
+        assert_eq!(
+            alpha_mode_for(SurfaceAlpha::Transparent, Backend::Vulkan, &offered),
+            Mode::Opaque
+        );
+    }
+
+    #[test]
+    fn transparent_on_webgpu_asks_without_consulting_the_capabilities() {
+        assert_eq!(
+            alpha_mode_for(
+                SurfaceAlpha::Transparent,
+                Backend::BrowserWebGpu,
+                &[Mode::Opaque]
+            ),
+            Mode::PreMultiplied
+        );
+    }
+
+    #[test]
+    fn transparent_falls_back_to_inherit_then_to_opaque_and_says_so() {
+        assert_eq!(
+            alpha_mode_for(
+                SurfaceAlpha::Transparent,
+                Backend::Vulkan,
+                &[Mode::Opaque, Mode::Inherit]
+            ),
+            Mode::Inherit
+        );
+        let degraded = alpha_mode_for(SurfaceAlpha::Transparent, Backend::Gl, &[Mode::Opaque]);
+        assert_eq!(degraded, Mode::Opaque);
+        assert_eq!(alpha_in_effect(degraded), SurfaceAlpha::Opaque);
+        assert_eq!(alpha_in_effect(Mode::Inherit), SurfaceAlpha::Transparent);
+    }
 }
