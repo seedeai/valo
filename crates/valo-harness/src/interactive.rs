@@ -222,7 +222,7 @@ impl State {
             w as f32,
         );
 
-        let Some(frame) = self.surface.acquire() else {
+        let Ok(frame) = self.surface.acquire() else {
             return;
         };
         let stats = self

@@ -82,6 +82,8 @@ fn segment_span(
     demand: &mut FontDemand,
 ) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
+    let attrs = style.font_attrs();
+    let mut faces = collection.faces().style_faces(&style.families, attrs);
     for (at, ch) in text[span.clone()].char_indices() {
         let at = span.start + at;
         if ch == '\n' {
@@ -98,19 +100,21 @@ fn segment_span(
                 last.font
             }
             _ => {
-                let attrs = style.font_attrs();
-                // Uncovered ink pulls a face from the sources; a char no
-                // source can render is skipped (its miss is recorded on
-                // the collection for the host's async loader).
-                if !ch.is_whitespace() && !collection.require_codepoint(&style.families, ch, attrs)
-                {
-                    demand.add_codepoint(ch, attrs);
+                let mut resolved = collection.faces().resolve_prepared(&faces, ch);
+                let covered = matches!(resolved, Some((_, true)));
+                if !covered && !ch.is_whitespace() {
+                    // Uncovered ink pulls a face from the sources, which
+                    // changes what the style resolves to; a char no source
+                    // can render is skipped (its miss is recorded on the
+                    // collection for the host's async loader).
+                    if collection.require_codepoint(&style.families, ch, attrs) {
+                        faces = collection.faces().style_faces(&style.families, attrs);
+                        resolved = collection.faces().resolve_prepared(&faces, ch);
+                    } else {
+                        demand.add_codepoint(ch, attrs);
+                    }
                 }
-                let Some((font, _covered)) =
-                    collection
-                        .faces()
-                        .resolve_covered_opt(&style.families, attrs, ch)
-                else {
+                let Some((font, _covered)) = resolved else {
                     continue;
                 };
                 font

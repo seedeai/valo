@@ -384,6 +384,26 @@ pub struct FaceSet {
     /// (Skia registers typefaces incrementally).
     fonts: Vec<Arc<Font>>,
     fallbacks: Vec<FontId>,
+    /// The faces answering to each name, keyed as [`name_key`] spells it, in
+    /// registration order. Resolution asks per character, so a name is a
+    /// lookup rather than a walk over every face comparing strings.
+    by_name: HashMap<String, Vec<FontId>>,
+}
+
+/// `StyleFaces` is one text style's font resolution, prepared by
+/// [`FaceSet::style_faces`].
+///
+/// It holds face identifiers only, ordered for [`FaceSet::resolve_prepared`];
+/// it is stale once a face is added to the set it came from.
+#[derive(Clone, Debug)]
+pub struct StyleFaces {
+    /// The requested families' faces, in request order, nearest-first.
+    families: Vec<Vec<FontId>>,
+    /// The fallback chain, nearest-first.
+    fallbacks: Vec<FontId>,
+    /// Where tofu renders when nothing covers: the style's best variant,
+    /// else the first fallback, else the first face; `None` on an empty set.
+    tofu: Option<FontId>,
 }
 
 impl FaceSet {
@@ -415,8 +435,16 @@ impl FaceSet {
 
     /// `add` registers an already parsed font under its embedded names and attributes.
     pub fn add(&mut self, font: Font) -> FontId {
+        let id = FontId(self.fonts.len() as u32);
+        let aliases = font.aliases().iter().map(String::as_str);
+        for name in std::iter::once(font.family()).chain(aliases) {
+            let ids = self.by_name.entry(name_key(name)).or_default();
+            if ids.last() != Some(&id) {
+                ids.push(id);
+            }
+        }
         self.fonts.push(Arc::new(font));
-        FontId(self.fonts.len() as u32 - 1)
+        id
     }
 
     /// `with_font` returns a cloned face set containing one additional font.
@@ -561,8 +589,7 @@ impl FaceSet {
 
     /// `family` returns the first registered font matching a family name or alias.
     pub fn family(&self, name: &str) -> Option<FontId> {
-        let at = self.fonts.iter().position(|f| f.matches(name))?;
-        Some(FontId(at as u32))
+        self.by_name.get(&name_key(name))?.first().copied()
     }
 
     /// `faces` iterates over every font matching a family name or alias.
@@ -606,30 +633,58 @@ impl FaceSet {
         attrs: FontAttrs,
         ch: char,
     ) -> (FontId, bool) {
-        for name in families {
-            let covering = self.variants(name).filter(|(_, f)| f.covers(ch));
-            if let Some(id) = self.nearest(covering, attrs) {
-                return (id, true);
-            }
-        }
-        let covering_fallbacks = self
-            .fallbacks
-            .iter()
-            .map(|id| (*id, self.get(*id)))
-            .filter(|(_, f)| f.covers(ch));
-        if let Some(id) = self.nearest(covering_fallbacks, attrs) {
-            return (id, true);
-        }
-        (self.tofu_face(families, attrs), false)
+        let faces = self.style_faces(families, attrs);
+        self.resolve_prepared(&faces, ch).unwrap_or_else(|| {
+            panic!(
+                "FontCollection has no fonts registered — register() one before building paragraphs"
+            );
+        })
     }
 
-    /// Every face answering to `name`, with its id.
-    fn variants<'a>(&'a self, name: &'a str) -> impl Iterator<Item = (FontId, &'a Font)> {
-        self.fonts
+    /// `style_faces` prepares one style's resolution: the faces of each
+    /// requested family and of the fallback chain, nearest-first to `attrs`.
+    ///
+    /// A run of text asks for a font per character; prepared once per style,
+    /// each character is a coverage walk over these lists and no name lookup
+    /// (Skia's `SkFontCollection::findTypefaces`, done once per text style).
+    pub fn style_faces(&self, families: &[String], attrs: FontAttrs) -> StyleFaces {
+        let fallbacks = self.fallbacks.iter().map(|id| (*id, self.get(*id)));
+        StyleFaces {
+            families: families
+                .iter()
+                .map(|name| self.nearest_first(self.variants(name), attrs))
+                .collect(),
+            fallbacks: self.nearest_first(fallbacks, attrs),
+            tofu: self.tofu_face_opt(families, attrs),
+        }
+    }
+
+    /// `resolve_prepared` selects a font for `ch` from a prepared style.
+    ///
+    /// The first covering face of the first requested family that has one
+    /// wins, then the fallback chain's; the flag is `false` when nothing
+    /// covers and the returned font renders `.notdef`. `None` when the face
+    /// set is empty.
+    pub fn resolve_prepared(&self, faces: &StyleFaces, ch: char) -> Option<(FontId, bool)> {
+        let covering = faces
+            .families
             .iter()
-            .enumerate()
-            .filter(move |(_, f)| f.matches(name))
-            .map(|(at, f)| (FontId(at as u32), f.as_ref()))
+            .chain(std::iter::once(&faces.fallbacks))
+            .flatten()
+            .find(|id| self.get(**id).covers(ch));
+        match covering {
+            Some(id) => Some((*id, true)),
+            None => faces.tofu.map(|id| (id, false)),
+        }
+    }
+
+    /// Every face answering to `name`, with its id, in registration order.
+    fn variants<'a>(&'a self, name: &str) -> impl Iterator<Item = (FontId, &'a Font)> + 'a {
+        self.by_name
+            .get(&name_key(name))
+            .into_iter()
+            .flatten()
+            .map(|id| (*id, self.get(*id)))
     }
 
     /// CSS-style nearest among `faces`: width first, then matching style,
@@ -652,14 +707,22 @@ impl FaceSet {
             .map(|(id, _)| id)
     }
 
-    /// Nothing covers `ch`: the style's best variant, else the first
-    /// fallback, else the first face — the tofu renders in SOMETHING.
-    fn tofu_face(&self, families: &[String], attrs: FontAttrs) -> FontId {
-        self.tofu_face_opt(families, attrs).unwrap_or_else(|| {
-            panic!(
-                "FontCollection has no fonts registered — register() one before building paragraphs"
-            );
-        })
+    /// `faces` in [`Self::nearest`]'s order: the face `nearest` would pick
+    /// first, and so on, with ties in registration order.
+    fn nearest_first<'a>(
+        &self,
+        faces: impl Iterator<Item = (FontId, &'a Font)>,
+        attrs: FontAttrs,
+    ) -> Vec<FontId> {
+        let mut faces: Vec<(FontId, &Font)> = faces.collect();
+        faces.sort_by_key(|(_, f)| {
+            (
+                stretch_distance(f.attrs.stretch, attrs.stretch),
+                f.attrs.italic != attrs.italic,
+                f.attrs.weight.abs_diff(attrs.weight),
+            )
+        });
+        faces.into_iter().map(|(id, _)| id).collect()
     }
 
     /// [`Self::tofu_face`] that reports an EMPTY collection instead of
@@ -687,6 +750,12 @@ impl FaceSet {
         }
         Some(self.resolve_covered(families, attrs, ch))
     }
+}
+
+/// The spelling a family name or alias is indexed under: names match
+/// ASCII-case-insensitively (as [`Font::matches`] compares them).
+fn name_key(name: &str) -> String {
+    name.to_ascii_lowercase()
 }
 
 impl Font {

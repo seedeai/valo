@@ -443,7 +443,7 @@ impl WebRenderer {
         // A failed acquisition costs only this frame's presentation. The
         // pixels are already safe in the backing, so the next present shows
         // them.
-        if let Some(frame) = self.surface.acquire() {
+        if let Ok(frame) = self.surface.acquire() {
             self.canvas
                 .present_to(&mut self.context.borrow_mut(), &frame.target(None));
             self.context.borrow().present(frame);

@@ -272,7 +272,7 @@ pub unsafe extern "C" fn valo_context_render(
     let Some(surface) = &mut ctx.surface else {
         return false;
     };
-    let Some(frame) = surface.acquire() else {
+    let Ok(frame) = surface.acquire() else {
         return false;
     };
     ctx.context

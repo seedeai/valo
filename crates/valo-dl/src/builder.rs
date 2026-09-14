@@ -30,6 +30,9 @@ pub struct DisplayListBuilder {
     /// Consumers that freeze pixels (the raster cache) must refuse any list
     /// where this is nonzero.
     backdrop_reads: u32,
+    /// The root's group-opacity oracle: what an enclosing layer that embeds
+    /// this list learns about its children.
+    root: GroupOpacity,
 }
 
 /// `Backdrop` filters the sampled scene before a save layer's children paint.
@@ -75,18 +78,55 @@ struct Scope {
     is_layer: bool,
 }
 
+/// Whether a group's alpha distributes over its children: every child
+/// alpha-linear and no two overlapping, so scaling each child's source by α
+/// equals compositing the group at α (Flutter's `is_group_opacity_compatible`).
+/// Kept per open layer, and for the list's root so an embedded list answers
+/// for its own children.
+struct GroupOpacity {
+    /// Alpha-linear + disjoint so far. Clips leave it alone.
+    compatible: bool,
+    /// The union of the children so far. A child inside it counts as an
+    /// overlap even when it misses every earlier child: one rectangle to
+    /// test instead of every child, at the price of a few group textures
+    /// that were not needed (Flutter's `AccumulationRect`).
+    union: Option<Rect>,
+}
+
+impl GroupOpacity {
+    fn new() -> Self {
+        Self {
+            compatible: true,
+            union: None,
+        }
+    }
+
+    /// One more child: falsify on an alpha-nonlinear one or the first
+    /// overlap (disjoint children are what makes shared-z elision legal).
+    fn note(&mut self, bounds: Rect, supports_opacity: bool) {
+        if !self.compatible {
+            return;
+        }
+        let overlaps = self.union.is_some_and(|union| union.intersects(&bounds));
+        if !supports_opacity || overlaps {
+            self.compatible = false;
+            return;
+        }
+        self.union = Some(match self.union {
+            Some(union) => union.union(&bounds),
+            None => bounds,
+        });
+    }
+}
+
 /// Record-time state of an open `save_layer` scope.
 struct LayerScope {
     /// The `Op::SaveLayer` to backpatch at restore.
     op_index: usize,
     /// Union of child draw bounds (list-root space, already clip∩hint-cropped).
     bounds: Option<Rect>,
-    /// Children so far — for the pairwise-disjoint check (only consulted
-    /// while `compatible` still holds).
-    child_bounds: Vec<Rect>,
-    /// Alpha-linear + disjoint so far (Flutter's
-    /// can_distribute_opacity). Clips and nested lists falsify it.
-    compatible: bool,
+    /// Whether the composite's alpha can ride the children instead.
+    group: GroupOpacity,
     /// ±3σ (device units) when the composite paint blurs.
     blur_pad: f32,
     /// The sampled-scene filter and optional shared group, recorded at save time.
@@ -121,6 +161,7 @@ impl DisplayListBuilder {
             bounds: None,
             draw_count: 0,
             backdrop_reads: 0,
+            root: GroupOpacity::new(),
         }
     }
 
@@ -231,8 +272,7 @@ impl DisplayListBuilder {
         self.layers.push(LayerScope {
             op_index: self.ops.len(),
             bounds: flooded_bounds,
-            child_bounds: Vec::new(),
-            compatible: true,
+            group: GroupOpacity::new(),
             // Blurred layers spread ink past their children:
             // pad the recorded bounds so the texture holds the falloff.
             blur_pad: paint.device_effect_padding(&self.top().transform),
@@ -564,8 +604,10 @@ impl DisplayListBuilder {
         self.draw_count += list.draw_count();
         self.backdrop_reads += list.backdrop_reads();
         self.union_bounds(bounds);
-        // Conservative: a nested list's internal structure is opaque here.
-        self.note_layer_child(bounds, false);
+        // The list answers for its own children (Flutter's
+        // `can_apply_group_opacity`): a picture of one draw elides as the
+        // draw would.
+        self.note_layer_child(bounds, list.supports_opacity());
         self.ops.push(Op::DrawDisplayList {
             list: Arc::clone(list),
             bounds,
@@ -593,6 +635,7 @@ impl DisplayListBuilder {
             self.slots,
             self.backdrop_groups,
             self.backdrop_reads,
+            self.root.compatible,
         )
     }
 
@@ -634,7 +677,7 @@ impl DisplayListBuilder {
         *composite_slot = self.slots;
         // A backdrop layer never elides (its seed needs a texture); a hinted
         // layer never elides (the hint is a crop that eliding would undo).
-        *can_elide = layer.compatible
+        *can_elide = layer.group.compatible
             && paint.is_opacity_only()
             && layer.backdrop.is_none()
             && !layer.hinted;
@@ -744,33 +787,18 @@ impl DisplayListBuilder {
         });
     }
 
-    /// Feed the innermost open layer's oracle: union its bounds; falsify
-    /// compatibility on an alpha-nonlinear child or the first overlap
-    /// (pairwise-disjoint is what makes shared-z elision legal).
+    /// Feed the innermost open layer's oracle, or the root's outside any
+    /// layer: union the layer's bounds and note the child for group opacity.
     fn note_layer_child(&mut self, bounds: Rect, supports_opacity: bool) {
         let Some(layer) = self.layers.last_mut() else {
+            self.root.note(bounds, supports_opacity);
             return;
         };
         layer.bounds = Some(match layer.bounds {
             Some(cur) => cur.union(&bounds),
             None => bounds,
         });
-        if !layer.compatible {
-            return;
-        }
-        if !supports_opacity {
-            layer.compatible = false;
-            return;
-        }
-        if layer
-            .child_bounds
-            .iter()
-            .any(|prior| prior.intersects(&bounds))
-        {
-            layer.compatible = false;
-            return;
-        }
-        layer.child_bounds.push(bounds);
+        layer.group.note(bounds, supports_opacity);
     }
 }
 
@@ -1114,6 +1142,78 @@ mod tests {
         // A depth clip expires on its own slot either way; Flutter's
         // opacity distribution ignores clips too.
         assert!(can_elide);
+    }
+
+    #[test]
+    fn an_embedded_list_of_disjoint_draws_keeps_elision() {
+        let mut inner = DisplayListBuilder::new();
+        inner.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        inner.draw_rect(Rect::new(40.0, 0.0, 30.0, 30.0), &red());
+        let inner = Arc::new(inner.build());
+        assert!(inner.supports_opacity());
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_display_list(&inner);
+        b.restore();
+        let (_, _, _, can_elide) = find_layer(&b.build());
+        assert!(can_elide, "the list answers for its children");
+    }
+
+    #[test]
+    fn an_embedded_list_of_overlapping_draws_forfeits_elision() {
+        let mut inner = DisplayListBuilder::new();
+        inner.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        inner.draw_rect(Rect::new(10.0, 10.0, 30.0, 30.0), &red());
+        let inner = Arc::new(inner.build());
+        assert!(!inner.supports_opacity());
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_display_list(&inner);
+        b.restore();
+        let (_, _, _, can_elide) = find_layer(&b.build());
+        assert!(!can_elide);
+    }
+
+    #[test]
+    fn two_embedded_lists_that_overlap_forfeit_elision() {
+        let mut inner = DisplayListBuilder::new();
+        inner.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        let inner = Arc::new(inner.build());
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_display_list(&inner);
+        b.translate(10.0, 10.0);
+        b.draw_display_list(&inner);
+        b.restore();
+        let (_, _, _, can_elide) = find_layer(&b.build());
+        assert!(!can_elide);
+    }
+
+    #[test]
+    fn a_child_inside_the_union_of_earlier_ones_forfeits_elision() {
+        // Disjoint from both earlier rects, but inside their union: Flutter's
+        // `AccumulationRect` calls that an overlap, and so does this.
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        b.draw_rect(Rect::new(40.0, 40.0, 30.0, 30.0), &red());
+        b.draw_rect(Rect::new(40.0, 0.0, 30.0, 30.0), &red());
+        b.restore();
+        let (_, _, _, can_elide) = find_layer(&b.build());
+        assert!(!can_elide);
+    }
+
+    #[test]
+    fn a_layer_composite_is_one_child_of_the_root() {
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_rect(Rect::new(10.0, 10.0, 30.0, 30.0), &red()); // overlaps the first
+        b.restore();
+        assert!(!b.build().supports_opacity());
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub use export::unpremultiply;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use metal::{import_metal_texture, metal_device_of, wrap_metal_texture, ExternalMetalTexture};
 pub use surface::{
-    Offscreen, PersistentCanvas, Surface, SurfaceAlpha, SurfaceFrame, SurfaceOptions,
+    Offscreen, PersistentCanvas, Refused, Surface, SurfaceAlpha, SurfaceFrame, SurfaceOptions,
 };
 pub use valo_renderer::{
     AlphaType, ImageContext, ImageError, PixelBuffer, PixelFormat, PixelLayout,

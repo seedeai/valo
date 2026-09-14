@@ -187,6 +187,9 @@ pub struct DisplayList {
     /// Backdrop reads when replayed, shared or not, nested lists included.
     /// A rasterized copy of such a list would freeze what it read.
     pub(crate) backdrop_reads: u32,
+    /// Whether a group alpha distributes over the draws: every one
+    /// alpha-linear and none overlapping.
+    pub(crate) supports_opacity: bool,
 }
 
 /// `GlyphPos` identifies and positions one glyph within a glyph run.
@@ -231,6 +234,7 @@ impl DisplayList {
         depth_slots: u32,
         backdrop_groups: Vec<BackdropGroup>,
         backdrop_reads: u32,
+        supports_opacity: bool,
     ) -> Self {
         Self {
             id: next_id(),
@@ -240,6 +244,7 @@ impl DisplayList {
             depth_slots,
             backdrop_groups,
             backdrop_reads,
+            supports_opacity,
         }
     }
 
@@ -277,6 +282,14 @@ impl DisplayList {
     /// nested lists included.
     pub fn backdrop_reads(&self) -> u32 {
         self.backdrop_reads
+    }
+
+    /// `supports_opacity` says whether a group alpha distributes over this
+    /// list's draws: every one alpha-linear and none overlapping. A layer
+    /// that embeds the list asks this instead of forfeiting elision
+    /// (Flutter's `can_apply_group_opacity`).
+    pub fn supports_opacity(&self) -> bool {
+        self.supports_opacity
     }
 
     /// `backdrop_group` returns the group recorded for `key`, if present.

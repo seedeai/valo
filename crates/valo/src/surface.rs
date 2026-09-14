@@ -249,17 +249,18 @@ impl Surface {
         self.config.format
     }
 
-    /// `acquire` returns the next frame or `None` when this frame should be skipped.
+    /// `acquire` returns the next frame, or why there is none this time.
     ///
-    /// Lost or outdated surfaces are reconfigured and retried once.
-    pub fn acquire(&mut self) -> Option<SurfaceFrame> {
+    /// Lost or outdated surfaces are reconfigured and retried once; the other
+    /// refusals are the caller's to answer, each differently (see [`Refused`]).
+    pub fn acquire(&mut self) -> Result<SurfaceFrame, Refused> {
         use wgpu::CurrentSurfaceTexture as C;
         for _ in 0..2 {
             match self.surface.get_current_texture() {
                 C::Success(t) | C::Suboptimal(t) => {
                     let raw = t.texture.clone();
                     let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
-                    return Some(SurfaceFrame {
+                    return Ok(SurfaceFrame {
                         surface_texture: t,
                         raw,
                         view,
@@ -267,12 +268,36 @@ impl Surface {
                         size: [self.config.width, self.config.height],
                     });
                 }
+                C::Occluded => return Err(Refused::Occluded),
+                C::Timeout => return Err(Refused::Timeout),
                 C::Outdated | C::Lost => self.surface.configure(&self.device, &self.config),
-                _ => return None,
+                _ => return Err(Refused::Lost),
             }
         }
-        None
+        Err(Refused::Lost)
     }
+}
+
+/// `Refused` is why [`Surface::acquire`] gave no frame, which decides what the
+/// caller does next.
+///
+/// A host that keeps the frame it could not draw answers each kind on its own
+/// terms: it waits for the system's word on an occluded window, tries again at
+/// the next refresh after a timeout, and gives up on a lost surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The window is not on screen as the system reports it. On macOS wgpu asks
+    /// AppKit's occlusion state before asking the layer for a drawable, and a
+    /// window just ordered front stays occluded until AppKit says otherwise;
+    /// that word (`NSWindowDidChangeOcclusionState`) is when a frame will take.
+    Occluded,
+    /// The layer gave no drawable within its time: the display holds every one.
+    /// The next refresh frees one.
+    Timeout,
+    /// The surface could not be brought back after a reconfiguration, or the
+    /// device is out of memory: nothing takes a frame until the surface is
+    /// made again.
+    Lost,
 }
 
 /// The wgpu mode that gives `alpha` on this backend, from the modes the surface offers.

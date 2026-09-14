@@ -108,7 +108,7 @@ impl ApplicationHandler for App {
                 let [w, h] = state.surface.size();
                 let dl = record(t, [w as f32, h as f32], &state.card);
 
-                if let Some(frame) = state.surface.acquire() {
+                if let Ok(frame) = state.surface.acquire() {
                     let stats = state
                         .ctx
                         .render(&dl, &frame.target(Some(Color::rgb(0.07, 0.07, 0.09))));

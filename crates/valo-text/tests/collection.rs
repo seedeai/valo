@@ -255,6 +255,34 @@ impl valo_text::FontSource for ScriptedSource {
     }
 }
 
+/// A collection that starts empty and answers from its sources still
+/// shapes: the first character asks the source, and the style's faces are
+/// prepared again once the answer lands.
+#[test]
+fn an_empty_collection_shapes_from_its_sources() {
+    use valo_text::{ParagraphBuilder, TextStyle};
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: Some(asset("fira_sans.ttf")),
+        fallback_bytes: None,
+        asked_codepoints: Vec::new(),
+    });
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text(
+        "hello",
+        &TextStyle::new("Fira Sans", 16.0, valo_geometry::Color::BLACK),
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(1000.0);
+
+    assert!(
+        paragraph.longest_line() > 0.0,
+        "the source's face shaped the text"
+    );
+    assert!(paragraph.demand().is_empty());
+}
+
 #[test]
 fn grown_by_teaches_the_requested_name_and_answers_once() {
     let mut source = ScriptedSource {
