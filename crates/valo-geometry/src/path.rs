@@ -80,7 +80,7 @@ pub enum PathElement {
 ///
 /// Build paths with [`PathBuilder`]. Display lists retain shared [`Arc`] handles,
 /// so recording and nesting do not copy path data.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Path {
     verbs: Vec<Verb>,

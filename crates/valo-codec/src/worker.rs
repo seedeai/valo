@@ -1,7 +1,9 @@
 //! The worker thread: it runs the same decode service as the inline path, but owns the opened
-//! readers, so decoder state never crosses a thread after it is created.
+//! readers, so decoder state never crosses a thread after it is created. It reads frames only;
+//! the image is made on the caller's thread when the frame arrives, so the worker never
+//! submits GPU work of its own.
 use crate::pending::{reply, Reply};
-use crate::service::DecodeService;
+use crate::service::{DecodeService, Decoded};
 use crate::{Codec, DecodeError, DecodeOptions, Frame, FrameReader, ImageInfo, Pending};
 use std::collections::HashMap;
 use std::future::Future;
@@ -24,7 +26,7 @@ enum Job {
     Decode {
         encoded: Arc<[u8]>,
         options: DecodeOptions,
-        reply: Reply<Image>,
+        reply: Reply<Decoded>,
     },
     Open {
         encoded: Arc<[u8]>,
@@ -33,8 +35,7 @@ enum Job {
     },
     Next {
         reader: ReaderId,
-        mipmaps: bool,
-        reply: Reply<Frame>,
+        reply: Reply<Decoded>,
     },
     Close(ReaderId),
 }
@@ -43,15 +44,18 @@ enum Job {
 #[derive(Clone)]
 pub(crate) struct Worker {
     sender: mpsc::Sender<Job>,
+    /// The service the thread reads with; the caller finishes the frames with it.
+    service: Arc<DecodeService>,
 }
 
 impl Worker {
     pub(crate) fn spawn(service: Arc<DecodeService>) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
+        let thread_service = service.clone();
         std::thread::Builder::new()
             .name("valo image decode".into())
-            .spawn(move || Thread::new(service).run(receiver))?;
-        Ok(Self { sender })
+            .spawn(move || Thread::new(thread_service).run(receiver))?;
+        Ok(Self { sender, service })
     }
 
     pub(crate) fn decode(
@@ -65,7 +69,11 @@ impl Worker {
             options,
             reply,
         });
-        Pending::from_future(awaiting)
+        let service = self.service.clone();
+        Pending::from_future(async move {
+            let decoded = awaiting.await?;
+            Ok(service.finish(decoded, options.mipmaps)?.image)
+        })
     }
 
     pub(crate) fn open(
@@ -80,12 +88,14 @@ impl Worker {
             reply,
         });
         let sender = self.sender.clone();
+        let service = self.service.clone();
         Pending::from_future(async move {
             let opened = awaiting.await?;
             let remote = RemoteReader {
                 id: opened.id,
                 mipmaps: options.mipmaps,
                 sender,
+                service,
             };
             Ok(Codec::remote(opened.info, options.mipmaps, remote))
         })
@@ -102,6 +112,7 @@ pub(crate) struct RemoteReader {
     id: ReaderId,
     mipmaps: bool,
     sender: mpsc::Sender<Job>,
+    service: Arc<DecodeService>,
 }
 
 impl RemoteReader {
@@ -109,10 +120,13 @@ impl RemoteReader {
         let (awaiting, reply) = reply();
         let _ = self.sender.send(Job::Next {
             reader: self.id,
-            mipmaps: self.mipmaps,
             reply,
         });
-        Pending::from_future(awaiting)
+        let (service, mipmaps) = (self.service.clone(), self.mipmaps);
+        Pending::from_future(async move {
+            let decoded = awaiting.await?;
+            service.finish(decoded, mipmaps)
+        })
     }
 }
 
@@ -153,7 +167,7 @@ impl Thread {
                 reply,
             } => {
                 if !reply.is_cancelled() {
-                    let _ = reply.send(block_on(self.service.decode_still(encoded, options)));
+                    let _ = reply.send(block_on(self.service.decode_still_frame(encoded, options)));
                 }
             }
             Job::Open {
@@ -165,13 +179,9 @@ impl Thread {
                     self.open(encoded, options, reply);
                 }
             }
-            Job::Next {
-                reader,
-                mipmaps,
-                reply,
-            } => {
+            Job::Next { reader, reply } => {
                 if !reply.is_cancelled() {
-                    let _ = reply.send(self.next_frame(reader, mipmaps));
+                    let _ = reply.send(self.next_frame(reader));
                 }
             }
             Job::Close(id) => {
@@ -199,9 +209,9 @@ impl Thread {
         }
     }
 
-    fn next_frame(&mut self, id: ReaderId, mipmaps: bool) -> Result<Frame, DecodeError> {
+    fn next_frame(&mut self, id: ReaderId) -> Result<Decoded, DecodeError> {
         let reader = self.readers.get_mut(&id).ok_or(DecodeError::Closed)?;
-        block_on(self.service.next_frame(reader.as_mut(), mipmaps))
+        block_on(self.service.read_frame(reader.as_mut()))
     }
 }
 

@@ -20,7 +20,7 @@ pub enum ClipOp {
 ///
 /// Draw and clip operations include the bounds and ordering metadata resolved
 /// by [`crate::DisplayListBuilder`] at record time.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Op {
     Save,
@@ -163,6 +163,11 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 ///
 /// Display lists are GPU-free, thread-safe, and nestable. Wrap a list in
 /// [`Arc`] to share or replay it without copying its commands.
+///
+/// Two lists are equal when they record the same commands. A list is equal to itself
+/// without a comparison, and a nested list is compared the same way, so a scene that
+/// embeds the pictures its last frame did, unchanged, compares in the time of its own
+/// few commands: what a host asks before drawing a scene again.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DisplayList {
@@ -185,7 +190,7 @@ pub struct DisplayList {
 }
 
 /// `GlyphPos` identifies and positions one glyph within a glyph run.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GlyphPos {
     /// `id` is the glyph identifier in the run's font.
@@ -210,6 +215,12 @@ pub struct BackdropGroup {
 
 fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+impl PartialEq for DisplayList {
+    fn eq(&self, other: &DisplayList) -> bool {
+        self.id == other.id || self.ops == other.ops
+    }
 }
 
 impl DisplayList {
@@ -280,4 +291,39 @@ fn serialize_font_uid<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_u64(font.uid().0)
+}
+
+#[cfg(test)]
+mod equality_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{DisplayListBuilder, Paint};
+
+    fn rects(count: u32) -> DisplayList {
+        let mut b = DisplayListBuilder::new();
+        let paint = Paint::default();
+        for i in 0..count {
+            b.draw_rect(Rect::new(0.0, i as f32 * 10.0, 5.0, 5.0), &paint);
+        }
+        b.build()
+    }
+
+    #[test]
+    fn lists_with_the_same_commands_are_equal_and_others_not() {
+        assert_eq!(rects(3), rects(3));
+        assert_ne!(rects(3), rects(4));
+    }
+
+    #[test]
+    fn a_scene_over_the_same_retained_picture_is_equal_by_identity() {
+        let picture = Arc::new(rects(3));
+        let scene = |picture: &Arc<DisplayList>| {
+            let mut b = DisplayListBuilder::new();
+            b.draw_display_list(picture);
+            b.build()
+        };
+        assert_eq!(scene(&picture), scene(&picture));
+        assert_ne!(scene(&picture), scene(&Arc::new(rects(4))));
+    }
 }

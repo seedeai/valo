@@ -1,11 +1,22 @@
-//! The decode step itself: choose a decoder, read frames, make images. Runs wherever the loader
-//! says — on the caller's thread or on a worker — and is the only place a frame becomes an image.
+//! The decode step itself: choose a decoder, read frames, make images. Reading runs wherever
+//! the loader says — on the caller's thread or on a worker — and this is the only place a
+//! frame becomes an image, which happens on the thread that asked: an upload is GPU work, and
+//! a second thread submitting GPU work races the first's surface, which wgpu refuses.
 use crate::{
     Declined, DecodeError, DecodeOptions, DecodedFrame, Decoder, Frame, FramePixels, FrameReader,
     ImageInfo, OpenError, OpenRequest,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use valo::{Image, ImageContext};
+
+/// A frame read but not yet made into an image: what a worker hands the thread that asked.
+pub(crate) struct Decoded {
+    pixels: FramePixels,
+    /// The size the reader promised, which the image must have.
+    expected: [u32; 2],
+    duration: Duration,
+}
 
 /// DecodeService owns the decoder list and the image context; it is shared, stateless, and
 /// `Send + Sync`, so one instance serves the caller's thread and a worker alike.
@@ -42,11 +53,18 @@ impl DecodeService {
         encoded: Arc<[u8]>,
         options: DecodeOptions,
     ) -> Result<Image, DecodeError> {
+        let decoded = self.decode_still_frame(encoded, options).await?;
+        Ok(self.finish(decoded, options.mipmaps)?.image)
+    }
+
+    /// `decode_still_frame` opens and reads the first frame, leaving the image to `finish`.
+    pub(crate) async fn decode_still_frame(
+        &self,
+        encoded: Arc<[u8]>,
+        options: DecodeOptions,
+    ) -> Result<Decoded, DecodeError> {
         let mut reader = self.open(encoded, options).await?;
-        Ok(self
-            .next_frame(reader.as_mut(), options.mipmaps)
-            .await?
-            .image)
+        self.read_frame(reader.as_mut()).await
     }
 
     /// `next_frame` reads one frame and turns it into an image of the size the reader promised.
@@ -55,8 +73,31 @@ impl DecodeService {
         reader: &mut dyn FrameReader,
         mipmaps: bool,
     ) -> Result<Frame, DecodeError> {
+        let decoded = self.read_frame(reader).await?;
+        self.finish(decoded, mipmaps)
+    }
+
+    /// `read_frame` reads one frame, wherever the reader lives.
+    pub(crate) async fn read_frame(
+        &self,
+        reader: &mut dyn FrameReader,
+    ) -> Result<Decoded, DecodeError> {
         let expected = reader.info().size;
         let DecodedFrame { pixels, duration } = reader.next_frame().await?;
+        Ok(Decoded {
+            pixels,
+            expected,
+            duration,
+        })
+    }
+
+    /// `finish` makes the image of a frame read, on the thread that asked for it.
+    pub(crate) fn finish(&self, decoded: Decoded, mipmaps: bool) -> Result<Frame, DecodeError> {
+        let Decoded {
+            pixels,
+            expected,
+            duration,
+        } = decoded;
         let image = self.make_image(pixels, mipmaps)?;
         if image.size() != expected {
             return Err(DecodeError::InvalidData(

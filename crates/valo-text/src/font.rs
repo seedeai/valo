@@ -122,6 +122,14 @@ impl std::fmt::Debug for Font {
     }
 }
 
+/// Two fonts are equal when they are the same face at the same instance, which is what
+/// their identifiers say; equal identifiers imply equal outlines and coordinates.
+impl PartialEq for Font {
+    fn eq(&self, other: &Font) -> bool {
+        self.uid == other.uid
+    }
+}
+
 impl Font {
     fn parse(
         family: &str,
@@ -517,7 +525,10 @@ impl FaceSet {
         attrs: FontAttrs,
         ch: char,
     ) -> bool {
-        matches!(self.resolve_covered_opt(families, attrs, ch), Some((_, true)))
+        matches!(
+            self.resolve_covered_opt(families, attrs, ch),
+            Some((_, true))
+        )
     }
 
     /// `is_empty` reports whether no fonts are registered.

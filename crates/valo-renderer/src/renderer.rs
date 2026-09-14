@@ -323,6 +323,7 @@ impl RendererCore {
         }
         self.timer.end_frame(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
+        self.host.after_submit();
         self.timer.after_submit();
     }
 
