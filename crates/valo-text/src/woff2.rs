@@ -7,9 +7,7 @@ use allsorts::font_data::FontData as AllsortsFontData;
 use allsorts::tables::{FontTableProvider, SfntVersion};
 
 pub(crate) fn to_sfnt(bytes: &[u8], face_index: u32) -> Option<Vec<u8>> {
-    let font = ReadScope::new(bytes)
-        .read::<AllsortsFontData<'_>>()
-        .ok()?;
+    let font = ReadScope::new(bytes).read::<AllsortsFontData<'_>>().ok()?;
     let provider = font.table_provider(face_index as usize).ok()?;
     let flavor = provider.sfnt_version();
     let tags = provider.table_tags()?;

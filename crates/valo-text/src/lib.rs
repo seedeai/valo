@@ -12,9 +12,9 @@ mod raster;
 mod sdf;
 mod shape;
 mod style;
-mod wrap;
 #[cfg(feature = "woff2")]
 mod woff2;
+mod wrap;
 
 #[cfg(feature = "woff2")]
 #[doc(hidden)]

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use skrifa::raw::FileRef;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 use skrifa::string::StringId;
 use skrifa::MetadataProvider;
 
@@ -53,7 +53,7 @@ impl Files {
 /// last `-`, because a variable face's file carries its default instance's name while
 /// the platform names the instance it matched (`.PingFangUITextSC-Default` for
 /// `.PingFangUITextSC-Regular`). `None` when no face is named like that.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn face_index(bytes: &[u8], postscript_name: &str) -> Option<u32> {
     let collection = match FileRef::new(bytes).ok()? {
         FileRef::Font(_) => return Some(0),
@@ -85,7 +85,7 @@ pub(crate) fn face_index(bytes: &[u8], postscript_name: &str) -> Option<u32> {
 }
 
 /// A PostScript name without its instance suffix: `PingFangSC-Regular` is `PingFangSC`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn family_stem(postscript_name: &str) -> &str {
     postscript_name
         .rsplit_once('-')

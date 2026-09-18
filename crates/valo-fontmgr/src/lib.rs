@@ -4,8 +4,9 @@
 //! family has, which face covers a character in a language, and which face is the
 //! platform's own user-interface font. Each platform answers through its font API
 //! (CoreText on Apple systems) or, where there is no API yet, a scan of its font
-//! directories; every answer is a [`Typeface`], the font file's bytes and the face's index
-//! in them, which any font parser reads. The crate carries no text stack of its own, so a
+//! directories, or the configuration the platform publishes instead of an API (Android);
+//! every answer is a [`Typeface`], the font file's bytes and the face's index in them,
+//! which any font parser reads. The crate carries no text stack of its own, so a
 //! host that only forwards fonts depends on it alone; `valo-system-fonts` turns a manager
 //! into valo's `FontSource`. On wasm the trait and types build with no backend, for a
 //! program whose host answers across a boundary.
@@ -13,6 +14,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod android;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod coretext;
 mod files;
@@ -20,6 +23,8 @@ mod files;
 mod scan;
 mod sfnt;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use android::Android;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use coretext::CoreText;
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,15 +219,19 @@ pub fn nearest(faces: Vec<Typeface>, style: Style) -> Option<Typeface> {
         .min_by_key(|face| face.style().distance(style))
 }
 
-/// `platform` is this platform's font manager: CoreText on macOS and iOS, a directory
-/// scan elsewhere.
+/// `platform` is this platform's font manager: CoreText on macOS and iOS, the font
+/// configuration on Android, a directory scan elsewhere.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn platform() -> Box<dyn FontManager> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         Box::new(CoreText::new())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(target_os = "android")]
+    {
+        Box::new(Android::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
     {
         Box::new(Scan::load())
     }

@@ -49,5 +49,8 @@ fn google_fonts_cjk_subset_woff2() -> Vec<u8> {
 fn google_fonts_text_subset_with_overlap_bitmap_unwraps() {
     let font = Font::from_bytes(google_fonts_cjk_subset_woff2())
         .expect("transformed glyf with overlapSimpleBitmap unwraps");
-    assert!(font.covers('你'), "the subset is the Noto Sans SC glyph for 你");
+    assert!(
+        font.covers('你'),
+        "the subset is the Noto Sans SC glyph for 你"
+    );
 }
