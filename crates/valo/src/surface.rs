@@ -8,8 +8,9 @@ use valo_renderer::{RenderStats, RenderTarget};
 /// looks at it. With `Opaque` the surface hides everything behind it, which is right for an
 /// ordinary window. With `Transparent` the pixels a frame leaves clear show what is behind
 /// the surface: use it for a window or canvas the host has made non-opaque, such as one
-/// with a blur view behind it. Blending costs the compositor a pass per frame, so leave it
-/// off otherwise.
+/// with a blur view behind it, or one that shows layers of its own beneath the surface.
+/// Blending costs the compositor a pass per frame, so leave it off otherwise; a host that
+/// needs it only some of the time switches with [`Surface::set_alpha`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SurfaceAlpha {
     /// The compositor ignores alpha; the surface hides everything behind it.
@@ -50,6 +51,10 @@ pub struct Surface {
     config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     alpha: SurfaceAlpha,
+    /// The backend and the alpha modes the surface offered, kept so that
+    /// [`set_alpha`](Self::set_alpha) chooses a mode as the constructor did.
+    backend: wgpu::Backend,
+    offered_alpha_modes: Vec<wgpu::CompositeAlphaMode>,
 }
 
 impl Surface {
@@ -188,8 +193,8 @@ impl Surface {
         options: SurfaceOptions,
     ) -> Self {
         let caps = surface.get_capabilities(adapter);
-        let alpha_mode =
-            alpha_mode_for(options.alpha, adapter.get_info().backend, &caps.alpha_modes);
+        let backend = adapter.get_info().backend;
+        let alpha_mode = alpha_mode_for(options.alpha, backend, &caps.alpha_modes);
         let format = caps
             .formats
             .iter()
@@ -223,12 +228,29 @@ impl Surface {
             config,
             device: device.clone(),
             alpha: alpha_in_effect(alpha_mode),
+            backend,
+            offered_alpha_modes: caps.alpha_modes,
         }
     }
 
     /// `alpha` returns the alpha treatment in effect, which is what was asked for unless
     /// the backend offers no way to honour it.
     pub fn alpha(&self) -> SurfaceAlpha {
+        self.alpha
+    }
+
+    /// `set_alpha` changes whether the compositor honours the surface's alpha channel, on
+    /// the same surface: it is reconfigured with the mode that gives `alpha`, as the
+    /// constructor would have chosen it, and nothing is made anew. On Metal that flips the
+    /// layer's opaque flag. Returns the treatment now in effect, as [`alpha`](Self::alpha)
+    /// does.
+    pub fn set_alpha(&mut self, alpha: SurfaceAlpha) -> SurfaceAlpha {
+        let mode = alpha_mode_for(alpha, self.backend, &self.offered_alpha_modes);
+        if mode != self.config.alpha_mode {
+            self.config.alpha_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+        self.alpha = alpha_in_effect(mode);
         self.alpha
     }
 
