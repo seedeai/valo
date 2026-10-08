@@ -8,9 +8,11 @@
 //! - [`HostBuffer`]: per-frame bump arena for transient uniforms and vertices.
 //!   A 3-frame ring of persistent buffers means warm frames create nothing —
 //!   the cost that matters most on wasm, where every create crosses into JS.
-//! - [`PipelineCache`]: grow-only map of pipeline variants (format × blend × kind).
+//! - [`PipelineCache`]: grow-only map of pipeline variants (format × blend × kind),
+//!   the blend one the blend unit runs ([`PipelineBlend`], of a [`Blend`]).
 
 mod contours;
+mod encoder;
 mod frame;
 mod glyphs;
 mod gpu_timer;
@@ -26,12 +28,16 @@ mod ramps;
 mod raster;
 mod renderer;
 mod report;
+mod shader_abi;
 
 pub use glyphs::TextTiers;
 pub use host_buffer::HostBuffer;
 pub use image_context::ImageContext;
 pub use images::{ImageDesc, ImageStore, IMAGE_FORMAT};
-pub use pipelines::{Frag, PipelineCache, PipelineKey, PipelineKind, DEPTH_FORMAT, SAMPLE_COUNT};
+pub use pipelines::{
+    AdvancedBlend, Blend, CompiledPipelines, Frag, PipelineBlend, PipelineCache, PipelineKey,
+    PipelineKind, DEPTH_FORMAT, SAMPLE_COUNT,
+};
 pub use pixels::{AlphaType, ImageError, PixelBuffer, PixelFormat, PixelLayout};
 pub use pool::TargetPool;
 pub use renderer::{RenderStats, RenderTarget, RendererCore};

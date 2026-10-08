@@ -331,7 +331,7 @@ fn blur_and_drop_shadow_filters_are_native() {
     );
     assert!(list.ops().iter().any(|op| matches!(
         op,
-        Op::SaveLayer { paint, .. } if paint.mask_blur.is_some()
+        Op::SaveLayer { paint, .. } if paint.image_filter.is_some()
     )));
 
     // feDropShadow: a blurred SrcIn-tinted copy under the content.
@@ -340,7 +340,7 @@ fn blur_and_drop_shadow_filters_are_native() {
     );
     assert!(list.ops().iter().any(|op| matches!(
         op,
-        Op::SaveLayer { paint, .. } if paint.mask_blur.is_some()
+        Op::SaveLayer { paint, .. } if paint.image_filter.is_some()
     )));
     assert!(list.ops().iter().any(|op| matches!(
         op,

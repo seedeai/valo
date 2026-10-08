@@ -1,55 +1,92 @@
-use std::collections::HashMap;
-
+use crate::frame::ContextAttachments;
 use crate::pipelines::{DEPTH_FORMAT, SAMPLE_COUNT};
 
 /// `TargetPool` reuses offscreen textures across frames.
 ///
-/// Layer, snapshot, filter, and raster-attachment targets are taken during
-/// planning, stay alive through GPU submission, and return at [`Self::end_frame`].
-/// Entries unused for several frames are dropped. Main-target MSAA color and
-/// depth scratch is keyed by size and kept.
+/// Layer, copy, filter, and attachment textures are taken during planning,
+/// stay alive through GPU submission, and return at [`Self::end_frame`], so
+/// every take this frame is a texture no other take shares. Entries unused for
+/// several frames are dropped. No multisample attachment carries a picture
+/// from one frame to the next: a target that keeps its pixels has them drawn
+/// back each frame instead.
 ///
 /// Views returned by `take_*` are cloned wgpu handles. Do not keep them past
 /// [`Self::end_frame`]: the pool may reuse or drop the underlying textures.
 pub struct TargetPool {
     device: wgpu::Device,
     frame: u64,
-    /// Available pooled entries, exact-size matched.
-    layers: Vec<Pooled<LayerTarget>>,
-    snapshots: Vec<Pooled<Snapshot>>,
-    filters: Vec<Pooled<FilterTarget>>,
-    raster_attachments: Vec<Pooled<RasterAttachments>>,
-    /// Taken this frame; reclaimed by `end_frame`.
-    taken_layers: Vec<Pooled<LayerTarget>>,
-    taken_snapshots: Vec<Pooled<Snapshot>>,
-    taken_filters: Vec<Pooled<FilterTarget>>,
-    taken_raster_attachments: Vec<Pooled<RasterAttachments>>,
-    main_scratch: HashMap<(u32, u32, wgpu::TextureFormat, bool), MainScratch>,
+    layers: Shelf<LayerTarget>,
+    copy_textures: Shelf<CopyTexture>,
+    filters: Shelf<FilterTarget>,
+    attachments: Shelf<Attachments>,
 }
-
-/// `FILTER_SIZE_BUCKET` is the size quantum, in pixels, for pooled filter targets.
-///
-/// Blur-chain sizes snap up to this so consecutive frames and the horizontal
-/// and vertical passes of one blur share textures.
-pub const FILTER_SIZE_BUCKET: u32 = 32;
 
 const EVICT_AFTER_FRAMES: u64 = 3;
 
-struct Pooled<T> {
+/// `PoolKey` is what a pooled texture is matched by: exactly its size and
+/// its format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PoolKey {
     size: [u32; 2],
     format: wgpu::TextureFormat,
-    /// Attachments carry [`wgpu::TextureUsages::TRANSIENT`] — tile-only on
-    /// hardware that supports it, so they cost no system memory.
-    transient: bool,
+}
+
+/// `Shelf` is one kind of pooled texture: the entries free to take, and the
+/// ones taken this frame, which [`Shelf::end_frame`] puts back.
+struct Shelf<T> {
+    free: Vec<Pooled<T>>,
+    taken: Vec<Pooled<T>>,
+}
+
+struct Pooled<T> {
+    key: PoolKey,
     last_used: u64,
     value: T,
 }
 
+impl<T: Clone> Shelf<T> {
+    fn new() -> Self {
+        Self {
+            free: Vec::new(),
+            taken: Vec::new(),
+        }
+    }
+
+    /// `take` is a free entry matching `key`, or a new one `create` makes,
+    /// held until the frame ends.
+    fn take(&mut self, key: PoolKey, frame: u64, create: impl FnOnce() -> T) -> T {
+        let mut entry = match self.free.iter().position(|entry| entry.key == key) {
+            Some(index) => self.free.swap_remove(index),
+            None => Pooled {
+                key,
+                last_used: frame,
+                value: create(),
+            },
+        };
+        entry.last_used = frame;
+        let value = entry.value.clone();
+        self.taken.push(entry);
+        value
+    }
+
+    /// `end_frame` puts this frame's takes back and drops the entries unused
+    /// since `cutoff`.
+    fn end_frame(&mut self, cutoff: u64) {
+        self.free.append(&mut self.taken);
+        self.free.retain(|entry| entry.last_used >= cutoff);
+    }
+
+    /// `keys` are every entry's key, free or taken.
+    fn keys(&self) -> impl Iterator<Item = &PoolKey> {
+        self.free.iter().chain(&self.taken).map(|entry| &entry.key)
+    }
+}
+
 /// `LayerTarget` is one offscreen layer's attachments.
 ///
-/// Content renders into `msaa` (4 samples) and resolves to `resolve`.
-/// `resolve_texture` is also the copy source when a snapshot is taken inside
-/// the layer.
+/// Content renders into `msaa` (4 samples, tile-only) and resolves to
+/// `resolve`. `resolve_texture` is also the copy source when a destination
+/// read or a backdrop inside the layer copies what it holds.
 #[derive(Clone)]
 pub struct LayerTarget {
     pub msaa: wgpu::TextureView,
@@ -58,24 +95,36 @@ pub struct LayerTarget {
     pub depth: wgpu::TextureView,
 }
 
-/// `Snapshot` is a copy of a destination region for advanced blends.
+/// `CopyTexture` is a texture the size of a target that the target is
+/// copied into when it is split: drawn back by its next pass, and read by a
+/// destination read or a backdrop.
 ///
 /// `view` is sampleable; `texture` is the copy destination.
 #[derive(Clone)]
-pub struct Snapshot {
+pub struct CopyTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
 
-/// `RasterAttachments` are the transient MSAA color and depth attachments
-/// for a raster-cache fill.
-///
-/// The resolve target is the cache's own persistent texture, so it is not
-/// pooled here. Both attachments are tile-only on hardware that supports it.
+/// `Attachments` are the tile-only MSAA color and depth attachments of a
+/// target whose resolve texture lives elsewhere: the main target's or a
+/// raster-cache fill's.
 #[derive(Clone)]
-pub struct RasterAttachments {
+pub struct Attachments {
     pub msaa: wgpu::TextureView,
     pub depth: wgpu::TextureView,
+}
+
+impl Attachments {
+    /// `resolving_into` is these attachments with their colour resolving
+    /// into `resolve`.
+    pub(crate) fn resolving_into(self, resolve: wgpu::TextureView) -> ContextAttachments {
+        ContextAttachments {
+            msaa: self.msaa,
+            depth: self.depth,
+            resolve,
+        }
+    }
 }
 
 /// `FilterTarget` is a single-sample color target for a gaussian filter pass.
@@ -87,250 +136,138 @@ pub struct FilterTarget {
     pub view: wgpu::TextureView,
 }
 
-/// `MainScratch` is the MSAA color and depth scratch for the frame's main target.
-///
-/// The caller owns the resolve texture; this pool only provides the 4-sample
-/// attachments around it.
-#[derive(Clone)]
-pub struct MainScratch {
-    pub msaa: wgpu::TextureView,
-    pub depth: wgpu::TextureView,
-}
-
 impl TargetPool {
     /// `new` creates an empty pool for `device`.
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             device: device.clone(),
             frame: 0,
-            layers: Vec::new(),
-            snapshots: Vec::new(),
-            filters: Vec::new(),
-            raster_attachments: Vec::new(),
-            taken_layers: Vec::new(),
-            taken_snapshots: Vec::new(),
-            taken_filters: Vec::new(),
-            taken_raster_attachments: Vec::new(),
-            main_scratch: HashMap::new(),
+            layers: Shelf::new(),
+            copy_textures: Shelf::new(),
+            filters: Shelf::new(),
+            attachments: Shelf::new(),
         }
     }
 
-    /// `take_layer` returns a pooled offscreen layer of `size` and `format`.
-    ///
-    /// `transient` is true when every segment of the target discards at pass
-    /// end. The returned views must not be used after [`Self::end_frame`].
-    pub fn take_layer(
-        &mut self,
-        size: [u32; 2],
-        format: wgpu::TextureFormat,
-        transient: bool,
-    ) -> LayerTarget {
-        let entry = take_matching(&mut self.layers, size, format, transient)
-            .unwrap_or_else(|| self.create_layer(size, format, transient));
-        let value = entry.value.clone();
-        self.taken_layers.push(refreshed(entry, self.frame));
-        value
-    }
-
-    /// `take_raster_attachments` returns pooled MSAA color and depth for a
-    /// raster-cache fill of `size` and `format`.
-    ///
-    /// The resolve target is the cache's own persistent texture, so only the
-    /// transient attachments pool here. Exact-size match. The returned views
-    /// must not be used after [`Self::end_frame`].
-    pub fn take_raster_attachments(
-        &mut self,
-        size: [u32; 2],
-        format: wgpu::TextureFormat,
-    ) -> RasterAttachments {
-        let entry = take_matching(&mut self.raster_attachments, size, format, true)
-            .unwrap_or_else(|| self.create_raster_attachments(size, format));
-        let value = entry.value.clone();
-        self.taken_raster_attachments
-            .push(refreshed(entry, self.frame));
-        value
-    }
-
-    /// `take_snapshot` returns a pooled destination copy of `size` and `format`.
+    /// `take_layer` returns a pooled offscreen layer of `size` and `format`,
+    /// its multisample attachments tile-only: every pass discards them.
     ///
     /// The returned views must not be used after [`Self::end_frame`].
-    pub fn take_snapshot(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> Snapshot {
-        let entry = take_matching(&mut self.snapshots, size, format, false)
-            .unwrap_or_else(|| self.create_snapshot(size, format));
-        let value = entry.value.clone();
-        self.taken_snapshots.push(refreshed(entry, self.frame));
-        value
+    pub fn take_layer(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> LayerTarget {
+        let key = PoolKey { size, format };
+        let device = &self.device;
+        self.layers
+            .take(key, self.frame, || new_layer(device, size, format))
+    }
+
+    /// `take_attachments` returns pooled tile-only MSAA color and depth of
+    /// `size` and `format`, for a target whose resolve texture lives
+    /// elsewhere: the main target's and a raster-cache fill's. Every pass
+    /// discards them. They belong to the caller alone until
+    /// [`Self::end_frame`], so two targets open at once never share samples.
+    /// Exact-size match.
+    pub fn take_attachments(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> Attachments {
+        let key = PoolKey { size, format };
+        let device = &self.device;
+        self.attachments
+            .take(key, self.frame, || new_attachments(device, size, format))
+    }
+
+    /// `take_copy_texture` returns a pooled copy texture of `size` and
+    /// `format`.
+    ///
+    /// The returned views must not be used after [`Self::end_frame`].
+    pub fn take_copy_texture(
+        &mut self,
+        size: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) -> CopyTexture {
+        let key = PoolKey { size, format };
+        let device = &self.device;
+        self.copy_textures
+            .take(key, self.frame, || new_copy_texture(device, size, format))
     }
 
     /// `take_filter` returns a pooled single-sample filter target of `size` and `format`.
     ///
-    /// `size` should already be snapped to `FILTER_SIZE_BUCKET`. The returned
-    /// view must not be used after [`Self::end_frame`].
+    /// Exact-size match: a filter stage's texture is exactly what it holds.
+    /// The returned view must not be used after [`Self::end_frame`].
     pub fn take_filter(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> FilterTarget {
-        let entry = take_matching(&mut self.filters, size, format, false)
-            .unwrap_or_else(|| self.create_filter(size, format));
-        let value = entry.value.clone();
-        self.taken_filters.push(refreshed(entry, self.frame));
-        value
-    }
-
-    /// `main_scratch` returns MSAA color and depth for the frame's main target.
-    ///
-    /// `transient` is true when every segment discards at pass end (a
-    /// single-segment frame). The swap to a persistent pair on the first
-    /// resume also comes through here. Scratch is keyed by size and kept.
-    pub fn main_scratch(
-        &mut self,
-        size: [u32; 2],
-        format: wgpu::TextureFormat,
-        transient: bool,
-    ) -> MainScratch {
-        if self.main_scratch.len() > 8 {
-            self.main_scratch.clear(); // a handful of live sizes; reset is fine
-        }
-        let device = self.device.clone();
-        self.main_scratch
-            .entry((size[0], size[1], format, transient))
-            .or_insert_with(|| MainScratch {
-                msaa: attachment_texture(&device, size, format, SAMPLE_COUNT, false, transient)
-                    .create_view(&Default::default()),
-                depth: attachment_texture(
-                    &device,
-                    size,
-                    DEPTH_FORMAT,
-                    SAMPLE_COUNT,
-                    false,
-                    transient,
-                )
+        let key = PoolKey { size, format };
+        let device = &self.device;
+        self.filters.take(key, self.frame, || FilterTarget {
+            view: attachment_texture(device, size, format, 1, true, false)
                 .create_view(&Default::default()),
-            })
-            .clone()
+        })
     }
 
     /// `end_frame` returns this frame's takes to the pool and drops idle entries.
     pub fn end_frame(&mut self) {
         self.frame += 1;
         let cutoff = self.frame.saturating_sub(EVICT_AFTER_FRAMES);
-        self.layers.append(&mut self.taken_layers);
-        self.snapshots.append(&mut self.taken_snapshots);
-        self.filters.append(&mut self.taken_filters);
-        self.raster_attachments
-            .append(&mut self.taken_raster_attachments);
-        self.layers.retain(|e| e.last_used >= cutoff);
-        self.snapshots.retain(|e| e.last_used >= cutoff);
-        self.filters.retain(|e| e.last_used >= cutoff);
-        self.raster_attachments.retain(|e| e.last_used >= cutoff);
-    }
-
-    fn create_layer(
-        &self,
-        size: [u32; 2],
-        format: wgpu::TextureFormat,
-        transient: bool,
-    ) -> Pooled<LayerTarget> {
-        let msaa = attachment_texture(&self.device, size, format, SAMPLE_COUNT, false, transient);
-        let resolve = attachment_texture(&self.device, size, format, 1, true, false);
-        let depth = attachment_texture(
-            &self.device,
-            size,
-            DEPTH_FORMAT,
-            SAMPLE_COUNT,
-            false,
-            transient,
-        );
-        Pooled {
-            size,
-            format,
-            transient,
-            last_used: self.frame,
-            value: LayerTarget {
-                msaa: msaa.create_view(&Default::default()),
-                resolve: resolve.create_view(&Default::default()),
-                resolve_texture: resolve,
-                depth: depth.create_view(&Default::default()),
-            },
-        }
-    }
-
-    fn create_raster_attachments(
-        &self,
-        size: [u32; 2],
-        format: wgpu::TextureFormat,
-    ) -> Pooled<RasterAttachments> {
-        let msaa = attachment_texture(&self.device, size, format, SAMPLE_COUNT, false, true);
-        let depth = attachment_texture(&self.device, size, DEPTH_FORMAT, SAMPLE_COUNT, false, true);
-        Pooled {
-            size,
-            format,
-            transient: true,
-            last_used: self.frame,
-            value: RasterAttachments {
-                msaa: msaa.create_view(&Default::default()),
-                depth: depth.create_view(&Default::default()),
-            },
-        }
-    }
-
-    fn create_filter(&self, size: [u32; 2], format: wgpu::TextureFormat) -> Pooled<FilterTarget> {
-        let texture = attachment_texture(&self.device, size, format, 1, true, false);
-        Pooled {
-            size,
-            format,
-            transient: false,
-            last_used: self.frame,
-            value: FilterTarget {
-                view: texture.create_view(&Default::default()),
-            },
-        }
-    }
-
-    fn create_snapshot(&self, size: [u32; 2], format: wgpu::TextureFormat) -> Pooled<Snapshot> {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("valo.snapshot"),
-            size: wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        Pooled {
-            size,
-            format,
-            transient: false,
-            last_used: self.frame,
-            value: Snapshot {
-                view: texture.create_view(&Default::default()),
-                texture,
-            },
-        }
+        self.layers.end_frame(cutoff);
+        self.copy_textures.end_frame(cutoff);
+        self.filters.end_frame(cutoff);
+        self.attachments.end_frame(cutoff);
     }
 }
 
-fn take_matching<T>(
-    pool: &mut Vec<Pooled<T>>,
+/// `new_layer` creates a layer's tile-only 4-sample colour and depth and its
+/// sampleable resolve.
+fn new_layer(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> LayerTarget {
+    let msaa = attachment_texture(device, size, format, SAMPLE_COUNT, false, true);
+    let resolve = attachment_texture(device, size, format, 1, true, false);
+    let depth = attachment_texture(device, size, DEPTH_FORMAT, SAMPLE_COUNT, false, true);
+    LayerTarget {
+        msaa: msaa.create_view(&Default::default()),
+        resolve: resolve.create_view(&Default::default()),
+        resolve_texture: resolve,
+        depth: depth.create_view(&Default::default()),
+    }
+}
+
+/// `new_attachments` creates a tile-only 4-sample color and depth pair.
+fn new_attachments(
+    device: &wgpu::Device,
     size: [u32; 2],
     format: wgpu::TextureFormat,
-    transient: bool,
-) -> Option<Pooled<T>> {
-    let idx = pool
-        .iter()
-        .position(|e| e.size == size && e.format == format && e.transient == transient)?;
-    Some(pool.swap_remove(idx))
+) -> Attachments {
+    let msaa = attachment_texture(device, size, format, SAMPLE_COUNT, false, true);
+    let depth = attachment_texture(device, size, DEPTH_FORMAT, SAMPLE_COUNT, false, true);
+    Attachments {
+        msaa: msaa.create_view(&Default::default()),
+        depth: depth.create_view(&Default::default()),
+    }
 }
 
-fn refreshed<T>(mut entry: Pooled<T>, frame: u64) -> Pooled<T> {
-    entry.last_used = frame;
-    entry
+/// `new_copy_texture` creates a sampleable texture regions are copied into.
+fn new_copy_texture(
+    device: &wgpu::Device,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> CopyTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("valo.copy"),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    CopyTexture {
+        view: texture.create_view(&Default::default()),
+        texture,
+    }
 }
 
 /// A render-attachment texture; `sampleable + copyable` adds the usages a
-/// layer's resolve target needs (composited from, snapshotted from).
+/// layer's resolve target needs (composited from, copied from).
 fn attachment_texture(
     device: &wgpu::Device,
     size: [u32; 2],
@@ -347,7 +284,7 @@ fn attachment_texture(
         // Tile-only where hardware supports it (Apple: MTLStorageMode
         // Memoryless — zero bytes of system memory); the web backend
         // strips the bit, other backends treat it as a hint. Requires
-        // StoreOp::Discard, which single-segment targets already use.
+        // StoreOp::Discard, which every pass uses.
         debug_assert!(!sampleable, "transient attachments cannot be sampled");
         usage |= wgpu::TextureUsages::TRANSIENT_ATTACHMENT;
     }
@@ -368,41 +305,28 @@ fn attachment_texture(
 }
 
 impl TargetPool {
-    /// Pooled + taken targets and the persistent main scratch. Bytes are
+    /// Pooled + taken targets and the main target's attachments. Bytes are
     /// descriptor estimates: MSAA attachments cost samples × bpp.
     pub(crate) fn report(&self) -> crate::PoolReport {
-        // 4-sample color + depth (16 + 16) plus a 1-sample resolve;
-        // transient attachments are tile-only, so only the resolve counts.
-        const LAYER_BPP: u64 = 36;
-        const LAYER_TRANSIENT_BPP: u64 = 4;
-        const SCRATCH_BPP: u64 = 32; // caller owns the resolve
-        const FLAT_BPP: u64 = 4; // snapshots + filter targets
+        // A layer's 4-sample colour and depth are tile-only, so only its
+        // 1-sample resolve counts.
+        const LAYER_BPP: u64 = 4;
+        const FLAT_BPP: u64 = 4; // copy textures + filter targets
+                                 // Attachments carry `TRANSIENT_ATTACHMENT`: tile-only on hardware
+                                 // that supports it, they exist as objects but occupy no memory.
+        const ATTACHMENTS_BPP: u64 = 0;
         let mut count = 0u32;
         let mut bytes = 0u64;
-        let mut add = |size: [u32; 2], bpp: u64| {
+        let mut add = |key: &PoolKey, bpp: u64| {
             count += 1;
-            bytes += size[0] as u64 * size[1] as u64 * bpp;
+            bytes += key.size[0] as u64 * key.size[1] as u64 * bpp;
         };
-        for t in self.layers.iter().chain(&self.taken_layers) {
-            add(
-                t.size,
-                if t.transient {
-                    LAYER_TRANSIENT_BPP
-                } else {
-                    LAYER_BPP
-                },
-            );
-        }
-        for t in self.snapshots.iter().chain(&self.taken_snapshots) {
-            add(t.size, FLAT_BPP);
-        }
-        for t in self.filters.iter().chain(&self.taken_filters) {
-            add(t.size, FLAT_BPP);
-        }
-        for &(w, h, _, transient) in self.main_scratch.keys() {
-            // Transient pairs exist as objects but occupy no memory.
-            add([w, h], if transient { 0 } else { SCRATCH_BPP });
-        }
+        self.layers.keys().for_each(|key| add(key, LAYER_BPP));
+        self.copy_textures.keys().for_each(|key| add(key, FLAT_BPP));
+        self.filters.keys().for_each(|key| add(key, FLAT_BPP));
+        self.attachments
+            .keys()
+            .for_each(|key| add(key, ATTACHMENTS_BPP));
         crate::PoolReport { count, bytes }
     }
 }

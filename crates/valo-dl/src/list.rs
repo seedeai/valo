@@ -3,7 +3,43 @@ use std::sync::Arc;
 
 use valo_geometry::{FillRule, Matrix, Path, Rect};
 
-use crate::{Image, ImageFilter, Paint, Sampling};
+use crate::{Bounds, Image, ImageFilter, Paint, Sampling};
+
+/// `Backdrop` filters the sampled scene before a save layer's children paint.
+///
+/// Compose image filters to control the order of backdrop effects. The layer's
+/// paint separately controls how the filtered backdrop and children composite.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Backdrop {
+    /// `filter` transforms the sampled scene in local coordinates.
+    pub filter: ImageFilter,
+    /// `shared_key` lets tiles reuse the first matching filtered snapshot,
+    /// which sees the scene as of the first tile. Use one key only for tiles
+    /// over the same background with the same filter.
+    pub shared_key: Option<u64>,
+}
+
+impl Backdrop {
+    /// `new` filters the backdrop with `filter` before foreground content paints.
+    pub fn new(filter: ImageFilter) -> Self {
+        Self {
+            filter,
+            shared_key: None,
+        }
+    }
+
+    /// `blur` creates an isotropic Gaussian backdrop blur in local units.
+    pub fn blur(sigma: f32) -> Self {
+        Self::new(ImageFilter::blur(sigma, sigma))
+    }
+
+    /// `shared` marks this backdrop as one tile of a keyed group.
+    pub fn shared(mut self, key: u64) -> Self {
+        self.shared_key = Some(key);
+        self
+    }
+}
 
 /// `ClipOp` controls how a clip shape changes the current clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -19,14 +55,17 @@ pub enum ClipOp {
 /// `Op` is one recorded display-list command.
 ///
 /// Draw and clip operations include the bounds and ordering metadata resolved
-/// by [`crate::DisplayListBuilder`] at record time.
+/// by [`crate::DisplayListBuilder`] at record time. A draw's `bounds` is where
+/// it may show, list-root space, cropped by the clip: the rect replay culls it
+/// by, [`Rect::EVERYTHING`] for a draw that fills a list with no clip.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Op {
     Save,
-    /// Open an offscreen layer scope, closed by the matching `Restore`. All
-    /// oracle fields are backpatched when the scope closes — still record
-    /// time; replay reads them, never counts.
+    /// Open an offscreen layer scope, closed by the matching `Restore`. The
+    /// recorder works out every fact about the layer once and records it
+    /// here, the ones its children decide backpatched when the scope closes —
+    /// still record time; replay reads them, never works them out again.
     SaveLayer {
         paint: Paint,
         /// Set = this layer is a MASK: its composite converts
@@ -34,9 +73,20 @@ pub enum Op {
         /// enclosing layer by it (DstIn over the whole enclosing extent, so
         /// content outside the mask's ink disappears).
         mask_composite: Option<MaskKind>,
-        /// Children's union bounds ∩ clip ∩ hint, list-root space — the
-        /// layer texture's size and the composite quad's rect.
-        scope_bounds: Rect,
+        /// The layer's content: the union of its children's bounds,
+        /// list-root space, cropped by the bounds hint and by the clips made
+        /// inside the layer but not by the clips around it, which a filter
+        /// on the layer reads past (Flutter's layer bounds). Never padded for
+        /// the layer's own filter, nor flooded: the renderer sizes the
+        /// layer's texture from it, the clip and the paint. Unbounded when a
+        /// child fills a clip the layer does not crop (Flutter's
+        /// `content_is_unbounded`).
+        scope_bounds: Bounds,
+        /// The clip where the layer opens, cropped by the bounds hint,
+        /// list-root space: unbounded when there is neither, empty when the
+        /// hint misses the clip. Bounds the layer's texture together with
+        /// the target.
+        clip_bounds: Bounds,
         /// Slot count when the scope opened. Children continue the SAME
         /// depth line as the parent (Impeller's global numbering,
         /// `Canvas::current_depth_`); the layer's own pass rebases by
@@ -47,21 +97,30 @@ pub enum Op {
         /// The composite draw's slot — next on the same line, after the
         /// children's span (so the span is composite_slot - base_slot - 1).
         composite_slot: u32,
-        /// Alpha-linear + pairwise-disjoint children and a plain-alpha
-        /// composite: replay may skip the texture entirely and let the
-        /// alpha ride each child at its own slot (Impeller's opacity
+        /// The composite paints the layer's whole clip whatever its children
+        /// draw: a destructive blend changes the parent where the layer is
+        /// transparent, a filter that colours transparent pixels colours
+        /// them everywhere, and a backdrop layer opens full of the filtered
+        /// parent (Flutter's `content_is_unbounded`). The layer's texture
+        /// then covers its clip.
+        floods_clip: bool,
+        /// An enclosing group's alpha can ride the composite instead of a
+        /// texture of the group: the paint blends `SrcOver` with no colour
+        /// or image filter to take the alpha in before it filters.
+        takes_group_opacity: bool,
+        /// The layer's own alpha can ride its children instead: they take a
+        /// group alpha and are pairwise disjoint, and the composite is
+        /// nothing but that alpha (`takes_group_opacity`), with no backdrop
+        /// to seed and no bounds hint to crop by. Replay may then skip the
+        /// texture and draw each child at its own slot (Impeller's opacity
         /// peephole: elision changes nothing about depth).
         can_elide: bool,
         /// Set = the layer opens with the filtered scene already painted
         /// beneath it. Filter parameters are in local coordinates. Children
         /// paint afterward, and the composite applies group alpha to the
-        /// filtered backdrop and children as one image —
-        /// Flutter's `saveLayer(bounds, paint, backdrop)`. A backdrop layer
-        /// never elides: the seed needs a texture.
-        backdrop_filter: Option<ImageFilter>,
-        /// Tiles sharing one key reuse the FIRST tile's filtered snapshot (and see the
-        /// scene as of that tile). Meaningful only with `backdrop_filter`.
-        backdrop_key: Option<u64>,
+        /// filtered backdrop and children as one image — Flutter's
+        /// `saveLayer(bounds, paint, backdrop)`.
+        backdrop: Option<Backdrop>,
     },
     Restore,
     /// Appends to the current transform (canvas semantics: applies to
@@ -77,6 +136,9 @@ pub enum Op {
         path: Arc<Path>,
         fill_rule: FillRule,
         paint: Paint,
+        /// The path's ink in local coordinates, stroke included and before
+        /// any effect: what a layer for the paint's effects has to hold.
+        content_bounds: Rect,
         bounds: Rect,
         slot: u32,
     },
@@ -131,6 +193,9 @@ pub enum Op {
         /// mask glyphs (color glyphs keep their palette, alpha only).
         paint: Paint,
         glyphs: Arc<Vec<GlyphPos>>,
+        /// The run's ink in local coordinates, stroke included and before
+        /// any effect: what a layer for the paint's effects has to hold.
+        content_bounds: Rect,
         bounds: Rect,
         slot: u32,
     },
@@ -173,8 +238,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct DisplayList {
     id: u64,
     pub(crate) ops: Vec<Op>,
-    /// Union of all draw bounds, list-root space. `None` = draws nothing.
-    pub(crate) bounds: Option<Rect>,
+    /// Union of all draw bounds, list-root space.
+    pub(crate) bounds: Bounds,
     /// Draw commands in this list, nested lists included.
     pub(crate) draw_count: u32,
     /// Depth slots consumed when replayed (draws + clip-scope restores),
@@ -226,16 +291,101 @@ impl PartialEq for DisplayList {
     }
 }
 
+/// `Recording` is what a builder resolved about its ops while recording
+/// them, handed to the list it builds; see [`DisplayList`]'s fields.
+pub(crate) struct Recording {
+    pub bounds: Bounds,
+    pub depth_slots: u32,
+    pub supports_opacity: bool,
+}
+
+/// `Tally` is what a list's finished ops add up to, counted in one pass
+/// when the list is built: its draws, its backdrop reads and its shared
+/// backdrop groups (Impeller collects backdrop groups in a pass of its own,
+/// `FirstPassDispatcher::saveLayer`).
+#[derive(Default)]
+struct Tally {
+    draw_count: u32,
+    backdrop_reads: u32,
+    backdrop_groups: Vec<BackdropGroup>,
+}
+
+impl Tally {
+    fn of(ops: &[Op]) -> Self {
+        let mut tally = Self::default();
+        for op in ops {
+            tally.add(op);
+        }
+        tally
+    }
+
+    fn add(&mut self, op: &Op) {
+        match op {
+            Op::SaveLayer {
+                clip_bounds,
+                backdrop,
+                ..
+            } => {
+                self.draw_count += 1; // the composite
+                if let Some(backdrop) = backdrop {
+                    self.backdrop_reads += 1;
+                    self.join_backdrop_group(backdrop, clip_bounds);
+                }
+            }
+            Op::DrawDisplayList { list, .. } => {
+                self.draw_count += list.draw_count;
+                self.backdrop_reads += list.backdrop_reads;
+            }
+            Op::DrawRect { .. }
+            | Op::DrawPath { .. }
+            | Op::RRectBlur { .. }
+            | Op::DrawImage { .. }
+            | Op::GlyphRun { .. } => self.draw_count += 1,
+            Op::Save | Op::Restore | Op::Transform(_) | Op::ClipPath { .. } => {}
+        }
+    }
+
+    /// `join_backdrop_group` adds a keyed backdrop layer, whose clip is
+    /// `region`, to its group. An unclipped layer's region is every rect: a
+    /// group's union is a rect the planner cuts to its target.
+    fn join_backdrop_group(&mut self, backdrop: &Backdrop, region: &Bounds) {
+        let Some(key) = backdrop.shared_key else {
+            return;
+        };
+        let region = match region {
+            // Clipped away: the layer shows nowhere, so nothing reads its glass.
+            Bounds::Empty => return,
+            Bounds::Bounded(rect) => *rect,
+            Bounds::Unbounded => Rect::EVERYTHING,
+        };
+        match self.backdrop_groups.iter_mut().find(|g| g.key == key) {
+            Some(group) => {
+                group.union_bounds = group.union_bounds.union(&region);
+                if group.filter.as_ref() != Some(&backdrop.filter) {
+                    group.filter = None; // Different filters cannot share one snapshot.
+                }
+            }
+            None => self.backdrop_groups.push(BackdropGroup {
+                key,
+                union_bounds: region,
+                filter: Some(backdrop.filter.clone()),
+            }),
+        }
+    }
+}
+
 impl DisplayList {
-    pub(crate) fn new(
-        ops: Vec<Op>,
-        bounds: Option<Rect>,
-        draw_count: u32,
-        depth_slots: u32,
-        backdrop_groups: Vec<BackdropGroup>,
-        backdrop_reads: u32,
-        supports_opacity: bool,
-    ) -> Self {
+    pub(crate) fn new(ops: Vec<Op>, recording: Recording) -> Self {
+        let Recording {
+            bounds,
+            depth_slots,
+            supports_opacity,
+        } = recording;
+        let Tally {
+            draw_count,
+            backdrop_reads,
+            backdrop_groups,
+        } = Tally::of(&ops);
         Self {
             id: next_id(),
             ops,
@@ -261,10 +411,10 @@ impl DisplayList {
         &self.ops
     }
 
-    /// `bounds` returns the union of visible draw bounds in list coordinates.
-    ///
-    /// It returns `None` when the list draws nothing.
-    pub fn bounds(&self) -> Option<Rect> {
+    /// `bounds` returns where the list's draws may show, in list
+    /// coordinates: nowhere, inside a rectangle, or, when a draw fills a clip
+    /// the list does not make, anywhere.
+    pub fn bounds(&self) -> Bounds {
         self.bounds
     }
 

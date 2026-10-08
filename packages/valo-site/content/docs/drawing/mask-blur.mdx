@@ -6,9 +6,12 @@ icon: Droplet
 
 Mask blur is a Gaussian on the **coverage mask**, not on the pixels after
 the draw. Solid colours use a closed-form rrect blur (one quad). Shader
-paints go through an effect layer.
+paints and images blur a white mask of their shape in an effect layer, then
+fill it with their own colours, so a gradient or an image stays sharp inside
+the soft edge.
 
-Sigma is in local units and follows the draw's transform.
+Sigma is in local units and follows the draw's transform. A save layer's
+paint takes no mask blur: blur a layer with an image filter.
 
 ```rust
 paint.mask_blur = Some(MaskBlur::outer(12.0));

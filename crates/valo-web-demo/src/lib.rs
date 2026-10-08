@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use valo::{Color, Context, DisplayList, DisplayListBuilder, FontCollection, Hud, Point, Surface};
+use valo::{
+    Bounds, Color, Context, DisplayList, DisplayListBuilder, FontCollection, Hud, Point, Surface,
+};
 use valo_harness::interactive::Camera;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -47,7 +49,7 @@ pub async fn start() -> Result<(), JsValue> {
         offset: Point::ZERO,
         zoom: 1.0,
     };
-    if let Some(world) = board.bounds() {
+    if let Bounds::Bounded(world) = board.bounds() {
         camera.fit(world, [size[0] as f32, size[1] as f32]);
     }
 

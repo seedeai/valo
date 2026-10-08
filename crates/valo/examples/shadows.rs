@@ -7,7 +7,9 @@
 //!   filter passes; why a Flutter BoxShadow is one draw.
 //! - `mask_blur` on anything else (paths, gradients, images) renders the
 //!   draw sharp into an implicit layer, blurs it at scale (σ>4 downsamples
-//!   first), and composites — watch `filter passes` in the stats.
+//!   first), and composites — watch `filter passes` in the stats. A
+//!   gradient or an image blurs a white mask of its shape instead, which it
+//!   then fills, so its colours stay sharp inside the soft edge.
 //!
 //! What to look at:
 //! - TOP: rect shadows at σ 2/6/12/24 — spread grows, cost stays one quad.

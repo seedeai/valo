@@ -2036,8 +2036,10 @@ fn m5_shadows_golden() {
     );
 
     // 6 analytic quads cost NO layers or filters; the 2 general draws cost
-    // one implicit layer + a separable chain each (σ>4 adds a downsample).
-    assert_eq!(stats.layers_rendered, 2);
+    // one implicit layer + a separable chain each (σ>4 adds a downsample),
+    // and the gradient's blurred mask is filled in a subpass of its own
+    // (`CreateMaskBlur`'s blend).
+    assert_eq!(stats.layers_rendered, 3);
     assert_eq!(stats.filter_passes, 6);
     assert_eq!(stats.snapshots, 0, "mask blur never reads the target");
     assert_eq!(stats.backdrops, 0);
@@ -2108,8 +2110,8 @@ fn m5_backdrop_golden() {
     assert_eq!(stats.shared_backdrops, 1);
     assert_eq!(stats.snapshots, 2, "one region copy per pass break");
     assert_eq!(
-        stats.filter_passes, 8,
-        "both σ>4 chains halve ≤2× per pass: 2 downsamples + H + V each"
+        stats.filter_passes, 6,
+        "Impeller's blur per chain: one downsample, the vertical pass, the horizontal"
     );
     assert_eq!(stats.clips, 3);
 
@@ -2159,7 +2161,10 @@ fn m5_styles_scene() -> valo::DisplayList {
         &Paint::from_color(Color::rgb(0.95, 0.96, 0.99)),
     );
 
-    // Styled general paths: blur chain + one combine pass each.
+    // Styled general paths: a blur chain each. The star's outer style clips
+    // its blur to outside the star; the gradient blurs a white mask, its
+    // solid style puts the sharp mask under the blur, and the gradient fills
+    // the result.
     let star = {
         let mut p = PathBuilder::new();
         for i in 0..5 {
@@ -2210,10 +2215,13 @@ fn m5_styles_golden() {
         &offscreen.target(Some(Color::rgb(0.85, 0.86, 0.9))),
     );
 
-    // 6 analytic quads free; the 2 styled general draws each cost a blur
-    // chain (downsample + H + V at σ>4) plus ONE style-combine pass.
-    assert_eq!(stats.layers_rendered, 2);
-    assert_eq!(stats.filter_passes, 8);
+    // 6 analytic quads free; the 2 styled general draws each cost a layer
+    // and a blur chain (downsample + H + V at σ>4). The star's outer style
+    // clips its composite to outside the star, with no pass of its own; the
+    // gradient's solid style draws its sharp mask and the blur over it in
+    // the subpass that fills the mask with the gradient.
+    assert_eq!(stats.layers_rendered, 3);
+    assert_eq!(stats.filter_passes, 6);
     assert_eq!(stats.snapshots, 0);
 
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
@@ -3522,7 +3530,7 @@ fn blend_filter_cpu_and_image_gpu_paths_agree() {
         );
         builder.draw_rect(
             Rect::new(x, 1.0, 1.0, 1.0),
-            &Paint::from_color(filter.folded_into(destination).unwrap()),
+            &Paint::from_color(filter.folded_into(destination)),
         );
         builder.draw_rect(
             Rect::new(x, 2.0, 1.0, 1.0),
@@ -3572,12 +3580,82 @@ fn blend_filter_cpu_and_image_gpu_paths_agree() {
     }
 }
 
+/// A pattern's colour filter bakes into a cached copy of its image with a
+/// pass of its own, which nothing the target has drawn so far reads: the bake
+/// runs before the target's segment and does not split it. The cold frame
+/// (one bake) and the warm one (none) draw the same pixels in one segment.
 #[test]
-fn matrix_filter_cpu_and_image_gpu_paths_agree() {
+fn a_pattern_colour_filter_bakes_without_splitting_its_target() {
     use valo::ImageDesc;
 
     let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP matrix_filter_cpu_and_image_gpu_paths_agree: no GPU adapter");
+        eprintln!("SKIP a_pattern_colour_filter_bakes_without_splitting_its_target");
+        return;
+    };
+    let mut context = Context::new(device.clone(), queue.clone());
+    let image = context.upload_image(
+        ImageDesc {
+            size: [1, 1],
+            premultiplied: false,
+            mips: false,
+        },
+        &[200, 40, 40, 255],
+    );
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(
+        Rect::new(0.0, 0.0, 2.0, 2.0),
+        &Paint::from_color(Color::rgb(0.0, 0.0, 1.0)),
+    );
+    builder.draw_rect(
+        Rect::new(2.0, 0.0, 2.0, 2.0),
+        &Paint {
+            color: Color::WHITE,
+            shader: Some(valo::Shader::Image {
+                image,
+                sampling: Default::default(),
+                local: valo::Matrix::IDENTITY,
+            }),
+            color_filter: Some(valo::ColorFilter::Blend(
+                Color::rgb(0.0, 1.0, 0.0),
+                BlendMode::Modulate,
+            )),
+            ..Default::default()
+        },
+    );
+    let list = builder.build();
+    let offscreen = Offscreen::new(&device, [4, 2]);
+    let cold = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
+    let cold_pixels = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [4, 2]);
+    let warm = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
+    let warm_pixels = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [4, 2]);
+    assert_eq!(
+        cold.filter_passes, 1,
+        "the cold frame bakes the filtered copy"
+    );
+    assert_eq!(cold.render_passes, 2, "the bake, then one segment");
+    assert_eq!(warm.render_passes, 1);
+    assert_eq!(cold_pixels, warm_pixels);
+    assert_eq!(&cold_pixels[0..4], &[0, 0, 255, 255]);
+    assert_eq!(&cold_pixels[8..12], &[0, 40, 0, 255]);
+}
+
+/// A colour filter on an image draw runs inline on the sampled texel; the
+/// same filter folded on the CPU into a solid colour must agree with it. The
+/// texel is translucent, so the filters that work on straight colour have to
+/// unpremultiply it first.
+///
+/// The matrix agrees within 2 straight levels. The sRGB curves may land one
+/// premultiplied step apart: the GPU path filters the texel as stored, which
+/// for blue is 39 of 255 premultiplied where the CPU folds the exact 38.7,
+/// and the curves carry that across a rounding boundary (63 against 64). At
+/// alpha 94 one step reads back as 255 / 94 ≈ 2.7 straight levels, so they
+/// agree within 3.
+#[test]
+fn color_filter_cpu_and_image_gpu_paths_agree() {
+    use valo::ImageDesc;
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP color_filter_cpu_and_image_gpu_paths_agree: no GPU adapter");
         return;
     };
     let destination = Color::from_rgba8(43, 186, 105, 94);
@@ -3588,7 +3666,6 @@ fn matrix_filter_cpu_and_image_gpu_paths_agree() {
         0.1, 0.4, 0.2, 0.2, 0.07,
         0.1, 0.2, 0.1, 0.6, 0.08,
     ];
-    let filter = valo::ColorFilter::Matrix(matrix);
     let mut context = Context::new(device, queue);
     let image = context.upload_image(
         ImageDesc {
@@ -3598,29 +3675,35 @@ fn matrix_filter_cpu_and_image_gpu_paths_agree() {
         },
         &[43, 186, 105, 94],
     );
-    let mut builder = DisplayListBuilder::new();
-    builder.draw_image(
-        &image,
-        Rect::new(0.0, 0.0, 1.0, 1.0),
-        &Paint {
-            color_filter: Some(filter),
-            ..Default::default()
-        },
-    );
-    builder.draw_rect(
-        Rect::new(1.0, 0.0, 1.0, 1.0),
-        &Paint::from_color(filter.folded_into(destination).unwrap()),
-    );
-    let pixels = context.render_to_rgba(&builder.build(), [2, 1], Some(Color::TRANSPARENT));
-    assert!(
-        pixels[..4]
-            .iter()
-            .zip(&pixels[4..])
-            .all(|(gpu, cpu)| gpu.abs_diff(*cpu) <= 2),
-        "GPU {:?}, CPU {:?}",
-        &pixels[..4],
-        &pixels[4..]
-    );
+    for (filter, tolerance) in [
+        (valo::ColorFilter::Matrix(matrix), 2),
+        (valo::ColorFilter::LinearToSrgbGamma, 3),
+        (valo::ColorFilter::SrgbToLinearGamma, 3),
+    ] {
+        let mut builder = DisplayListBuilder::new();
+        builder.draw_image(
+            &image,
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+            &Paint {
+                color_filter: Some(filter),
+                ..Default::default()
+            },
+        );
+        builder.draw_rect(
+            Rect::new(1.0, 0.0, 1.0, 1.0),
+            &Paint::from_color(filter.folded_into(destination)),
+        );
+        let pixels = context.render_to_rgba(&builder.build(), [2, 1], Some(Color::TRANSPARENT));
+        assert!(
+            pixels[..4]
+                .iter()
+                .zip(&pixels[4..])
+                .all(|(gpu, cpu)| gpu.abs_diff(*cpu) <= tolerance),
+            "{filter:?}: GPU {:?}, CPU {:?}",
+            &pixels[..4],
+            &pixels[4..]
+        );
+    }
 }
 
 #[test]
@@ -3694,6 +3777,97 @@ fn color_filter_that_changes_transparent_black_floods_layer_scope() {
     }
 }
 
+/// An image filter that colours transparent pixels floods its save layer's
+/// clip exactly as the same filter given as the layer's colour filter does,
+/// as Skia does: its colour image filter's output is unbounded when the
+/// filter affects transparent black (`SkColorFilterImageFilter`). Impeller
+/// floods only for the colour filter; valo follows Skia.
+#[test]
+fn image_filter_that_changes_transparent_black_floods_layer_clip() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP image_filter_that_changes_transparent_black_floods_layer_clip");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let mut outside_the_child = |paint: Paint| {
+        let mut builder = DisplayListBuilder::new();
+        builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+        builder.save_layer(None, &paint);
+        builder.draw_rect(
+            Rect::new(0.0, 0.0, 4.0, 4.0),
+            &Paint::from_color(Color::rgb(0.0, 0.0, 1.0)),
+        );
+        builder.restore();
+        let pixels = context.render_to_rgba(&builder.build(), [32, 32], Some(Color::TRANSPARENT));
+        let at = (20 * 32 + 20) * 4;
+        pixels[at..at + 4].to_vec()
+    };
+    let red = valo::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+    let as_colour_filter = Paint {
+        color_filter: Some(red),
+        ..Paint::default()
+    };
+    let as_image_filter = Paint {
+        image_filter: Some(valo::ImageFilter::color(red)),
+        ..Paint::default()
+    };
+    assert_eq!(outside_the_child(as_colour_filter), [255, 0, 0, 255]);
+    assert_eq!(outside_the_child(as_image_filter), [255, 0, 0, 255]);
+}
+
+/// A draw whose image filter colours transparent pixels fills its clip, as
+/// the same filter on a save layer does and as Skia draws it, and an image
+/// drawn whole is no exception; a colour filter stays inside the shape it
+/// colours, as Flutter's recorder keeps it.
+#[test]
+fn a_draws_image_filter_that_colours_transparent_pixels_fills_its_clip() {
+    use valo::ImageDesc;
+
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_draws_image_filter_that_colours_transparent_pixels_fills_its_clip");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let image = context.upload_image(
+        ImageDesc {
+            size: [1, 1],
+            premultiplied: true,
+            mips: false,
+        },
+        &[0, 0, 255, 255],
+    );
+    let red = valo::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+    let mut render = |draw: &dyn Fn(&mut DisplayListBuilder)| {
+        let mut builder = DisplayListBuilder::new();
+        builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+        draw(&mut builder);
+        let pixels = context.render_to_rgba(&builder.build(), [64, 32], Some(Color::WHITE));
+        let pixel = |x: usize, y: usize| pixels[(y * 64 + x) * 4..][..4].to_vec();
+        [pixel(5, 5), pixel(20, 20), pixel(48, 16)]
+    };
+    let image_filtered = Paint {
+        image_filter: Some(valo::ImageFilter::color(red)),
+        ..Paint::from_color(Color::rgb(0.0, 0.0, 1.0))
+    };
+    let colour_filtered = Paint {
+        color_filter: Some(red),
+        ..Paint::from_color(Color::rgb(0.0, 0.0, 1.0))
+    };
+    let (red, white) = (vec![255, 0, 0, 255], vec![255, 255, 255, 255]);
+    assert_eq!(
+        render(&|b| b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &image_filtered)),
+        [red.clone(), red.clone(), white.clone()]
+    );
+    assert_eq!(
+        render(&|b| b.draw_image(&image, Rect::new(4.0, 4.0, 4.0, 4.0), &image_filtered)),
+        [red.clone(), red.clone(), white.clone()]
+    );
+    assert_eq!(
+        render(&|b| b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &colour_filtered)),
+        [red, white.clone(), white]
+    );
+}
+
 #[test]
 fn composed_image_filter_runs_inner_before_outer() {
     let Some((device, queue)) = valo_harness::headless_device() else {
@@ -3748,11 +3922,135 @@ fn composed_image_filter_runs_inner_before_outer() {
     }
 }
 
+/// A layer's colour filter is its composite: no pass of its own, and the
+/// layer's alpha taken in before the filter, as Impeller's colour filters
+/// absorb a layer's opacity (and Skia's paint alpha comes before its colour
+/// filter). A filter that paints its own colour over everything then comes
+/// out opaque, where alpha applied after it would halve it.
+#[test]
+fn a_layer_colour_filter_takes_the_layer_alpha_in_first() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_layer_colour_filter_takes_the_layer_alpha_in_first");
+        return;
+    };
+    let mut context = Context::new(device.clone(), queue);
+    let mut builder = DisplayListBuilder::new();
+    builder.save_layer(
+        None,
+        &Paint {
+            color: Color::rgba(0.0, 0.0, 0.0, 0.5),
+            color_filter: Some(valo::ColorFilter::Blend(
+                Color::rgb(1.0, 0.0, 0.0),
+                BlendMode::Src,
+            )),
+            ..Default::default()
+        },
+    );
+    builder.draw_rect(
+        Rect::new(0.0, 0.0, 4.0, 4.0),
+        &Paint::from_color(Color::rgb(0.0, 0.0, 1.0)),
+    );
+    builder.restore();
+    let list = builder.build();
+    let target = Offscreen::new(&device, [4, 4]);
+    let stats = context.render(&list, &target.target(Some(Color::TRANSPARENT)));
+    assert_eq!(stats.filter_passes, 0, "the composite draws the filter");
+    let pixels = context.render_to_rgba(&list, [4, 4], Some(Color::TRANSPARENT));
+    for pixel in pixels.chunks_exact(4) {
+        assert_eq!(pixel, &[255, 0, 0, 255], "unexpected pixel {pixel:?}");
+    }
+}
+
+/// An opacity group around a colour-filtered layer cannot hand its alpha to
+/// the layer's composite, which takes an alpha in before its filter: a
+/// filter that paints its own colour over everything would turn the group's
+/// half alpha back to opaque. The group keeps its own layer, and the filter
+/// shows at half alpha, as Flutter's recorder rules it (a colour filter makes
+/// a layer incompatible with group opacity).
+#[test]
+fn an_opacity_group_keeps_its_alpha_off_a_colour_filtered_layer() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP an_opacity_group_keeps_its_alpha_off_a_colour_filtered_layer");
+        return;
+    };
+    let mut context = Context::new(device, queue);
+    let mut builder = DisplayListBuilder::new();
+    builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+    builder.save_layer(None, &Paint::from_color(Color::rgba(0.0, 0.0, 0.0, 0.5)));
+    builder.save_layer(
+        None,
+        &Paint {
+            color_filter: Some(valo::ColorFilter::Blend(
+                Color::rgb(1.0, 0.0, 0.0),
+                BlendMode::SrcOver,
+            )),
+            ..Default::default()
+        },
+    );
+    builder.draw_rect(
+        Rect::new(4.0, 4.0, 4.0, 4.0),
+        &Paint::from_color(Color::rgb(0.0, 0.0, 1.0)),
+    );
+    builder.restore();
+    builder.restore();
+    let pixels = context.render_to_rgba(&builder.build(), [32, 32], Some(Color::WHITE));
+    let at = (20 * 32 + 20) * 4;
+    assert_eq!(&pixels[at..at + 4], &[255, 128, 128, 255]);
+}
+
+/// Impeller's `GaussianBlurRotatedNonUniform` (`aiks_dl_blur_unittests.cc`):
+/// a blur along one axis of a turned, scaled rounded rect runs along the
+/// rect's own axis and turns with it, because a draw's filters run in its
+/// source space. Past the rect's end along its own x the blur spreads; past
+/// its side along its own y the edge stays sharp.
+#[test]
+fn gaussian_blur_rotated_non_uniform_golden() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP gaussian_blur_rotated_non_uniform_golden: no GPU adapter");
+        return;
+    };
+    let size = [512u32, 384u32];
+    let local_to_device = valo::Matrix::translation(256.0, 192.0)
+        .then(&valo::Matrix::scale(0.6, 0.6))
+        .then(&valo::Matrix::rotation(45f32.to_radians()));
+    let mut builder = DisplayListBuilder::new();
+    builder.concat(&local_to_device);
+    builder.draw_rrect(
+        Rect::new(-100.0, -100.0, 200.0, 200.0),
+        10.0,
+        &Paint {
+            color: Color::rgb(0.0, 1.0, 0.0),
+            image_filter: Some(valo::ImageFilter::blur(50.0, 0.0)),
+            ..Default::default()
+        },
+    );
+    let mut context = Context::new(device, queue);
+    let pixels = context.render_to_rgba(&builder.build(), size, Some(Color::TRANSPARENT));
+    let alpha_at = |local: valo::Point| {
+        let at = local_to_device.map_point(local);
+        pixels[((at.y as u32 * size[0] + at.x as u32) * 4 + 3) as usize]
+    };
+    assert!(
+        alpha_at(valo::Point::new(130.0, 0.0)) > 40,
+        "the blur spreads past the rect's end along its own x"
+    );
+    assert!(
+        alpha_at(valo::Point::new(0.0, 106.0)) < 8,
+        "no blur past the rect's side along its own y"
+    );
+    valo_harness::assert_golden(
+        goldens_dir(),
+        "gaussian_blur_rotated_non_uniform",
+        size,
+        &pixels,
+    );
+}
+
 /// A blur wide enough to downsample must still spread in every direction.
 /// The downsample passes used to map their (smaller) target quad through the
 /// SOURCE's extent rather than their own, so they read only the top-left
 /// corner of their input — the halo lost its left and top halves at exactly
-/// the σ where `blur_scale` first drops below 1.
+/// the σ where the downsample first shrinks the input.
 #[test]
 fn a_downsampled_blur_spreads_symmetrically() {
     let Some((device, queue)) = valo_harness::headless_device() else {
@@ -3772,9 +4070,15 @@ fn a_downsampled_blur_spreads_symmetrically() {
         );
         let pixels = context.render_to_rgba(&b.build(), [240, 240], Some(Color::TRANSPARENT));
         let alpha = |x: usize, y: usize| pixels[(y * 240 + x) * 4 + 3] as i32;
-        let reach = (sigma * 1.5).round() as usize;
-        let (left, right) = (alpha(90 - reach, 120), alpha(150 + reach, 120));
-        let (top, bottom) = (alpha(120, 90 - reach), alpha(120, 150 + reach));
+        // The halo is read at σ, not the 1.5σ it was read at before the
+        // Gaussian port: Impeller's kernel ends at √3·(σ − ½) (see
+        // `gaussian.rs`), so at σ = 3 nothing reaches 1.5σ out, while σ is
+        // inside the kernel at every σ here.
+        let reach = sigma.round() as usize;
+        // The rect covers pixels 90 to 149: mirror pixels lie as far
+        // outside 90 as outside 149.
+        let (left, right) = (alpha(90 - reach, 120), alpha(149 + reach, 120));
+        let (top, bottom) = (alpha(120, 90 - reach), alpha(120, 149 + reach));
         assert!(left > 8, "σ={sigma} lost its left spread (α={left})");
         assert!(top > 8, "σ={sigma} lost its top spread (α={top})");
         assert!(
@@ -3847,17 +4151,17 @@ fn ink_centroid(pixels: &[u8], size: [usize; 2]) -> (f32, f32) {
     ((sum_x / weight) as f32, (sum_y / weight) as f32)
 }
 
-/// A Canvas2D shadow is a `save_layer` carrying BOTH a mask blur and a colour
-/// matrix, which is the one route into `mask_blur_then_recolour`. The recolour
-/// pass used to read the blur's texture as a raw layer, discarding the used
-/// corner a downsampled blur leaves behind — so past σ 4√2, where `blur_scale`
-/// first drops to ½, the halo was rescaled into the layer's top-left quadrant.
-/// A CSS-filter blur sweep cannot see this: that path never opens a subpass
+/// A Canvas2D shadow is a `save_layer` carrying BOTH a blur and a colour
+/// matrix: the colour filter recolours the blur's output. The recolour pass
+/// used to read the blur's texture as a raw layer, discarding the used corner
+/// a downsampled blur leaves behind — so past σ 4√2, where `blur_scale` first
+/// drops to ½, the halo was rescaled into the layer's top-left quadrant. A
+/// CSS-filter blur sweep cannot see this: that path never opens a subpass
 /// with a colour filter over the blur.
 #[test]
-fn a_recoloured_mask_blur_stays_centred_past_the_downsample_threshold() {
+fn a_recoloured_layer_blur_stays_centred_past_the_downsample_threshold() {
     let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP a_recoloured_mask_blur_stays_centred_past_the_downsample_threshold");
+        eprintln!("SKIP a_recoloured_layer_blur_stays_centred_past_the_downsample_threshold");
         return;
     };
     // Straight-through RGB with alpha retinted to the shadow colour — the same
@@ -3876,7 +4180,7 @@ fn a_recoloured_mask_blur_stays_centred_past_the_downsample_threshold() {
             None,
             &Paint {
                 color_filter: Some(valo::ColorFilter::Matrix(shadow_colour)),
-                mask_blur: Some(MaskBlur::new(sigma)),
+                image_filter: Some(valo::ImageFilter::blur(sigma, sigma)),
                 ..Default::default()
             },
         );
@@ -4034,12 +4338,12 @@ fn drop_shadow_places_the_shadow_at_the_offset() {
     assert_eq!(at(22, 22), [0, 0, 0, 0], "nothing leaks past the shadow");
 }
 
-/// Every blend mode, evaluated twice: once folded into a solid paint on the
-/// CPU (`valo-dl`'s `color_filter` module) and once through the WGSL filter
-/// pass a layer takes. The two implementations are independent transcriptions
-/// of the same equations, and nothing else in the suite compares them — so
-/// this is the only thing standing between a typo in one of them and silently
-/// wrong pixels.
+/// Every blend mode and both gamma curves, evaluated twice: once folded into
+/// a solid paint on the CPU (`valo-dl`'s `color_filter` module) and once
+/// through the WGSL filter pass a layer takes. The two implementations are
+/// independent transcriptions of the same equations, and nothing else in the
+/// suite compares them — so this is the only thing standing between a typo in
+/// one of them and silently wrong pixels.
 #[test]
 fn cpu_and_shader_color_filters_agree() {
     let Some((device, queue)) = valo_harness::headless_device() else {
@@ -4085,42 +4389,61 @@ fn cpu_and_shader_color_filters_agree() {
 
     for mode in MODES {
         let filter = valo::ColorFilter::Blend(source, mode);
-        let left = Rect::new(0.0, 0.0, 4.0, 4.0);
-        let right = Rect::new(4.0, 0.0, 4.0, 4.0);
+        assert_cpu_fold_matches_filter_pass(&mut context, filter, destination);
+    }
+    // Translucent, so the curves' unpremultiply and premultiply are exercised.
+    let translucent = Color::rgba(0.25, 0.6, 0.85, 0.5);
+    for filter in [
+        valo::ColorFilter::LinearToSrgbGamma,
+        valo::ColorFilter::SrgbToLinearGamma,
+    ] {
+        assert_cpu_fold_matches_filter_pass(&mut context, filter, translucent);
+    }
+}
 
-        let mut builder = DisplayListBuilder::new();
-        // CPU: a solid paint absorbs the filter in `folded_paint`.
-        builder.draw_rect(
-            left,
-            &Paint {
-                color: destination,
-                color_filter: Some(filter),
-                ..Default::default()
-            },
-        );
-        // GPU: the same filter on a bounded layer runs as a WGSL pass.
-        builder.save_layer(
-            Some(right),
-            &Paint {
-                color_filter: Some(filter),
-                ..Default::default()
-            },
-        );
-        builder.draw_rect(right, &Paint::from_color(destination));
-        builder.restore();
+/// `assert_cpu_fold_matches_filter_pass` draws `destination` through `filter`
+/// side by side: folded into a solid paint on the left, run as a filter pass
+/// over a layer on the right.
+fn assert_cpu_fold_matches_filter_pass(
+    context: &mut Context,
+    filter: valo::ColorFilter,
+    destination: Color,
+) {
+    let left = Rect::new(0.0, 0.0, 4.0, 4.0);
+    let right = Rect::new(4.0, 0.0, 4.0, 4.0);
 
-        let pixels = context.render_to_rgba(&builder.build(), [8, 4], Some(Color::TRANSPARENT));
-        for y in 0..4usize {
-            for x in 0..4usize {
-                let folded = 4 * (y * 8 + x);
-                let shaded = 4 * (y * 8 + x + 4);
-                let (a, b) = (&pixels[folded..folded + 4], &pixels[shaded..shaded + 4]);
-                let apart = (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
-                assert!(
-                    apart <= 3,
-                    "{mode:?}: CPU fold {a:?} vs shader {b:?} at ({x}, {y})"
-                );
-            }
+    let mut builder = DisplayListBuilder::new();
+    // CPU: a solid paint absorbs the filter in `folded_paint`.
+    builder.draw_rect(
+        left,
+        &Paint {
+            color: destination,
+            color_filter: Some(filter),
+            ..Default::default()
+        },
+    );
+    // GPU: the same filter on a bounded layer runs as a WGSL pass.
+    builder.save_layer(
+        Some(right),
+        &Paint {
+            color_filter: Some(filter),
+            ..Default::default()
+        },
+    );
+    builder.draw_rect(right, &Paint::from_color(destination));
+    builder.restore();
+
+    let pixels = context.render_to_rgba(&builder.build(), [8, 4], Some(Color::TRANSPARENT));
+    for y in 0..4usize {
+        for x in 0..4usize {
+            let folded = 4 * (y * 8 + x);
+            let shaded = 4 * (y * 8 + x + 4);
+            let (a, b) = (&pixels[folded..folded + 4], &pixels[shaded..shaded + 4]);
+            let apart = (0..4).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+            assert!(
+                apart <= 3,
+                "{filter:?}: CPU fold {a:?} vs shader {b:?} at ({x}, {y})"
+            );
         }
     }
 }

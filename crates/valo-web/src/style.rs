@@ -1,6 +1,6 @@
 use valo::{
     Color, ColorFilter, Dash, FocalCircle, GradientStop, ImageFilter, MaskBlur, Matrix, Paint,
-    PaintStyle, Point, Shader, Stroke,
+    PaintStyle, Point, Shader, Stroke, TileMode,
 };
 use wasm_bindgen::prelude::*;
 
@@ -69,11 +69,13 @@ impl WebImageFilter {
     /// `blur` creates a Gaussian image filter with nonnegative sigmas.
     ///
     /// `sigmaX` and `sigmaY` are standard deviations in local x and y units.
-    /// Negative values are clamped to zero.
+    /// Negative values are clamped to zero. Past the edge of what it blurs
+    /// the blur reads transparent, as a CSS `blur()` does, wherever it is
+    /// used.
     #[wasm_bindgen(js_name = blur)]
     pub fn blur(sigma_x: f32, sigma_y: f32) -> WebImageFilter {
         WebImageFilter {
-            inner: ImageFilter::blur(sigma_x, sigma_y),
+            inner: ImageFilter::blur(sigma_x, sigma_y).with_tile_mode(TileMode::Decal),
         }
     }
 
@@ -353,7 +355,8 @@ impl WebPaint {
     ///
     /// `sigma` is the standard deviation in local units and follows the draw's
     /// transform; negative values are clamped to zero. `style` is `0` normal,
-    /// `1` solid, `2` inner, or `3` outer; any other value uses normal.
+    /// `1` solid, `2` inner, or `3` outer; any other value uses normal. A
+    /// layer's paint takes none: blur a layer with `setImageFilter`.
     #[wasm_bindgen(js_name = setMaskBlur)]
     pub fn set_mask_blur(&mut self, sigma: f32, style: u32) {
         self.inner.mask_blur = Some(match types::blur_style(style) {

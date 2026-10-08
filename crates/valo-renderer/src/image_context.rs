@@ -233,9 +233,9 @@ fn premultiplied_pixels(already: bool, pixels: &[u8]) -> std::borrow::Cow<'_, [u
     let mut out = pixels.to_vec();
     for px in out.chunks_exact_mut(4) {
         let a = px[3] as u32;
-        px[0] = ((px[0] as u32 * a) / 255) as u8;
-        px[1] = ((px[1] as u32 * a) / 255) as u8;
-        px[2] = ((px[2] as u32 * a) / 255) as u8;
+        px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
+        px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
+        px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
     }
     std::borrow::Cow::Owned(out)
 }

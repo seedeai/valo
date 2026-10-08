@@ -1,144 +1,83 @@
-//! The open-target stack. A [`PassFrame`] is one render target being filled:
-//! the main target at the bottom, one frame per materialized layer above it.
-//! This module owns the layer lifecycle — open (or elide, or skip), fill,
-//! close, composite — and the group-alpha stack for elided opacity layers.
+//! The layer lifecycle — open (or elide, or skip), fill, close, composite —
+//! for save layers, the implicit and effect layers a draw opens for itself,
+//! and snapshots. Each opens a draw context on the stack; closing it
+//! returns its picture, a [`Snapshot`] of what it holds, and whoever opened
+//! it decides what to do with that: a save layer's composite rides its
+//! scope entry until the restore (Impeller's `SaveLayerState`), an implicit
+//! or effect layer composites at once, a snapshot is handed on.
 //!
-//! Replay state never lives here: slot rebasing and the outer group-alpha
-//! stack ride the scope entry in `replay`, so a `PassFrame` is purely a
-//! render target.
+//! What becomes of a save layer is decided first, as a value
+//! ([`LayerPlan`]), and only then acted on. Replay state never lives here:
+//! the group alpha and a save layer's composite ride the scope entries in
+//! `replay`, so a context is purely a texture being drawn.
 
 use rustc_hash::FxHashMap;
-use valo_dl::{BlendMode, DisplayList, ImageFilter, MaskKind, Paint};
-use valo_geometry::{Color, Matrix, Point, Rect};
+use valo_dl::{Bounds, DisplayList, MaskKind, Op, Paint};
+use valo_geometry::{Matrix, Rect};
 
-use crate::frame::{PassColor, Step, TextureCopy};
-use crate::pipelines::{Frag, PipelineKind};
+use crate::pipelines::{Blend, PipelineBlend};
 use crate::raster::FillTarget;
-use crate::renderer::RenderTarget;
 
-use super::emit::{alpha_tint, PAYLOAD_GEOM, PAYLOAD_MISC};
-use super::filters::{region_uv, LayerEffects, SharedBackdrop};
+use super::backdrop::{BackdropRequest, SharedBackdrop};
+use super::draw_context::{DepthRange, DrawContext, PixelArea};
+use super::draw_state::{DrawState, ONE_DRAW_LAYER};
+use super::drawing::Drawing;
+use super::emit::{Cover, Entity, Role};
+use super::filter_tree::FilterTree;
+use super::gaussian::extract_scale;
+use super::layer_coverage::{compute_save_layer_coverage, SourceCoverage};
+use super::replay::ReplayState;
+use super::shading::Shading;
+use super::snapshot::Snapshot;
+use super::source::DrawSource;
 use super::Planner;
 
-/// `BackdropRequest` is a recorded backdrop's facts, resolved by replay.
-///
-/// Replay validates the shared key against the list's backdrop groups
-/// before the layer opens, so the seed logic never re-checks filter agreement.
-pub(super) struct BackdropRequest {
-    /// Filter in local units, transformed at the save point.
-    pub filter: ImageFilter,
-    /// The shared key, already validated — cleared when the group's tiles
-    /// disagree on the filter.
-    pub key: Option<u64>,
-    /// The keyed group's union bounds, list-root space.
-    pub group_bounds: Option<Rect>,
+/// `SNAPSHOT_DEPTH` is a snapshot's depth line: a first draw, a style's
+/// clip half a slot above it, and a draw over both.
+const SNAPSHOT_DEPTH: DepthRange = DepthRange::new(0, 3);
+
+/// `SnapshotDepths` are the depths on a snapshot's line that its draws are
+/// handed.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SnapshotDepths {
+    /// The first draw's. A style clip it carries writes its ceiling half a
+    /// slot above it (`Drawing::clip_to_shape`), below `second`.
+    pub first: f32,
+    /// What is drawn over the first draw, past its clip.
+    pub second: f32,
 }
 
-/// `BackdropSeed` is the filtered parent region a backdrop layer opens with.
-///
-/// Drawn as the layer's first step — the glass every child paints over.
-struct BackdropSeed {
-    /// The finished filtered snapshot.
-    view: wgpu::TextureView,
-    /// The region the blur covers, absolute replay coords.
-    region: Rect,
-    /// The used corner of the (possibly downsampled) blur texture.
-    uv_max: [f32; 2],
+/// `LayerComposite` is how a save layer is drawn into its parent once its
+/// restore closes it, decided when it opens.
+pub(super) struct LayerComposite {
+    pub blend: Blend,
+    /// Set = the layer's texture is coverage, not content.
+    pub mask: Option<MaskKind>,
+    /// The paint's filter tree over the layer; `None` composites the
+    /// texture as is.
+    pub filter: Option<FilterTree<'static>>,
+    /// Where the composite draws in the parent: at the identity, the layer
+    /// being in the parent's replay coordinates, at the depth taken while
+    /// the PARENT's slot base was still active, and at the paint's alpha
+    /// times the group alpha around the layer.
+    pub at: DrawState,
 }
 
-/// `PassFrame` is one open render target.
-///
-/// Coordinates are absolute replay coordinates — the transform stack is
-/// never rebased; a layer's `origin` is subtracted at MVP time instead,
-/// so children land in layer pixels.
-pub(super) struct PassFrame {
-    pub color: PassColor,
-    pub depth: wgpu::TextureView,
-    /// The resolved texture snapshots copy from (`break_pass`).
-    pub src_texture: wgpu::Texture,
-    pub size: [u32; 2],
-    /// `Some` clears on this target's first segment; `None` loads existing.
-    pub clear: Option<Color>,
-    pub first_segment_emitted: bool,
-    /// Index of this target's most recent segment in the plan — `Some` marks
-    /// a resumed target whose earlier segment must store its attachments.
-    pub last_pass: Option<usize>,
-    pub steps: Vec<Step>,
-    pub pre_copies: Vec<TextureCopy>,
-    /// Children's cull rect, absolute replay coords.
-    pub cull_rect: Rect,
-    /// Depth denominator: the slot span this target hosts, keeping every z
-    /// strictly below 1.
-    pub z_denom: f32,
-    pub origin: Point,
-    /// Cleared targets render into tile-only MSAA scratch; a dst-read break
-    /// forces a swap to persistent attachments.
-    pub transient: bool,
-    /// `Some` on layer frames: everything the composite-on-close needs.
-    pub layer: Option<LayerInfo>,
-}
-
-impl PassFrame {
-    /// `main` builds the bottom frame: the caller's target.
-    pub fn main(
-        color: PassColor,
-        depth: wgpu::TextureView,
-        target: &RenderTarget,
-        dl: &DisplayList,
-        transient: bool,
-    ) -> Self {
-        Self {
-            color,
-            depth,
-            src_texture: target.texture.clone(),
-            size: target.size,
-            clear: target.clear,
-            first_segment_emitted: false,
-            last_pass: None,
-            steps: Vec::with_capacity(dl.draw_count() as usize * 2),
-            pre_copies: Vec::new(),
-            cull_rect: Rect::new(0.0, 0.0, target.size[0] as f32, target.size[1] as f32),
-            z_denom: (dl.depth_slots() + 1) as f32,
-            origin: Point::ZERO,
-            transient,
-            layer: None,
-        }
-    }
-}
-
-/// `LayerInfo` carries what closing a layer needs to draw it into its
-/// parent.
-pub(super) struct LayerInfo {
-    /// The layer's region in parent coords (also its pixel extent).
-    pub rect: Rect,
-    /// The composite paint; group alpha from an elided enclosing scope was
-    /// already folded into its color at open.
-    pub paint: Paint,
-    pub mask_composite: Option<MaskKind>,
-    /// The composite's absolute z, taken from the recorded composite slot
-    /// while the PARENT's slot base was still active.
-    pub composite_z: f32,
-    pub resolve: wgpu::TextureView,
-    /// The paint's composite-time filter recipe (blur, colour filter,
-    /// image filter) — `filters` runs it in [`Planner::composite_source`].
-    pub effects: LayerEffects,
-}
-
-/// `ResolvedLayer` is one `SaveLayer` op pinned to one replay.
+/// `ResolvedLayer` is one `SaveLayer` op pinned to one replay: its rects in
+/// the target's coordinates and its slots on the target's depth line.
 ///
 /// The op is written once and replayed anywhere — nested inside another
 /// list, or into a cache texture, at whatever depth the walk has reached —
-/// so it carries a slot NUMBER rather than a depth, and a backdrop key it
-/// has no standing to validate. The walk fills both in (`composite_z`, a
-/// checked `backdrop`) and hands the whole op over, so opening a layer
-/// computes nothing. Skia passes the same set as `SkCanvas::SaveLayerRec`.
+/// so it carries list-root rects, slot numbers rather than depths, and a
+/// backdrop key it has no standing to validate. The walk resolves them all
+/// at its boundary, so deciding what becomes of the layer reads them as
+/// they are. Skia passes the same set as `SkCanvas::SaveLayerRec`.
 pub(super) struct ResolvedLayer<'a> {
     /// Configures the composite draw that puts the finished layer into its
     /// parent — blend mode and filters treat the layer as one image.
     ///
-    /// Read at OPEN, not at close: the children take the group-alpha stack
-    /// away and rebase the depth line, so by close the parent context this
-    /// depends on is gone.
+    /// Read at OPEN, not at close: the composite takes the parent's group
+    /// alpha and depth, which the children's scope replaces.
     pub paint: &'a Paint,
     /// Set = the layer's texture is coverage, not content.
     ///
@@ -146,17 +85,22 @@ pub(super) struct ResolvedLayer<'a> {
     /// (DstIn over the whole enclosing extent), so everything the mask
     /// does not cover disappears.
     pub mask: Option<MaskKind>,
-    /// Union of the children's ink, list-root space, already cropped by
-    /// the clip stack and any bounds hint. Sizes the layer's texture.
-    pub bounds: &'a Rect,
-    /// The depth line's position when the scope opened. Children run from
-    /// here to `composite_slot`, and the layer's pass rebases against it.
-    pub base_slot: u32,
-    /// Where the composite draw sits, after the children's span.
-    pub composite_slot: u32,
-    /// The composite's depth, taken while the PARENT's slot base was still
-    /// active — it draws in the parent, not in the layer.
-    pub composite_z: f32,
+    /// The layer's content: the children's union, cropped by the clips
+    /// inside the layer and the bounds hint but not by the clips around it.
+    pub content: Bounds,
+    /// The clip where the layer opens, cropped by the bounds hint. With the
+    /// target, the coverage limit.
+    pub clip: Bounds,
+    /// The slots the layer hosts: its children's, from the one where its
+    /// scope opened, up to its composite's.
+    pub depth: DepthRange,
+    /// The composite paints the layer's whole clip, so the texture covers it.
+    pub floods_clip: bool,
+    /// Where the layer opens, taken while the PARENT's scope was still open
+    /// — the composite draws in the parent, not in the layer: the save
+    /// point's transform (the paint's effect transform), the composite
+    /// slot's depth, and the group alpha the composite takes.
+    pub at: DrawState,
     /// The children turned out alpha-linear and pairwise disjoint, so
     /// nothing overlaps for the group's alpha to blend twice: it can ride
     /// each child's own tint and the texture disappears entirely.
@@ -165,449 +109,609 @@ pub(super) struct ResolvedLayer<'a> {
     pub backdrop: Option<BackdropRequest>,
 }
 
-/// `Opened` is `open_layer`'s verdict, which replay turns into the matching
-/// restore action.
+impl<'a> ResolvedLayer<'a> {
+    /// `of` pins `op`, a recorded `SaveLayer` of `list`, to the replay
+    /// `state`: `at` is where its composite draws in the parent.
+    pub fn of(op: &'a Op, list: &DisplayList, state: &ReplayState, at: DrawState) -> Self {
+        let Op::SaveLayer {
+            paint,
+            mask_composite,
+            scope_bounds,
+            clip_bounds,
+            base_slot,
+            composite_slot,
+            floods_clip,
+            can_elide,
+            backdrop,
+            ..
+        } = op
+        else {
+            unreachable!("replay resolves only SaveLayer ops as layers, not {op:?}");
+        };
+        Self {
+            paint,
+            mask: *mask_composite,
+            content: scope_bounds.map(state.base()),
+            clip: clip_bounds.map(state.base()),
+            depth: DepthRange::new(state.absolute(*base_slot), composite_slot - base_slot),
+            floods_clip: *floods_clip,
+            at,
+            can_elide: *can_elide,
+            backdrop: backdrop
+                .as_ref()
+                .map(|backdrop| BackdropRequest::of(backdrop, list, state.base())),
+        }
+    }
+
+    /// `coverage` is where the layer's texture goes in `target`, whole
+    /// pixels round it: Impeller's `ComputeSaveLayerCoverage` of its content
+    /// within the clip and the target (`GetLocalCoverageLimit`), sized for
+    /// `filter`. `None` when the layer shows nothing.
+    ///
+    /// A layer that shows and whose filter reads past its edge (a blur that
+    /// clamps, mirrors or repeats), and does not flood, covers that limit
+    /// itself, its clip cut by its bounds hint: the blur's edge is the layer's own extent, as
+    /// Skia takes it (`SkBlurImageFilter`'s legacy tiling crops at the
+    /// layer's bounds, which are the caller's bounds, a hard clip on the
+    /// layer, or the clip's), not the edge of its content. Impeller sizes
+    /// such a layer to its content and clamps there; valo follows Skia.
+    fn coverage(&self, target: &PixelArea, filter: Option<&FilterTree<'_>>) -> Option<Rect> {
+        let limit = self.clip.intersect(&Bounds::of(target.rect())).rect()?;
+        let coverage = compute_save_layer_coverage(
+            &self.content,
+            &Matrix::IDENTITY,
+            &limit,
+            filter.map(|filter| filter as &dyn SourceCoverage),
+            self.floods_clip,
+        )?;
+        let reads_past_its_edge = filter.is_some_and(FilterTree::reads_past_its_edge);
+        let coverage = if reads_past_its_edge && !self.floods_clip {
+            limit
+        } else {
+            coverage
+        };
+        (!coverage.is_empty()).then(|| round_out(&coverage))
+    }
+}
+
+/// `LayerPlan` is what becomes of one save layer, decided from its recorded
+/// facts and the target it opens in before anything is drawn.
+pub(super) enum LayerPlan {
+    /// Nothing visible: its scope is skipped. A mask is not nothing: its
+    /// coverage is 0 everywhere, so it erases the target beneath it first.
+    Skip { erase: bool },
+    /// The opacity peephole: the children draw in the parent at their own
+    /// slots, at the group alpha times this alpha. Depth does not change,
+    /// which is what makes it safe.
+    Elide(f32),
+    /// A texture of its own over `area`, closed at the restore and drawn
+    /// into the parent as `composite` says.
+    Open {
+        area: PixelArea,
+        composite: Box<LayerComposite>,
+    },
+}
+
+impl LayerPlan {
+    /// `of` is what becomes of `layer`, opening in `target`.
+    pub fn of(layer: &ResolvedLayer<'_>, target: &PixelArea) -> Self {
+        // The layer paint's σ is local at the SAVE POINT, so the save-point
+        // transform scales it to device. (The list base alone would leave a
+        // `scale(4); save_layer(blur σ5)` halo four times too narrow.)
+        let filter = FilterTree::for_save_layer(layer.paint, layer.at.transform);
+        let Some(rect) = layer.coverage(target, filter.as_ref()) else {
+            return LayerPlan::Skip {
+                erase: layer.mask.is_some(),
+            };
+        };
+        if layer.can_elide {
+            return LayerPlan::Elide(layer.paint.color.a);
+        }
+        LayerPlan::Open {
+            area: PixelArea::over(rect),
+            composite: Box::new(LayerComposite {
+                blend: Blend::of(layer.paint.blend_mode),
+                mask: layer.mask,
+                filter,
+                at: layer
+                    .at
+                    .with_transform(Matrix::IDENTITY)
+                    .faded(layer.paint.color.a),
+            }),
+        }
+    }
+}
+
+/// `Opened` is what the walk does with a save layer's scope once the layer
+/// is opened.
 pub(super) enum Opened {
     /// Nothing visible: skip the scope's ops entirely.
     Skip,
-    /// The opacity shortcut: children draw in the parent with the group
-    /// alpha on their tints; restore pops the alpha.
-    Elided,
-    /// A real offscreen: restore closes and composites it.
-    Layer,
+    /// The opacity shortcut: children draw in the parent at the group alpha
+    /// times this alpha, on their tints.
+    Elided(f32),
+    /// A real offscreen, the top context now: the restore closes it and
+    /// draws it into the parent as this says.
+    Layer(LayerComposite),
 }
 
 impl Planner<'_> {
-    /// `open_layer` opens a recorded `SaveLayer`: skip (and erase, if it was
-    /// a mask), elide into the parent, or push a new offscreen frame.
-    ///
-    /// Elision is the opacity peephole — children draw in the parent at
-    /// their own slots with the group alpha on their tint. Depth does not
-    /// change, which is what makes it safe. A mask whose bounds miss the
-    /// cull rect is not "nothing": coverage is 0 everywhere, so the
-    /// enclosing layer goes blank via [`Planner::erase_frame_alpha`].
+    /// `open_layer` acts on what becomes of a recorded `SaveLayer`: skip it
+    /// (erasing first, for a mask), elide it into the parent, or open a
+    /// context of its own, seeded with its backdrop.
     pub(super) fn open_layer(
         &mut self,
-        base: &Matrix,
-        effect_transform: &Matrix,
         layer: ResolvedLayer<'_>,
         shared_backdrops: &mut FxHashMap<u64, SharedBackdrop>,
     ) -> Opened {
-        let Some(rect) = self.layer_rect(base, layer.bounds) else {
-            if layer.mask.is_some() {
-                self.erase_frame_alpha(layer.composite_z);
+        match LayerPlan::of(&layer, &self.contexts.top().area) {
+            LayerPlan::Skip { erase } => {
+                if erase {
+                    self.drawing().erase_alpha(layer.at.z);
+                }
+                Opened::Skip
             }
-            return Opened::Skip;
+            LayerPlan::Elide(alpha) => {
+                self.plan.stats.layers_elided += 1;
+                Opened::Elided(alpha)
+            }
+            LayerPlan::Open { area, composite } => {
+                // The blurred parent is sampled BEFORE the layer's texture
+                // opens — this ordering is the whole point of
+                // backdrop-as-a-layer-property: the glass shows the real
+                // scene, not a fresh offscreen.
+                let seed = layer.backdrop.and_then(|request| {
+                    self.render_backdrop_seed(&layer.at, &area.rect(), request, shared_backdrops)
+                });
+                self.open_target(area, layer.depth);
+                if let Some(seed) = seed {
+                    self.draw_backdrop_seed(&seed);
+                }
+                Opened::Layer(*composite)
+            }
+        }
+    }
+
+    /// `close_layer` closes a save layer's context at its restore and draws
+    /// its picture into the parent as `composite` says: a mask multiplies
+    /// the parent by its coverage; anything else goes through the paint's
+    /// filters, if any, with the paint's blend. The picture lies where the
+    /// composite draws it.
+    pub(super) fn close_layer(&mut self, composite: LayerComposite) {
+        let picture = self.close_target().placed_where_drawn(true);
+        match composite.mask {
+            Some(kind) => self
+                .drawing()
+                .draw_mask_composite(&picture, kind, &composite.at),
+            None => self.composite_picture(
+                picture,
+                composite.filter.as_ref(),
+                composite.blend,
+                &composite.at,
+            ),
+        }
+    }
+
+    /// `render_to_snapshot` renders what `draw` draws into a texture of its
+    /// own over `region`, whole pixels round it: Impeller's
+    /// `Contents::RenderToSnapshot` for a final draw that a next node reads,
+    /// and its blend subpass. The context has depth and stencil, so a
+    /// style's clip works in it; `draw` is handed the depths of its line's
+    /// two draws ([`SnapshotDepths`]). Its draws take no group alpha
+    /// ([`DrawState::in_layer`]): whoever draws the snapshot does.
+    pub(super) fn render_to_snapshot(
+        &mut self,
+        region: &Rect,
+        draw: impl FnOnce(&mut Drawing, SnapshotDepths),
+    ) -> Snapshot {
+        self.open_target(PixelArea::over(round_out(region)), SNAPSHOT_DEPTH);
+        let depths = SnapshotDepths {
+            first: SNAPSHOT_DEPTH.z(1),
+            second: SNAPSHOT_DEPTH.z(2),
         };
-        if layer.can_elide {
-            self.stats.layers_elided += 1;
-            self.push_elision(layer.paint.color.a);
-            return Opened::Elided;
-        }
-        self.stats.layers_rendered += 1;
-        // The blurred parent is sampled BEFORE the layer's texture opens —
-        // this ordering is the whole point of backdrop-as-a-layer-property:
-        // the glass shows the real scene, not a fresh offscreen.
-        let seed = layer.backdrop.map(|request| {
-            self.backdrop_seed(base, effect_transform, &rect, request, shared_backdrops)
-        });
-        // The layer paint's σ is local at the SAVE POINT, so the save-point
-        // transform scales it to device — the same transform the recorder
-        // used to pad the layer's bounds. (The list base alone would leave
-        // a `scale(4); save_layer(blur σ5)` halo four times too narrow.)
-        let effects = LayerEffects::of(
-            layer.paint,
-            effect_transform.max_scale(),
-            effect_transform,
-            true,
-        );
-        // z_denom = composite_slot − base_slot: the slot span this layer
-        // hosts (children plus its composite), replay rebases slots to it.
-        self.push_layer_frame(
-            rect,
-            (layer.composite_slot - layer.base_slot) as f32,
-            layer.paint.clone(),
-            layer.mask,
-            layer.composite_z,
-            effects,
-        );
-        if let Some(seed) = seed {
-            self.emit_backdrop_seed(&rect, &seed);
-        }
-        Opened::Layer
-    }
-
-    /// `backdrop_seed` filters the scene beneath `rect`. Matching keyed tiles
-    /// reuse the first snapshot. Otherwise, filter padding expands the sampled
-    /// region so edge taps read the parent scene before the filter chain runs.
-    fn backdrop_seed(
-        &mut self,
-        base: &Matrix,
-        effect_transform: &Matrix,
-        rect: &Rect,
-        request: BackdropRequest,
-        shared_backdrops: &mut FxHashMap<u64, SharedBackdrop>,
-    ) -> BackdropSeed {
-        let [a, b, c, d, ..] = effect_transform.to_affine();
-        let basis = [a, b, c, d];
-        if let Some(shared) = request
-            .key
-            .and_then(|key| shared_backdrops.get(&key))
-            .filter(|shared| shared.filter == request.filter && shared.basis == basis)
-            .filter(|shared| shared.source == self.frame().src_texture)
-        {
-            self.stats.shared_backdrops += 1;
-            return BackdropSeed {
-                view: shared.view.clone(),
-                region: shared.region,
-                uv_max: shared.uv_max,
-            };
-        }
-        let bounds = request
-            .group_bounds
-            .and_then(|union| base.map_rect(&union).intersect(&self.frame().cull_rect))
-            .unwrap_or(*rect);
-        let padding = Paint {
-            image_filter: Some(request.filter.clone()),
-            ..Paint::default()
-        }
-        .device_effect_padding(effect_transform);
-        let padded = bounds.expand(padding);
-        let region = padded.intersect(&self.frame().cull_rect).unwrap_or(bounds);
-        let blur = self.filter_of_target_region(&region, &request.filter, basis);
-        if let Some(key) = request.key {
-            // First tile wins: a filter-, transform-, or target-mismatched
-            // tile blurs independently WITHOUT evicting the entry later
-            // matching tiles reuse.
-            shared_backdrops.entry(key).or_insert(SharedBackdrop {
-                view: blur.view.clone(),
-                region,
-                uv_max: blur.uv_max,
-                filter: request.filter,
-                basis,
-                source: self.frame().src_texture.clone(),
-            });
-        }
-        self.stats.backdrops += 1;
-        BackdropSeed {
-            view: blur.view,
-            region,
-            uv_max: blur.uv_max,
-        }
-    }
-
-    /// `emit_backdrop_seed` draws the blurred parent into the just-opened
-    /// layer as its FIRST step — the glass every child paints over. z 0
-    /// sits below every rebased child slot; the quad and the blur region
-    /// are both absolute replay coords, so the layer's origin shift and the
-    /// region uv agree.
-    fn emit_backdrop_seed(&mut self, rect: &Rect, seed: &BackdropSeed) {
-        let bind = self.emit.texture_bind(&seed.view);
-        let frame = self.frames.last_mut().expect("layer frame just pushed");
-        let mut record = self
-            .emit
-            .quad_record(frame, rect, [1.0, 1.0, 1.0, 1.0], 0.0);
-        record.set_payload(PAYLOAD_GEOM, region_uv(&seed.region, seed.uv_max));
-        self.emit.push_step(
-            frame,
-            PipelineKind::Draw(Frag::Image),
-            BlendMode::SrcOver,
-            record,
-            Some(bind),
-            None,
-            0.0,
-        );
-    }
-
-    /// `close_layer` emits the layer's last segment, pops the frame, and
-    /// composites it into the parent. Restoring the outer slot base and
-    /// group-alpha stack is replay's job — it saved them on the scope entry.
-    pub(super) fn close_layer(&mut self) {
-        self.emit_segment();
-        let frame = self.frames.pop().expect("layer frame present");
-        let info = frame.layer.expect("close_layer only on layer frames");
-        self.composite_layer(&info);
-    }
-
-    /// `layer_rect` maps the recorded scope bounds into parent coords and
-    /// intersects with what is visible.
-    fn layer_rect(&mut self, base: &Matrix, scope_bounds: &Rect) -> Option<Rect> {
-        if scope_bounds.is_empty() {
-            return None;
-        }
-        base.map_rect(scope_bounds)
-            .intersect(&self.frame().cull_rect)
-    }
-
-    /// `push_layer_frame` allocates a pooled offscreen and pushes it as the
-    /// current target. `rect` is in absolute replay coords — it doubles as
-    /// the children's cull rect and, minus its origin, the layer's pixel
-    /// space. Group alpha from an enclosing elided scope lands ONCE, here,
-    /// on the composite paint.
-    pub(super) fn push_layer_frame(
-        &mut self,
-        rect: Rect,
-        z_denom: f32,
-        mut paint: Paint,
-        mask: Option<MaskKind>,
-        composite_z: f32,
-        effects: LayerEffects,
-    ) {
-        paint.color.a *= self.elision_alpha();
-        let size = layer_texture_size(&rect);
-        let target = self.pool.take_layer(size, self.format, true);
-        self.frames.push(PassFrame {
-            color: PassColor::Layer {
-                msaa: target.msaa,
-                resolve: target.resolve.clone(),
-            },
-            depth: target.depth,
-            src_texture: target.resolve_texture,
-            size,
-            clear: Some(Color::TRANSPARENT),
-            first_segment_emitted: false,
-            last_pass: None,
-            steps: Vec::new(),
-            pre_copies: Vec::new(),
-            cull_rect: rect,
-            z_denom,
-            origin: Point::new(rect.x, rect.y),
-            transient: true,
-            layer: Some(LayerInfo {
-                rect,
-                paint,
-                mask_composite: mask,
-                composite_z,
-                resolve: target.resolve,
-                effects,
-            }),
-        });
-    }
-
-    /// `push_elision` pushes one elided scope's alpha, multiplied by
-    /// whatever is already on the stack (Impeller's `distributed_opacity`).
-    fn push_elision(&mut self, alpha: f32) {
-        let combined = alpha * self.elisions.last().copied().unwrap_or(1.0);
-        self.elisions.push(combined);
+        draw(&mut self.drawing(), depths);
+        self.close_target()
     }
 
     /// `plan_via_implicit_layer` renders one draw into its own layer and
-    /// composites it with an advanced blend — the desugar for a
-    /// destination-reading paint on a textured source. The inner draw uses
-    /// explicit z (0.5 of the layer's 2.0 denominator), never slots, so the
-    /// replay slot base stays untouched; the group-alpha stack is cleared
-    /// for the inner draw because the composite paint absorbed it.
+    /// composites it by `blend` — the desugar for a destination-reading
+    /// paint on anything but a solid shape, and for shader-painted text.
+    /// `inner` draws the draw at the state it is handed
+    /// ([`DrawState::alone_in_layer`] under the draw's transform): never
+    /// slots, so the replay slot base stays untouched, and alpha 1, because
+    /// the composite takes the draw's.
+    /// `None` when the draw misses the target.
     pub(super) fn plan_via_implicit_layer(
         &mut self,
         device_bounds: Rect,
-        z: f32,
-        mode: BlendMode,
-        inner: impl FnOnce(&mut Self),
-    ) {
-        let Some(rect) = device_bounds.intersect(&self.frame().cull_rect) else {
-            return;
-        };
-        self.stats.layers_rendered += 1;
-        let paint = Paint {
-            color: Color::WHITE,
-            blend_mode: mode,
-            ..Default::default()
-        };
-        self.push_layer_frame(rect, 2.0, paint, None, z, LayerEffects::default());
-        let outer_elisions = std::mem::take(&mut self.elisions);
-        inner(self);
-        self.elisions = outer_elisions;
-        self.close_layer();
+        at: &DrawState,
+        blend: Blend,
+        inner: impl FnOnce(&mut Drawing, &DrawState),
+    ) -> Option<()> {
+        let rect = device_bounds.intersect(&self.contexts.top().area.rect())?;
+        self.open_target(PixelArea::over(rect), ONE_DRAW_LAYER);
+        inner(
+            &mut self.drawing(),
+            &DrawState::alone_in_layer(at.transform),
+        );
+        let picture = self.close_target();
+        self.composite_picture(picture, None, blend, &at.with_transform(Matrix::IDENTITY));
+        Some(())
     }
 
-    /// `plan_via_effect_layer_at` is the same path sized from DEVICE bounds.
-    /// A glyph run takes it: glyph ink extents are not derivable at plan
-    /// time, so the recorder carries the run's device bounds on the op and
-    /// the layer sizes itself from those instead of from local geometry.
-    pub(super) fn plan_via_effect_layer_at(
+    /// `render_effect_layer` renders one draw into a layer of its own, in
+    /// its source space `space` (its transform without rotation or skew,
+    /// where `filter` runs along its own axes), and returns the layer's
+    /// picture; `None` when the filter needs nothing of the draw. The layer
+    /// holds `content` drawn at `paint`, whose ink is `local_bounds`, a texel
+    /// wider all round (as Impeller pads a draw's snapshot so a sampler past
+    /// its edge reads transparent), cut to what the filter needs of the
+    /// target: not cut at the clip, which the composite meets instead. With
+    /// no ink given, the draw fills its clip: the layer is all the filter
+    /// needs of the target. The picture lies where the composite draws it
+    /// when source space is the target's.
+    pub(super) fn render_effect_layer(
         &mut self,
-        device_bounds: Rect,
+        content: DrawSource<'_>,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
-        inner: impl FnOnce(&mut Self),
-    ) {
-        let Some(rect) = device_bounds.intersect(&self.frame().cull_rect) else {
-            return;
+        local_bounds: Option<&Rect>,
+        filter: &FilterTree<'_>,
+        space: &SourceSpace,
+    ) -> Option<Snapshot> {
+        let target = self.contexts.top().area.rect();
+        let limit = filter.source_coverage(&space.to_source(&target));
+        let region = match local_bounds {
+            Some(local_bounds) => {
+                let ink = space.source.map_rect(local_bounds).expand(1.0);
+                ink.intersect(&limit)?
+            }
+            None => limit,
         };
-        self.stats.layers_rendered += 1;
-        let composite = Paint {
-            color: Color::WHITE,
-            blend_mode: paint.blend_mode,
-            ..Default::default()
-        };
-        let effects = LayerEffects::of(paint, current.max_scale(), current, false);
-        self.push_layer_frame(rect, 2.0, composite, None, z, effects);
-        let outer_elisions = std::mem::take(&mut self.elisions);
-        inner(self);
-        self.elisions = outer_elisions;
-        self.close_layer();
+        self.open_target(PixelArea::over(round_out(&region)), ONE_DRAW_LAYER);
+        self.drawing()
+            .draw_alone(content, paint, &DrawState::alone_in_layer(space.source));
+        let placed = space.remainder == Matrix::IDENTITY;
+        Some(self.close_target().placed_where_drawn(placed))
     }
 
-    /// `push_raster_frame` opens a list-raster cache texture as the current
-    /// target. It is a plain frame, not a layer: closing it composites
-    /// nothing, because the quad that samples the finished texture is an
-    /// ordinary draw the caller emits in the parent afterwards.
-    pub(super) fn push_raster_frame(&mut self, target: &FillTarget, z_denom: f32) {
-        let attachments = self.pool.take_raster_attachments(target.size, self.format);
-        self.frames.push(PassFrame {
-            color: PassColor::Layer {
-                msaa: attachments.msaa,
-                resolve: target.view.clone(),
-            },
-            depth: attachments.depth,
-            src_texture: target.texture.clone(),
-            size: target.size,
-            clear: Some(Color::TRANSPARENT),
-            first_segment_emitted: false,
-            last_pass: None,
-            steps: Vec::new(),
-            pre_copies: Vec::new(),
-            cull_rect: Rect::new(0.0, 0.0, target.size[0] as f32, target.size[1] as f32),
-            z_denom,
-            origin: Point::ZERO,
-            transient: true,
-            layer: None,
-        });
+    /// `open_target` opens a pooled offscreen over `area`, hosting `depth`,
+    /// as the context draws go to, and counts it as a rendered layer: `area`
+    /// is in the space of the context beneath it, replay coords or a draw's
+    /// source space.
+    fn open_target(&mut self, area: PixelArea, depth: DepthRange) {
+        self.plan.stats.layers_rendered += 1;
+        let layer = self.tools.pool.take_layer(area.size(), self.tools.format);
+        self.contexts
+            .push(DrawContext::offscreen(layer, area, depth));
     }
 
-    /// `close_raster_frame` flushes the cache texture's last segment and
-    /// pops it. Putting the suspended replay state back is the caller's job,
-    /// the same way it is for a layer.
-    pub(super) fn close_raster_frame(&mut self) {
+    /// `open_raster_target` opens a list-raster cache texture as the context
+    /// draws go to, its depth line `list`'s own. Closing it composites
+    /// nothing: the quad that samples the finished texture is an ordinary
+    /// draw the caller makes in the parent.
+    pub(super) fn open_raster_target(&mut self, fill: &FillTarget, list: &DisplayList) {
+        let attachments = self
+            .tools
+            .pool
+            .take_attachments(fill.size, self.tools.format);
+        self.contexts.push(DrawContext::raster(
+            attachments,
+            fill,
+            DepthRange::of_list(list),
+        ));
+    }
+
+    /// `close_target` emits the top context's last segment, pops it, and
+    /// returns its picture.
+    pub(super) fn close_target(&mut self) -> Snapshot {
         self.emit_segment();
-        self.frames.pop().expect("raster frame present");
-    }
-
-    /// `composite_layer` draws the finished layer texture into the parent:
-    /// a plain alpha/blend composite is one textured quad; an advanced
-    /// blend snapshots the parent and blends in the fragment.
-    fn composite_layer(&mut self, info: &LayerInfo) {
-        if let Some(kind) = info.mask_composite {
-            return self.composite_mask_layer(info, kind);
-        }
-        let (view, uv) = self.composite_source(info);
-        let tint = alpha_tint(info.paint.color.a);
-        if info.paint.blend_mode.is_pipeline_blendable() {
-            let bind = self.emit.texture_bind(&view);
-            let frame = self.frames.last_mut().expect("frame stack never empty");
-            let mut record = self
-                .emit
-                .quad_record(frame, &info.rect, tint, info.composite_z);
-            record.set_payload(PAYLOAD_GEOM, uv);
-            self.emit.push_step(
-                frame,
-                PipelineKind::Draw(Frag::Image),
-                info.paint.blend_mode,
-                record,
-                Some(bind),
-                None,
-                info.composite_z,
-            );
-        } else {
-            let snapshot = self.break_pass(&info.rect);
-            let bind = self.emit.blend_bind(&snapshot, &view);
-            let frame = self.frames.last_mut().expect("frame stack never empty");
-            let mut record = self
-                .emit
-                .quad_record(frame, &info.rect, tint, info.composite_z);
-            record.set_payload(PAYLOAD_GEOM, uv);
-            self.emit
-                .set_blend_misc(frame, &mut record, info.paint.blend_mode);
-            self.emit.push_step(
-                frame,
-                PipelineKind::Draw(Frag::BlendTexture),
-                BlendMode::SrcOver,
-                record,
-                Some(bind),
-                None,
-                info.composite_z,
-            );
-        }
-    }
-
-    /// `composite_mask_layer` samples the mask texture across the WHOLE
-    /// enclosing frame and multiplies it in via DstIn — outside the mask's
-    /// rect the fragment forces coverage 0, which is what erases unmasked
-    /// content.
-    fn composite_mask_layer(&mut self, info: &LayerInfo, kind: MaskKind) {
-        let size = layer_texture_size(&info.rect);
-        let bind = self.emit.texture_bind(&info.resolve);
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        let extent = frame.cull_rect;
-        let mut record = self.emit.quad_record(
-            frame,
-            &extent,
-            alpha_tint(info.paint.color.a),
-            info.composite_z,
-        );
-        let (w, h) = (size[0] as f32, size[1] as f32);
-        record.set_payload(
-            PAYLOAD_GEOM,
-            [1.0 / w, 1.0 / h, -info.rect.x / w, -info.rect.y / h],
-        );
-        let luma = match kind {
-            MaskKind::Luminance => 1.0,
-            MaskKind::Alpha => 0.0,
-        };
-        record.set_payload(PAYLOAD_MISC, [luma, 0.0, 0.0, 0.0]);
-        self.emit.push_step(
-            frame,
-            PipelineKind::Draw(Frag::MaskComposite),
-            BlendMode::DstIn,
-            record,
-            Some(bind),
-            None,
-            info.composite_z,
-        );
-    }
-
-    /// `erase_frame_alpha` composites DstIn with zero source alpha over the
-    /// whole frame — the "mask never rendered" result (coverage 0
-    /// everywhere).
-    fn erase_frame_alpha(&mut self, z: f32) {
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        let extent = frame.cull_rect;
-        let record = self.emit.quad_record(frame, &extent, [0.0; 4], z);
-        self.emit.push_step(
-            frame,
-            PipelineKind::Draw(Frag::Solid),
-            BlendMode::DstIn,
-            record,
-            None,
-            None,
-            z,
-        );
-    }
-
-    /// `frame` returns the innermost open target. Never empty: `new` pushes
-    /// the main frame and every layer push has a matching pop.
-    pub(super) fn frame(&self) -> &PassFrame {
-        self.frames.last().expect("frame stack never empty")
-    }
-
-    pub(super) fn frame_mut(&mut self) -> &mut PassFrame {
-        self.frames.last_mut().expect("frame stack never empty")
-    }
-
-    /// `elision_alpha` is the group alpha of the innermost elided opacity
-    /// scope, or 1. Multiplies tints; never changes depth.
-    pub(super) fn elision_alpha(&self) -> f32 {
-        self.elisions.last().copied().unwrap_or(1.0)
+        self.contexts.pop().picture()
     }
 }
 
-/// `layer_texture_size` is a layer's texture extent: its fractional rect,
-/// ceil'd. The ONE formula — allocation, sampling, and the filter recipes
-/// must agree or edge texels stretch.
-pub(super) fn layer_texture_size(rect: &Rect) -> [u32; 2] {
-    [
-        rect.width.ceil().max(1.0) as u32,
-        rect.height.ceil().max(1.0) as u32,
-    ]
+impl Drawing<'_, '_> {
+    /// `draw_mask_composite` samples the `mask` layer across the WHOLE
+    /// enclosing context and multiplies it in via DstIn — outside the
+    /// mask's rect the fragment forces coverage 0, which is what erases
+    /// unmasked content.
+    fn draw_mask_composite(&mut self, mask: &Snapshot, kind: MaskKind, at: &DrawState) {
+        let shading = self.emit.mask_composite_shading(mask, kind, at.alpha);
+        self.erase_by(shading, at.z);
+    }
+
+    /// `erase_alpha` composites DstIn with zero source alpha over the whole
+    /// context — the "mask never rendered" result (coverage 0 everywhere).
+    fn erase_alpha(&mut self, z: f32) {
+        self.erase_by(Shading::solid([0.0; 4]), z);
+    }
+
+    /// `erase_by` multiplies the whole context by `shading`'s alpha, DstIn.
+    fn erase_by(&mut self, shading: Shading, z: f32) {
+        let entity = Entity {
+            stencil: None,
+            cover: Cover::Quad {
+                transform: Matrix::IDENTITY,
+                rect: self.context.area.rect(),
+            },
+            role: Role::Fill,
+            shading,
+            blend: PipelineBlend::DstIn,
+            z,
+        };
+        self.emit.push(self.context, entity);
+    }
+}
+
+/// `SourceSpace` is where a draw's effects run: Impeller's blur source
+/// space, the draw's transform without its rotation or skew — its
+/// translation and the length of each axis (`CalculateBlurInfo`'s
+/// `source_space_offset` and `source_space_scalar`). The rest of the
+/// transform turns the result where it is drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SourceSpace {
+    /// Local coordinates into source space.
+    pub source: Matrix,
+    /// Source space into the parent's replay coordinates.
+    pub remainder: Matrix,
+}
+
+impl SourceSpace {
+    /// `of` splits `transform`; `None` when an axis has no length, so
+    /// nothing it draws shows.
+    pub fn of(transform: &Matrix) -> Option<Self> {
+        let [scale_x, scale_y] = extract_scale(transform);
+        let [.., offset_x, offset_y] = transform.to_affine();
+        let source = Matrix::translation(offset_x, offset_y).then(&Matrix::scale(scale_x, scale_y));
+        let remainder = transform.then(&source.invert()?);
+        Some(Self { source, remainder })
+    }
+
+    /// `to_source` maps a region of the parent's replay coordinates into
+    /// source space, its bounds there.
+    pub fn to_source(&self, region: &Rect) -> Rect {
+        self.remainder
+            .invert()
+            .map_or(Rect::EVERYTHING, |inverse| inverse.map_rect(region))
+    }
+}
+
+/// `round_out` is the smallest rect of whole pixels holding `rect`:
+/// Impeller's `IRect::RoundOut` for a save layer's subpass. A layer on whole
+/// pixels renders its children on the parent's pixel grid, and its
+/// composite copies texels 1:1 instead of resampling them.
+pub(super) fn round_out(rect: &Rect) -> Rect {
+    Rect::from_ltrb(
+        rect.x.floor(),
+        rect.y.floor(),
+        rect.right().ceil(),
+        rect.bottom().ceil(),
+    )
+}
+
+/// Impeller's `gaussian_blur_filter_contents_unittests.cc` for a draw: the
+/// blurred draw's coverage, worked out in its source space and turned back
+/// by the rest of its transform, is what Impeller's `GetCoverage` says.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A layer over `content`, opening in an unclipped 100×100 target at
+    /// slot 4 with three slots of children, as `paint` says.
+    fn layer(paint: &Paint, content: Rect) -> ResolvedLayer<'_> {
+        ResolvedLayer {
+            paint,
+            mask: None,
+            content: Bounds::of(content),
+            clip: Bounds::Unbounded,
+            depth: DepthRange::new(4, 4),
+            floods_clip: false,
+            at: DrawState::in_layer(Matrix::IDENTITY, 0.5),
+            can_elide: false,
+            backdrop: None,
+        }
+    }
+
+    fn target() -> PixelArea {
+        PixelArea::of_size([100, 100])
+    }
+
+    fn opened_area(plan: LayerPlan) -> Rect {
+        match plan {
+            LayerPlan::Open { area, .. } => area.rect(),
+            _ => panic!("the layer opens"),
+        }
+    }
+
+    /// A layer opens over its content in whole pixels; a layer that misses
+    /// the target is skipped, and a mask that does erases instead.
+    #[test]
+    fn a_layer_opens_over_its_content_or_is_skipped() {
+        let paint = Paint::default();
+        let content = Rect::new(10.5, 20.0, 30.0, 10.25);
+        assert_eq!(
+            opened_area(LayerPlan::of(&layer(&paint, content), &target())),
+            Rect::from_ltrb(10.0, 20.0, 41.0, 31.0)
+        );
+        let outside = layer(&paint, Rect::new(200.0, 0.0, 10.0, 10.0));
+        assert!(matches!(
+            LayerPlan::of(&outside, &target()),
+            LayerPlan::Skip { erase: false }
+        ));
+        let mask = ResolvedLayer {
+            mask: Some(MaskKind::Alpha),
+            ..layer(&paint, Rect::new(200.0, 0.0, 10.0, 10.0))
+        };
+        assert!(matches!(
+            LayerPlan::of(&mask, &target()),
+            LayerPlan::Skip { erase: true }
+        ));
+    }
+
+    /// An elidable layer hands its alpha to its children; it still shows
+    /// somewhere, or it would be skipped.
+    #[test]
+    fn an_elidable_layer_hands_its_alpha_on() {
+        let paint = Paint::from_color(valo_geometry::Color::rgba(0.0, 0.0, 0.0, 0.25));
+        let elidable = ResolvedLayer {
+            can_elide: true,
+            ..layer(&paint, Rect::new(10.0, 10.0, 10.0, 10.0))
+        };
+        assert!(matches!(
+            LayerPlan::of(&elidable, &target()),
+            LayerPlan::Elide(alpha) if alpha == 0.25
+        ));
+    }
+
+    /// A layer that floods its clip covers the clip within the target,
+    /// whatever its content; its composite draws at the identity with the
+    /// paint's alpha.
+    #[test]
+    fn a_flooding_layer_covers_its_clip() {
+        let paint = Paint::from_color(valo_geometry::Color::rgba(0.0, 0.0, 0.0, 0.5));
+        let flooding = ResolvedLayer {
+            floods_clip: true,
+            clip: Bounds::Bounded(Rect::new(-10.0, 30.0, 50.0, 20.0)),
+            at: DrawState {
+                transform: Matrix::translation(3.0, 4.0),
+                z: 0.5,
+                alpha: 0.5,
+            },
+            ..layer(&paint, Rect::new(12.0, 34.0, 2.0, 2.0))
+        };
+        let LayerPlan::Open { area, composite } = LayerPlan::of(&flooding, &target()) else {
+            panic!("the layer opens");
+        };
+        assert_eq!(area.rect(), Rect::new(0.0, 30.0, 40.0, 20.0));
+        assert_eq!(composite.at.transform, Matrix::IDENTITY);
+        assert_eq!(composite.at.alpha, 0.25);
+        assert_eq!(composite.at.z, 0.5);
+    }
+
+    /// A layer whose blur reads transparent past its edge (decal) keeps its
+    /// tight texture round its content, wherever the clip is; one whose blur
+    /// clamps covers its clip, cut by its bounds hint, the edge it clamps at.
+    #[test]
+    fn a_blur_that_reads_past_its_edge_covers_the_clip_and_a_decal_one_its_content() {
+        use valo_dl::{ImageFilter, TileMode};
+        let blurred = |tile_mode: Option<TileMode>| {
+            let blur = ImageFilter::blur(4.0, 4.0);
+            Paint {
+                image_filter: Some(match tile_mode {
+                    Some(tile_mode) => blur.with_tile_mode(tile_mode),
+                    None => blur,
+                }),
+                ..Paint::default()
+            }
+        };
+        let content = Rect::new(40.0, 40.0, 20.0, 20.0);
+        let clip = Bounds::Bounded(Rect::new(10.0, 10.0, 80.0, 80.0));
+        let area = |paint: &Paint, clip: Bounds| {
+            let layer = ResolvedLayer {
+                clip,
+                ..layer(paint, content)
+            };
+            opened_area(LayerPlan::of(&layer, &target()))
+        };
+        let decal = blurred(None);
+        assert_eq!(area(&decal, clip), content);
+        assert_eq!(area(&decal, Bounds::Unbounded), content);
+        let clamp = blurred(Some(TileMode::Clamp));
+        assert_eq!(area(&clamp, clip), Rect::new(10.0, 10.0, 80.0, 80.0));
+        assert_eq!(
+            area(&clamp, Bounds::Unbounded),
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            "unclipped, the target is the limit"
+        );
+    }
+
+    use crate::planner::filter_tree::FilterInput;
+    use crate::planner::gaussian::sigma_for_blur_radius;
+    use valo_dl::{ImageFilter, TileMode};
+
+    /// What a draw of `local` blurred by σ under `entity` covers.
+    fn blurred_draw_coverage(entity: &Matrix, local: &Rect, sigma: f32) -> Rect {
+        let space = SourceSpace::of(entity).expect("an invertible transform");
+        let tree = FilterInput::Source
+            .with_image_filter(Some(&ImageFilter::blur(sigma, sigma)), TileMode::Decal);
+        let source = space.source.map_rect(local);
+        space
+            .remainder
+            .map_rect(&tree.coverage(&source, &space.source))
+    }
+
+    fn assert_rect_near(actual: Rect, expected: Rect) {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(
+            near(actual.x, expected.x)
+                && near(actual.y, expected.y)
+                && near(actual.right(), expected.right())
+                && near(actual.bottom(), expected.bottom()),
+            "{actual:?} != {expected:?}"
+        );
+    }
+
+    /// A 400×300 draw turned a quarter about its top left, then moved to
+    /// (400, 100).
+    #[test]
+    fn render_coverage_matches_get_coverage_rotated() {
+        let sigma = sigma_for_blur_radius(1.0, &Matrix::IDENTITY);
+        let entity =
+            Matrix::translation(400.0, 100.0).then(&Matrix::rotation(std::f32::consts::FRAC_PI_2));
+        let coverage = blurred_draw_coverage(&entity, &Rect::new(0.0, 0.0, 400.0, 300.0), sigma);
+        assert_rect_near(coverage, Rect::from_ltrb(99.0, 99.0, 401.0, 501.0));
+    }
+
+    #[test]
+    fn texture_contents_with_destination_rect() {
+        let sigma = sigma_for_blur_radius(1.0, &Matrix::IDENTITY);
+        let coverage = blurred_draw_coverage(
+            &Matrix::IDENTITY,
+            &Rect::new(50.0, 40.0, 100.0, 100.0),
+            sigma,
+        );
+        assert_rect_near(coverage, Rect::from_ltrb(49.0, 39.0, 151.0, 141.0));
+    }
+
+    /// Impeller expects 94, 74, 212, 212 here: it passes the texture through
+    /// without rendering it, so its texels are two source pixels wide and a σ
+    /// computed for source pixels blurs twice as far, and its
+    /// `local_padding` scales the padding by the entity once more. valo
+    /// departs from it: a draw renders into its effect layer at source
+    /// resolution, and a texture passed through blurs with σ divided by its
+    /// texel size (`BlurInfo::in_texels`), so the σ of 2.16 source pixels
+    /// reaches 3 of them each side either way.
+    #[test]
+    fn texture_contents_with_destination_rect_scaled() {
+        let sigma = sigma_for_blur_radius(1.0, &Matrix::IDENTITY);
+        let coverage = blurred_draw_coverage(
+            &Matrix::scale(2.0, 2.0),
+            &Rect::new(50.0, 40.0, 100.0, 100.0),
+            sigma,
+        );
+        assert_rect_near(coverage, Rect::from_ltrb(97.0, 77.0, 303.0, 283.0));
+    }
+
+    /// The effect transform of a layer: the blur's σ is taken through it,
+    /// and what it covers stays in the layer's space.
+    #[test]
+    fn texture_contents_with_effect_transform() {
+        let effect_transform = Matrix::scale(2.0, 2.0);
+        let sigma = sigma_for_blur_radius(1.0, &effect_transform);
+        let tree = FilterInput::Source
+            .with_image_filter(Some(&ImageFilter::blur(sigma, sigma)), TileMode::Decal);
+        let coverage = tree.coverage(&Rect::new(50.0, 40.0, 100.0, 100.0), &effect_transform);
+        assert_rect_near(coverage, Rect::from_ltrb(49.0, 39.0, 151.0, 141.0));
+    }
+
+    /// A mirror is the remainder's to undo: source space keeps the axes'
+    /// lengths, and the draw lands back where the transform puts it.
+    #[test]
+    fn source_space_leaves_a_mirror_to_the_remainder() {
+        let entity = Matrix::translation(100.0, 0.0).then(&Matrix::scale(-2.0, 3.0));
+        let space = SourceSpace::of(&entity).expect("an invertible transform");
+        assert_eq!(extract_scale(&space.source), [2.0, 3.0]);
+        let point = valo_geometry::Point::new(5.0, 7.0);
+        let placed = space.remainder.map_point(space.source.map_point(point));
+        assert_eq!(placed, entity.map_point(point));
+    }
 }

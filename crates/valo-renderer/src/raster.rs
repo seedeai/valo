@@ -168,7 +168,7 @@ fn scale_serves(entry_scale: f32, needed_scale: f32) -> bool {
 /// Admission that reads only the list: enough draws to beat a quad, no
 /// backdrop reads (a backdrop samples what is BEHIND the list — flutter
 /// excludes backdrop filters from its cache for the same reason), and
-/// finite non-empty bounds.
+/// bounds a texture can hold: neither empty nor unbounded.
 fn cacheable_bounds(list: &DisplayList) -> Option<Rect> {
     if list.draw_count() < MIN_CACHED_DRAWS {
         return None;
@@ -176,8 +176,7 @@ fn cacheable_bounds(list: &DisplayList) -> Option<Rect> {
     if list.backdrop_reads() > 0 {
         return None;
     }
-    let bounds = list.bounds()?;
-    (bounds.width > 0.0 && bounds.height > 0.0 && bounds.width.is_finite()).then_some(bounds)
+    list.bounds().rect()
 }
 
 fn raster_size(bounds: &Rect, scale: f32, max_dimension: u32) -> Option<[u32; 2]> {
@@ -245,7 +244,8 @@ fn create_entry(
 mod tests {
     use std::sync::Arc;
 
-    use valo_dl::{Backdrop, DisplayListBuilder, Paint};
+    use valo_dl::{Backdrop, BlendMode, ColorFilter, DisplayListBuilder, ImageFilter, Paint};
+    use valo_geometry::Color;
 
     use super::*;
 
@@ -262,6 +262,19 @@ mod tests {
     #[test]
     fn admits_a_plain_heavy_list() {
         assert!(cacheable_bounds(&heavy_builder().build()).is_some());
+    }
+
+    /// A list that may show anywhere fits no texture.
+    #[test]
+    fn rejects_an_unbounded_list() {
+        let mut b = heavy_builder();
+        let fill_red = ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+        let flooding = Paint {
+            image_filter: Some(ImageFilter::color(fill_red)),
+            ..Paint::default()
+        };
+        b.draw_rect(Rect::new(0.0, 0.0, 8.0, 8.0), &flooding);
+        assert!(cacheable_bounds(&b.build()).is_none());
     }
 
     #[test]

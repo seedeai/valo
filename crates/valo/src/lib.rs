@@ -40,7 +40,7 @@ pub use valo_renderer::{
 };
 
 pub use valo_dl::{
-    Backdrop, BackdropGroup, BlendMode, BlurStyle, ClipOp, ColorFilter, DisplayList,
+    Backdrop, BackdropGroup, BlendMode, BlurStyle, Bounds, ClipOp, ColorFilter, DisplayList,
     DisplayListBuilder, Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind,
     MipmapMode, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
 };

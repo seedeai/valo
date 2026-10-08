@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use valo_geometry::{FillRule, Matrix, Path, PathBuilder, Rect};
 
-use crate::{ClipOp, DisplayList, Image, ImageFilter, MaskKind, Op, Paint, Sampling};
+use crate::list::Recording;
+use crate::{Backdrop, Bounds, ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling};
 
 /// `DisplayListBuilder` records drawing commands into an immutable display list.
 ///
@@ -11,71 +12,80 @@ use crate::{ClipOp, DisplayList, Image, ImageFilter, MaskKind, Op, Paint, Sampli
 /// rediscover them.
 pub struct DisplayListBuilder {
     ops: Vec<Op>,
+    /// The open scopes, innermost last: the root scope at the bottom, closed
+    /// by `build`, and one per open save or save layer.
     scopes: Vec<Scope>,
-    /// Open save layers (innermost last). Layer-scoped oracle state lives
-    /// here; `Scope.is_layer` says which restore pops one.
-    layers: Vec<LayerScope>,
-    /// Shared backdrop keys seen so far, each with the union of the regions
-    /// of the backdrop layers carrying it (the replay blurs each union once).
-    backdrop_groups: Vec<crate::BackdropGroup>,
-    /// Ops indexes of clips awaiting their expiry, one bucket per open scope
-    /// (index 0 = the root scope, closed by `build`).
-    pending_clips: Vec<Vec<usize>>,
     /// The depth-slot counter: ONE line for the whole list (Impeller's
     /// `current_depth_`) — layer children continue it, never restart it.
     slots: u32,
-    bounds: Option<Rect>,
-    draw_count: u32,
-    /// Backdrop reads in this list, nested lists included — shared or not.
-    /// Consumers that freeze pixels (the raster cache) must refuse any list
-    /// where this is nonzero.
-    backdrop_reads: u32,
+    bounds: Bounds,
     /// The root's group-opacity oracle: what an enclosing layer that embeds
     /// this list learns about its children.
     root: GroupOpacity,
 }
 
-/// `Backdrop` filters the sampled scene before a save layer's children paint.
-///
-/// Compose image filters to control the order of backdrop effects. The layer's
-/// paint separately controls how the filtered backdrop and children composite.
-#[derive(Clone, Debug)]
-pub struct Backdrop {
-    /// `filter` transforms the sampled scene in local coordinates.
-    pub filter: ImageFilter,
-    /// `shared_key` lets tiles reuse the first matching filtered snapshot.
-    /// Use one key only for tiles over the same background with the same filter.
-    pub shared_key: Option<u64>,
-}
-
-impl Backdrop {
-    /// `new` filters the backdrop with `filter` before foreground content paints.
-    pub fn new(filter: ImageFilter) -> Self {
-        Self {
-            filter,
-            shared_key: None,
-        }
-    }
-
-    /// `blur` creates an isotropic Gaussian backdrop blur in local units.
-    pub fn blur(sigma: f32) -> Self {
-        Self::new(ImageFilter::blur(sigma, sigma))
-    }
-
-    /// `shared` marks this backdrop as one tile of a keyed group.
-    pub fn shared(mut self, key: u64) -> Self {
-        self.shared_key = Some(key);
-        self
-    }
-}
-
-/// One save-scope's state: the transform and the device-space clip bounds
-/// (`None` = unclipped). Both restore on `restore()`.
-#[derive(Clone, Copy)]
+/// `Scope` is one open scope — the root, a save, or a save layer — and
+/// everything its restore closes: the transform and clips its children see,
+/// the clips made in it, and, for a save layer, what its restore backpatches.
 struct Scope {
     transform: Matrix,
-    clip: Option<Rect>,
-    is_layer: bool,
+    clip: ClipState,
+    /// Ops indexes of the clips made in this scope, awaiting the expiry its
+    /// restore records.
+    pending_clips: Vec<usize>,
+    /// Set on a save layer's scope.
+    layer: Option<LayerScope>,
+}
+
+/// `ClipState` is where a scope's children can show, list-root space:
+/// unbounded where nothing clips them. Where they can show nowhere, the
+/// scope is a nop: it records nothing more (Flutter's `is_nop`).
+#[derive(Clone, Copy)]
+struct ClipState {
+    /// What a child is culled by: one that shows nowhere inside it is
+    /// dropped, and its bounds are cropped by it.
+    cull: Bounds,
+    /// What the innermost open layer's content bounds are cropped by: the
+    /// clips made since it opened, with its bounds hint. Clips around a
+    /// layer do not crop its content, since a filter on the layer reads past
+    /// them (Flutter's `layer_state`).
+    layer_content: Bounds,
+}
+
+impl ClipState {
+    /// `UNCLIPPED` is the root's: its children show anywhere.
+    const UNCLIPPED: Self = Self {
+        cull: Bounds::Unbounded,
+        layer_content: Bounds::Unbounded,
+    };
+
+    /// `NOWHERE` is a nop scope's: nothing recorded in it could show.
+    const NOWHERE: Self = Self {
+        cull: Bounds::Empty,
+        layer_content: Bounds::Empty,
+    };
+
+    /// `is_nop` reports whether the scope's children can show nowhere.
+    fn is_nop(&self) -> bool {
+        self.cull.is_empty() || self.layer_content.is_empty()
+    }
+}
+
+/// `Footprint` is where one recorded child may show: cropped by the clip,
+/// for culling and the list's bounds, and cropped only by the clips inside
+/// the innermost layer, for that layer's content bounds. Neither is empty.
+#[derive(Clone, Copy)]
+struct Footprint {
+    culled: Bounds,
+    in_layer: Bounds,
+}
+
+impl Footprint {
+    /// `cull_rect` is the rect a draw's op records for replay to cull it
+    /// by: one that fills an unclipped list may show anywhere.
+    fn cull_rect(&self) -> Rect {
+        self.culled.rect().unwrap_or(Rect::EVERYTHING)
+    }
 }
 
 /// Whether a group's alpha distributes over its children: every child
@@ -90,32 +100,29 @@ struct GroupOpacity {
     /// overlap even when it misses every earlier child: one rectangle to
     /// test instead of every child, at the price of a few group textures
     /// that were not needed (Flutter's `AccumulationRect`).
-    union: Option<Rect>,
+    union: Bounds,
 }
 
 impl GroupOpacity {
     fn new() -> Self {
         Self {
             compatible: true,
-            union: None,
+            union: Bounds::Empty,
         }
     }
 
-    /// One more child: falsify on an alpha-nonlinear one or the first
-    /// overlap (disjoint children are what makes shared-z elision legal).
-    fn note(&mut self, bounds: Rect, supports_opacity: bool) {
+    /// One more child: falsify on one that cannot take the group's opacity
+    /// or on the first overlap (disjoint children are what makes shared-z
+    /// elision legal).
+    fn note(&mut self, bounds: Bounds, takes_group_opacity: bool) {
         if !self.compatible {
             return;
         }
-        let overlaps = self.union.is_some_and(|union| union.intersects(&bounds));
-        if !supports_opacity || overlaps {
+        if !takes_group_opacity || self.union.intersects(&bounds) {
             self.compatible = false;
             return;
         }
-        self.union = Some(match self.union {
-            Some(union) => union.union(&bounds),
-            None => bounds,
-        });
+        self.union = self.union.union(&bounds);
     }
 }
 
@@ -123,14 +130,24 @@ impl GroupOpacity {
 struct LayerScope {
     /// The `Op::SaveLayer` to backpatch at restore.
     op_index: usize,
-    /// Union of child draw bounds (list-root space, already clip∩hint-cropped).
-    bounds: Option<Rect>,
-    /// Whether the composite's alpha can ride the children instead.
+    /// Union of the children's content bounds (list-root space, cropped by
+    /// the clips inside the layer and the hint).
+    bounds: Bounds,
+    /// Whether the children can take a group alpha.
     group: GroupOpacity,
-    /// ±3σ (device units) when the composite paint blurs.
-    blur_pad: f32,
-    /// The sampled-scene filter and optional shared group, recorded at save time.
-    backdrop: Option<Backdrop>,
+    /// How far the composite paint's filters spread the layer's content,
+    /// list-root units (3σ for a blur, as Flutter's display list pads it).
+    reach: f32,
+    /// The clip where the layer opens, cropped by the hint: the op's
+    /// `clip_bounds`.
+    opening_clip: Bounds,
+    /// The op's `takes_group_opacity`: an enclosing group's alpha can ride
+    /// the composite, and the composite is nothing but an alpha.
+    takes_group_opacity: bool,
+    /// The op's `floods_clip`.
+    floods: bool,
+    /// The layer opens on a backdrop, which needs a texture to seed.
+    has_backdrop: bool,
     /// A caller-supplied bounds hint is a CROP; eliding a hinted layer
     /// would un-crop it. Conservative — Flutter tracks whether the bounds
     /// actually clipped (`kMayClipContents`); valo vetoes on any hint until
@@ -151,16 +168,12 @@ impl DisplayListBuilder {
             ops: Vec::new(),
             scopes: vec![Scope {
                 transform: Matrix::IDENTITY,
-                clip: None,
-                is_layer: false,
+                clip: ClipState::UNCLIPPED,
+                pending_clips: Vec::new(),
+                layer: None,
             }],
-            layers: Vec::new(),
-            backdrop_groups: Vec::new(),
-            pending_clips: vec![Vec::new()],
             slots: 0,
-            bounds: None,
-            draw_count: 0,
-            backdrop_reads: 0,
+            bounds: Bounds::Empty,
             root: GroupOpacity::new(),
         }
     }
@@ -169,11 +182,14 @@ impl DisplayListBuilder {
 
     /// `save` preserves the current transform and clip until the matching `restore`.
     pub fn save(&mut self) {
-        self.scopes.push(Scope {
-            is_layer: false,
-            ..*self.top()
-        });
-        self.pending_clips.push(Vec::new());
+        let top = self.top();
+        let scope = Scope {
+            transform: top.transform,
+            clip: top.clip,
+            pending_clips: Vec::new(),
+            layer: None,
+        };
+        self.scopes.push(scope);
         self.ops.push(Op::Save);
     }
 
@@ -234,62 +250,63 @@ impl DisplayListBuilder {
         mask_composite: Option<MaskKind>,
         backdrop: Option<Backdrop>,
     ) {
-        let device_hint = bounds_hint.map(|h| self.top().transform.map_rect(&h));
-        let mut scope = Scope {
-            is_layer: true,
-            ..*self.top()
+        // A save layer's paint takes no mask blur: Flutter's display list
+        // leaves it out of a save layer's attributes
+        // (`kSaveLayerWithPaintFlags`), and Impeller has no way to apply one.
+        let paint = Paint {
+            mask_blur: None,
+            ..paint.clone()
         };
-        // The hint crops children: fold it into the scope clip so child
-        // bounds (and everything derived) come pre-cropped.
-        if let Some(h) = device_hint {
-            scope.clip = Some(match scope.clip {
-                None => h,
-                Some(c) => c.intersect(&h).unwrap_or_default(),
-            });
+        if self.top().clip.is_nop() || paint.is_invisible() {
+            // Nothing the layer holds could show: a nop scope (Flutter's
+            // `saveLayer` with no effect).
+            self.save();
+            self.top_mut().clip = ClipState::NOWHERE;
+            return;
         }
-        // A filter that changes transparent black has output outside child
-        // ink. Its input coverage is therefore the explicit/active clip, or
-        // the renderer's eventual surface limit when no clip is known yet.
-        let floods_scope = paint.blend_mode.is_destructive()
-            || paint
-                .color_filter
-                .is_some_and(|filter| filter.modifies_transparent_black())
-            || paint
-                .image_filter
-                .as_ref()
-                .is_some_and(|filter| filter.modifies_transparent_black())
-            // A backdrop layer OPENS full of blurred parent, so it paints its
-            // whole region whether or not children add ink — and with no
-            // hint that region is everything beneath it. Deriving its bounds
-            // from children instead would leave a childless glass panel empty.
-            || backdrop.is_some();
-        let flooded_bounds = floods_scope.then(|| scope.clip.unwrap_or(Rect::EVERYTHING));
-        if backdrop.is_some() {
-            self.backdrop_reads += 1;
-        }
-        self.scopes.push(scope);
-        self.pending_clips.push(Vec::new());
-        self.layers.push(LayerScope {
+        let top = self.top();
+        let transform = top.transform;
+        let root_hint =
+            bounds_hint.map_or(Bounds::Unbounded, |hint| Bounds::of(hint).map(&transform));
+        let reach = paint.device_effect_padding(&transform);
+        let layer = LayerScope {
             op_index: self.ops.len(),
-            bounds: flooded_bounds,
+            bounds: Bounds::Empty,
             group: GroupOpacity::new(),
-            // Blurred layers spread ink past their children:
-            // pad the recorded bounds so the texture holds the falloff.
-            blur_pad: paint.device_effect_padding(&self.top().transform),
-            backdrop: backdrop.clone(),
-            hinted: device_hint.is_some(),
-        });
+            reach,
+            // The hint crops the children, so it joins every clip they see.
+            opening_clip: top.clip.cull.intersect(&root_hint),
+            takes_group_opacity: paint.takes_group_opacity(),
+            floods: floods_its_clip(&paint, backdrop.is_some()),
+            has_backdrop: backdrop.is_some(),
+            hinted: bounds_hint.is_some(),
+        };
+        let clip = ClipState {
+            // A filter on the layer reads past the clip, so the children are
+            // culled by the clip widened by its reach (Flutter's
+            // `resetDeviceCullRect` with the filter's input bounds).
+            cull: top.clip.cull.expand(reach).intersect(&root_hint),
+            layer_content: root_hint,
+        };
         // Children keep counting on the SAME depth line (Impeller's global
         // numbering) — the layer's pass rebases against base_slot.
         self.ops.push(Op::SaveLayer {
-            paint: paint.clone(),
+            paint,
             mask_composite,
-            scope_bounds: Rect::default(), // backpatched at restore
+            scope_bounds: Bounds::Empty, // backpatched at restore
+            clip_bounds: layer.opening_clip,
             base_slot: self.slots,
             composite_slot: 0,
+            floods_clip: layer.floods,
+            takes_group_opacity: layer.takes_group_opacity,
             can_elide: false,
-            backdrop_key: backdrop.as_ref().and_then(|b| b.shared_key),
-            backdrop_filter: backdrop.map(|b| b.filter),
+            backdrop,
+        });
+        self.scopes.push(Scope {
+            transform,
+            clip,
+            pending_clips: Vec::new(),
+            layer: Some(layer),
         });
     }
 
@@ -302,9 +319,9 @@ impl DisplayListBuilder {
             return;
         }
         let scope = self.scopes.pop().expect("checked above");
-        self.expire_scope_clips(); // uses the CURRENT (possibly layer) counter
-        if scope.is_layer {
-            self.close_layer();
+        self.expire_clips(scope.pending_clips);
+        if let Some(layer) = scope.layer {
+            self.close_layer(layer);
         }
         self.ops.push(Op::Restore);
     }
@@ -385,17 +402,23 @@ impl DisplayListBuilder {
     /// dialog depends on this — fade → clip → backdrop must keep the fade
     /// elidable or the glass snapshots a cleared offscreen.
     pub fn clip_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, op: ClipOp) {
-        let bounds = self.top().transform.map_rect(&path.bounds());
+        if self.top().clip.is_nop() {
+            return;
+        }
+        let bounds = Bounds::of(path.bounds()).map(&self.top().transform);
         self.shrink_clip(op, bounds);
-        self.pending_clips
-            .last_mut()
-            .expect("root scope")
-            .push(self.ops.len());
+        if self.top().clip.is_nop() {
+            // The clip leaves the scope nothing, so the scope records
+            // nothing more, this clip included (Flutter's `is_nop`).
+            return;
+        }
+        let index = self.ops.len();
+        self.top_mut().pending_clips.push(index);
         self.ops.push(Op::ClipPath {
             path: Arc::clone(path),
             fill_rule,
             op,
-            expiry_slot: 0, // backpatched by expire_scope_clips
+            expiry_slot: 0, // backpatched by expire_clips
         });
     }
 
@@ -404,9 +427,6 @@ impl DisplayListBuilder {
     /// `draw_rect` records a filled or stroked rectangle.
     pub fn draw_rect(&mut self, rect: impl Into<Rect>, paint: &Paint) {
         let rect = rect.into();
-        if paint.is_nop() {
-            return;
-        }
         if matches!(paint.style, crate::PaintStyle::Stroke(_)) {
             // Stroked rects are stroked paths — one geometry pipeline.
             // Zero-area rects still stroke: Skia draws them as a line.
@@ -419,36 +439,36 @@ impl DisplayListBuilder {
             self.record_rrect_blur(rect, [0.0; 4], paint);
             return;
         }
-        let Some(bounds) = self.clipped_device_bounds(&paint.effect_bounds(rect)) else {
-            return; // fully clipped at record time
-        };
-        let slot = self.take_draw_slot(bounds, supports_opacity(paint));
-        self.ops.push(Op::DrawRect {
-            rect,
-            paint: paint.clone(),
-            bounds,
-            slot,
+        self.record_draw(rect, paint, paint.takes_group_opacity(), |bounds, slot| {
+            Op::DrawRect {
+                rect,
+                paint: paint.clone(),
+                bounds,
+                slot,
+            }
         });
     }
 
     /// `draw_path` records a filled or stroked path.
     pub fn draw_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, paint: &Paint) {
-        if path.is_empty() || paint.is_nop() {
+        if path.is_empty() {
             return;
         }
         let scale = self.top().transform.max_scale();
-        let local = paint.effect_bounds(path.bounds().expand(paint.stroke_padding_at_scale(scale)));
-        let Some(bounds) = self.clipped_device_bounds(&local) else {
-            return;
-        };
-        let slot = self.take_draw_slot(bounds, supports_opacity(paint));
-        self.ops.push(Op::DrawPath {
-            path: Arc::clone(path),
-            fill_rule,
-            paint: paint.clone(),
-            bounds,
-            slot,
-        });
+        let content_bounds = path.bounds().expand(paint.stroke_padding_at_scale(scale));
+        self.record_draw(
+            content_bounds,
+            paint,
+            paint.takes_group_opacity(),
+            |bounds, slot| Op::DrawPath {
+                path: Arc::clone(path),
+                fill_rule,
+                paint: paint.clone(),
+                content_bounds,
+                bounds,
+                slot,
+            },
+        );
     }
 
     /// `draw_circle` records a filled or stroked circle.
@@ -474,7 +494,7 @@ impl DisplayListBuilder {
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
         let rect = positive_rect(rect.into());
-        if rect.is_empty() || paint.is_nop() {
+        if rect.is_empty() {
             return;
         }
         if is_analytic_blur(paint) {
@@ -499,7 +519,7 @@ impl DisplayListBuilder {
         if let Some(circular) = circular_radii(radii) {
             return self.draw_rrect_radii(rect, circular, paint);
         }
-        if rect.is_empty() || paint.is_nop() {
+        if rect.is_empty() {
             return;
         }
         let mut p = PathBuilder::new();
@@ -527,21 +547,19 @@ impl DisplayListBuilder {
         sampling: Sampling,
         paint: &Paint,
     ) {
-        if dst.is_empty() || src.is_empty() || paint.is_nop() {
+        if dst.is_empty() || src.is_empty() {
             return;
         }
-        let Some(bounds) = self.clipped_device_bounds(&paint.effect_bounds(dst)) else {
-            return;
-        };
-        let slot = self.take_draw_slot(bounds, supports_opacity(paint));
-        self.ops.push(Op::DrawImage {
-            image: image.clone(),
-            src,
-            dst,
-            sampling,
-            paint: paint.clone(),
-            bounds,
-            slot,
+        self.record_draw(dst, paint, paint.takes_group_opacity(), |bounds, slot| {
+            Op::DrawImage {
+                image: image.clone(),
+                src,
+                dst,
+                sampling,
+                paint: paint.clone(),
+                bounds,
+                slot,
+            }
         });
     }
 
@@ -557,26 +575,29 @@ impl DisplayListBuilder {
         glyphs: Arc<Vec<crate::GlyphPos>>,
         local_bounds: Rect,
     ) {
-        if glyphs.is_empty() || paint.is_nop() {
+        if glyphs.is_empty() {
             return;
         }
         let scale = self.top().transform.max_scale();
-        let padded = paint.effect_bounds(local_bounds.expand(paint.stroke_padding_at_scale(scale)));
-        let Some(bounds) = self.clipped_device_bounds(&padded) else {
-            return;
-        };
-        // Shader text desugars into a two-draw layer at plan time; group
-        // opacity can't ride its children (it would apply twice).
-        let distributes = supports_opacity(paint) && paint.shader.is_none();
-        let slot = self.take_draw_slot(bounds, distributes);
-        self.ops.push(Op::GlyphRun {
-            font,
-            size,
-            paint: paint.clone(),
-            glyphs,
-            bounds,
-            slot,
-        });
+        let content_bounds = local_bounds.expand(paint.stroke_padding_at_scale(scale));
+        // A run never takes a group's alpha (Flutter's rule): its glyphs may
+        // overlap, nothing says whether they do, and an overlap faded glyph
+        // by glyph darkens.
+        let takes_group_opacity = false;
+        self.record_draw(
+            content_bounds,
+            paint,
+            takes_group_opacity,
+            |bounds, slot| Op::GlyphRun {
+                font,
+                size,
+                paint: paint.clone(),
+                glyphs,
+                content_bounds,
+                bounds,
+                slot,
+            },
+        );
     }
 
     /// `draw_display_list` records a nested display list by shared reference.
@@ -593,27 +614,21 @@ impl DisplayListBuilder {
     }
 
     fn embed_display_list(&mut self, list: &Arc<DisplayList>, cache: bool) {
-        let Some(child_bounds) = list.bounds() else {
-            return; // draws nothing
-        };
-        let Some(bounds) = self.clipped_device_bounds(&child_bounds) else {
-            return;
-        };
-        let base_slot = self.slots;
-        self.slots += list.depth_slots();
-        self.draw_count += list.draw_count();
-        self.backdrop_reads += list.backdrop_reads();
-        self.union_bounds(bounds);
         // The list answers for its own children (Flutter's
         // `can_apply_group_opacity`): a picture of one draw elides as the
         // draw would.
-        self.note_layer_child(bounds, list.supports_opacity());
-        self.ops.push(Op::DrawDisplayList {
-            list: Arc::clone(list),
-            bounds,
-            base_slot,
-            cache,
-        });
+        let slots = list.depth_slots();
+        self.record_op(
+            list.bounds(),
+            slots,
+            list.supports_opacity(),
+            |bounds, last_slot| Op::DrawDisplayList {
+                list: Arc::clone(list),
+                bounds,
+                base_slot: last_slot - slots,
+                cache,
+            },
+        );
     }
 
     // ── build ──────────────────────────────────────────────────────────────
@@ -627,15 +642,15 @@ impl DisplayListBuilder {
         while self.scopes.len() > 1 {
             self.restore();
         }
-        self.expire_scope_clips(); // root-scope clips live to end-of-list
+        let root = self.scopes.pop().expect("the root scope is never restored");
+        self.expire_clips(root.pending_clips); // root-scope clips live to end-of-list
         DisplayList::new(
             self.ops,
-            self.bounds,
-            self.draw_count,
-            self.slots,
-            self.backdrop_groups,
-            self.backdrop_reads,
-            self.root.compatible,
+            Recording {
+                bounds: self.bounds,
+                depth_slots: self.slots,
+                supports_opacity: self.root.compatible,
+            },
         )
     }
 
@@ -649,23 +664,22 @@ impl DisplayListBuilder {
         self.scopes.last_mut().expect("scope stack never empty")
     }
 
-    /// Backpatch the layer's oracle at its restore. Order matters: the
-    /// layer's clips expired first (caller did that), so their slots sit
-    /// inside the children's span; the composite takes the NEXT slot on the
-    /// same line.
-    fn close_layer(&mut self) {
-        let layer = self.layers.pop().expect("is_layer scope had a LayerScope");
-        self.slots += 1; // the composite's slot, next after the children's span
-        let mut scope_bounds = layer.bounds.unwrap_or_default();
-        if layer.blur_pad > 0.0 && !scope_bounds.is_empty() {
-            scope_bounds = scope_bounds.expand(layer.blur_pad);
-        }
+    /// `close_layer` books a save layer's composite as a child of the scope
+    /// around it and backpatches the layer's op, at its restore. Order
+    /// matters: the layer's clips expired first (the caller did that), so
+    /// their slots sit inside the children's span; the composite takes the
+    /// NEXT slot on the same line.
+    fn close_layer(&mut self, layer: LayerScope) {
+        let footprint = self.root_footprint(layer.composite_region());
+        let composite_slot = self.record_child(footprint, 1, layer.takes_group_opacity);
+        self.backpatch_layer(&layer, composite_slot);
+    }
 
+    /// `backpatch_layer` writes what the layer's children decided into its
+    /// op: its content, its composite's slot, and whether it may elide.
+    fn backpatch_layer(&mut self, layer: &LayerScope, composite: u32) {
         let Op::SaveLayer {
-            paint,
-            mask_composite: _,
-            scope_bounds: sb,
-            base_slot: _,
+            scope_bounds,
             composite_slot,
             can_elide,
             ..
@@ -673,153 +687,173 @@ impl DisplayListBuilder {
         else {
             unreachable!("LayerScope.op_index always points at SaveLayer");
         };
-        *sb = scope_bounds;
-        *composite_slot = self.slots;
-        // A backdrop layer never elides (its seed needs a texture); a hinted
-        // layer never elides (the hint is a crop that eliding would undo).
-        *can_elide = layer.group.compatible
-            && paint.is_opacity_only()
-            && layer.backdrop.is_none()
-            && !layer.hinted;
-
-        // One SrcOver composite quad — an ENCLOSING opacity group can still
-        // distribute its alpha onto it. This is what lets a fading group
-        // elide over a backdrop layer: the alpha lands once, on the glass
-        // and its children together.
-        let supports = paint.blend_mode == crate::BlendMode::SrcOver;
-        if let Some(Backdrop {
-            filter,
-            shared_key: Some(key),
-        }) = layer.backdrop
-        {
-            self.note_backdrop_group(key, scope_bounds, filter);
-        }
-        self.draw_count += 1; // the composite draws
-        self.union_bounds(scope_bounds);
-        self.note_layer_child(scope_bounds, supports);
+        *scope_bounds = layer.bounds;
+        *composite_slot = composite;
+        *can_elide = layer.can_elide();
     }
 
-    /// One-quad closed-form blurred (r)rect; the quad spans the 3σ spread.
+    /// One-quad closed-form blurred (r)rect; the quad spans the 3σ spread,
+    /// which is the paint's effect padding (an analytic blur has no image
+    /// filter).
     fn record_rrect_blur(&mut self, rect: Rect, radii: [f32; 4], paint: &Paint) {
-        let Some(bounds) = self.clipped_device_bounds(&rect.expand(paint.mask_padding())) else {
-            return;
-        };
-        let slot = self.take_draw_slot(bounds, supports_opacity(paint));
-        self.ops.push(Op::RRectBlur {
-            rect,
-            radii: valo_geometry::constrain_radii(&rect, radii),
-            paint: paint.clone(),
-            bounds,
-            slot,
+        self.record_draw(rect, paint, paint.takes_group_opacity(), |bounds, slot| {
+            Op::RRectBlur {
+                rect,
+                radii: valo_geometry::constrain_radii(&rect, radii),
+                paint: paint.clone(),
+                bounds,
+                slot,
+            }
         });
     }
 
-    fn note_backdrop_group(&mut self, key: u64, bounds: Rect, filter: ImageFilter) {
-        match self.backdrop_groups.iter_mut().find(|g| g.key == key) {
-            Some(group) => {
-                group.union_bounds = group.union_bounds.union(&bounds);
-                if group.filter.as_ref() != Some(&filter) {
-                    group.filter = None; // Different filters cannot share one snapshot.
-                }
-            }
-            None => self.backdrop_groups.push(crate::BackdropGroup {
-                key,
-                union_bounds: bounds,
-                filter: Some(filter),
-            }),
+    /// `record_draw` is the gate every draw goes through: a draw whose
+    /// paint does nothing, or that shows nowhere, is dropped; any other is
+    /// booked as a child of the scope, and `make` builds its op from the rect
+    /// replay culls it by and its slot. `local` is the draw's ink in local
+    /// coordinates, before the paint's effects; `takes_group_opacity` is
+    /// whether a group's alpha can ride the draw: its paint's rule for a
+    /// shape or an image, never for a glyph run.
+    fn record_draw(
+        &mut self,
+        local: Rect,
+        paint: &Paint,
+        takes_group_opacity: bool,
+        make: impl FnOnce(Rect, u32) -> Op,
+    ) {
+        if paint.is_nop() {
+            return;
         }
+        let local = paint.effect_bounds(local);
+        self.record_op(local, 1, takes_group_opacity, make);
     }
 
-    /// Draw bounds in list-root space, pre-intersected with the clip stack;
-    /// `None` = provably invisible, don't record.
-    fn clipped_device_bounds(&self, local: &Rect) -> Option<Rect> {
-        let device = self.top().transform.map_rect(local);
-        match self.top().clip {
-            None => Some(device),
-            Some(clip) => device.intersect(&clip),
-        }
+    /// `record_op` records an op that shows within `local`: dropped when it
+    /// shows nowhere, else booked as a child of `slots` slots and pushed as
+    /// `make` builds it from its cull rect and its last slot.
+    fn record_op(
+        &mut self,
+        local: Bounds,
+        slots: u32,
+        takes_group_opacity: bool,
+        make: impl FnOnce(Rect, u32) -> Op,
+    ) {
+        let Some(footprint) = self.footprint(&local) else {
+            return;
+        };
+        let last_slot = self.record_child(Some(footprint), slots, takes_group_opacity);
+        self.ops.push(make(footprint.cull_rect(), last_slot));
+    }
+
+    /// `footprint` maps local bounds into list-root space and crops them by
+    /// both clips; `None` = provably invisible, don't record.
+    fn footprint(&self, local: &Bounds) -> Option<Footprint> {
+        self.root_footprint(local.map(&self.top().transform))
+    }
+
+    /// `root_footprint` crops bounds already in list-root space.
+    fn root_footprint(&self, bounds: Bounds) -> Option<Footprint> {
+        let clip = self.top().clip;
+        let footprint = Footprint {
+            culled: bounds.intersect(&clip.cull),
+            in_layer: bounds.intersect(&clip.layer_content),
+        };
+        let shows = !footprint.culled.is_empty() && !footprint.in_layer.is_empty();
+        shows.then_some(footprint)
     }
 
     /// Intersect clips shrink the recorded clip bounds; Difference is kept
     /// conservative (bounds unchanged — correct, just not tighter).
-    fn shrink_clip(&mut self, op: ClipOp, shape_bounds: Rect) {
+    fn shrink_clip(&mut self, op: ClipOp, shape_bounds: Bounds) {
         if op == ClipOp::Difference {
             return;
         }
-        let top = self.top_mut();
-        top.clip = Some(match top.clip {
-            None => shape_bounds,
-            Some(c) => c.intersect(&shape_bounds).unwrap_or_default(), // empty = all clipped
-        });
+        let clip = &mut self.top_mut().clip;
+        clip.cull = clip.cull.intersect(&shape_bounds);
+        clip.layer_content = clip.layer_content.intersect(&shape_bounds);
     }
 
-    /// Closing a scope that recorded clips consumes ONE slot — that slot is
-    /// every pending clip's expiry: scope draws sit below it (ceilinged),
-    /// later draws above it (free). This is how expiry stays record-time.
-    fn expire_scope_clips(&mut self) {
-        let pending = self.pending_clips.pop().expect("scope stack never empty");
-        if !pending.is_empty() {
-            self.slots += 1;
-            for idx in pending {
-                let Op::ClipPath { expiry_slot, .. } = &mut self.ops[idx] else {
-                    unreachable!("pending_clips indexes only ClipPath ops");
-                };
-                *expiry_slot = self.slots;
-            }
+    /// `expire_clips` closes a scope's `pending` clips. Closing a scope that
+    /// recorded clips consumes ONE slot — that slot is every pending clip's
+    /// expiry: scope draws sit below it (ceilinged), later draws above it
+    /// (free). This is how expiry stays record-time.
+    fn expire_clips(&mut self, pending: Vec<usize>) {
+        if pending.is_empty() {
+            return;
         }
-        if self.pending_clips.is_empty() {
-            self.pending_clips.push(Vec::new()); // keep the root bucket alive
-        }
-    }
-
-    fn take_draw_slot(&mut self, device_bounds: Rect, supports_opacity: bool) -> u32 {
         self.slots += 1;
-        self.draw_count += 1;
-        self.union_bounds(device_bounds);
-        self.note_layer_child(device_bounds, supports_opacity);
-        self.slots
+        for index in pending {
+            let Op::ClipPath { expiry_slot, .. } = &mut self.ops[index] else {
+                unreachable!("pending clips index only ClipPath ops");
+            };
+            *expiry_slot = self.slots;
+        }
     }
 
-    fn union_bounds(&mut self, b: Rect) {
-        self.bounds = Some(match self.bounds {
-            Some(cur) => cur.union(&b),
-            None => b,
-        });
+    /// `record_child` books one child of the current scope: `slots` slots
+    /// on the depth line and — when it shows anywhere — its `footprint` in
+    /// the list's bounds and in the innermost open layer's oracle. Returns
+    /// the child's last slot.
+    fn record_child(
+        &mut self,
+        footprint: Option<Footprint>,
+        slots: u32,
+        takes_group_opacity: bool,
+    ) -> u32 {
+        self.slots += slots;
+        if let Some(footprint) = footprint {
+            self.bounds = self.bounds.union(&footprint.culled);
+            self.note_layer_child(footprint.in_layer, takes_group_opacity);
+        }
+        self.slots
     }
 
     /// Feed the innermost open layer's oracle, or the root's outside any
     /// layer: union the layer's bounds and note the child for group opacity.
-    fn note_layer_child(&mut self, bounds: Rect, supports_opacity: bool) {
-        let Some(layer) = self.layers.last_mut() else {
-            self.root.note(bounds, supports_opacity);
+    fn note_layer_child(&mut self, bounds: Bounds, takes_group_opacity: bool) {
+        let innermost = self
+            .scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.layer.as_mut());
+        let Some(layer) = innermost else {
+            self.root.note(bounds, takes_group_opacity);
             return;
         };
-        layer.bounds = Some(match layer.bounds {
-            Some(cur) => cur.union(&bounds),
-            None => bounds,
-        });
-        layer.group.note(bounds, supports_opacity);
+        layer.bounds = layer.bounds.union(&bounds);
+        layer.group.note(bounds, takes_group_opacity);
     }
 }
 
-/// Group opacity distributes over a child iff scaling its src by α equals
-/// compositing the group at α: true for SrcOver and Plus (both linear in
-/// src), false for dst-multiplying and advanced modes.
-fn supports_opacity(paint: &Paint) -> bool {
-    // A colour filter is affine, not linear: distributing the group's alpha
-    // into the paint colour would filter the DIMMED colour, and
-    // `matrix(c · α) != matrix(c) · α` wherever the matrix translates or
-    // clamps. Filtered draws keep their own layer.
-    paint.color_filter.is_none()
-        && paint.effective_image_filter().is_none()
-        && matches!(
-            paint.blend_mode,
-            crate::BlendMode::SrcOver | crate::BlendMode::Plus
-        )
+impl LayerScope {
+    /// `can_elide` is the op's `can_elide`: the children take the group's
+    /// alpha and none overlaps, the composite is nothing but that alpha, no
+    /// backdrop needs a texture to seed and no hint crops the children.
+    fn can_elide(&self) -> bool {
+        self.group.compatible && self.takes_group_opacity && !self.has_backdrop && !self.hinted
+    }
+
+    /// `composite_region` is where the layer's composite shows, list-root
+    /// space: its whole opening clip when it floods, else its content
+    /// spread by the paint's filters.
+    fn composite_region(&self) -> Bounds {
+        if self.floods {
+            self.opening_clip
+        } else {
+            self.bounds.expand(self.reach)
+        }
+    }
 }
 
-/// Solid + mask blur = the closed-form quad (Impeller's shadow gate,
-/// Canvas::IsShadowBlurDrawOperation). Shaders/images take the filter path.
+/// `floods_its_clip` reports whether a save layer with `paint` paints its
+/// whole clip whatever its children draw: a destructive blend changes the
+/// parent where the layer is transparent, a filter that colours
+/// transparent pixels has output outside the children's ink, and a backdrop
+/// layer OPENS full of the filtered parent.
+fn floods_its_clip(paint: &Paint, has_backdrop: bool) -> bool {
+    paint.blend_mode.is_destructive() || paint.reveals_transparent() || has_backdrop
+}
+
 /// `Some(circular)` when every corner's rx equals its ry — the case the
 /// analytic rrect pipelines (blur shadows, uniform clips) can take.
 fn circular_radii(radii: [[f32; 2]; 4]) -> Option<[f32; 4]> {
@@ -845,6 +879,8 @@ fn positive_rect(rect: Rect) -> Rect {
     Rect::new(x, y, rect.width.abs(), rect.height.abs())
 }
 
+/// Solid + mask blur = the closed-form quad (Impeller's shadow gate,
+/// Canvas::IsShadowBlurDrawOperation). Shaders/images take the filter path.
 fn is_analytic_blur(paint: &Paint) -> bool {
     paint.mask_blur.is_some()
         && paint.shader.is_none()
@@ -865,7 +901,7 @@ fn rect_path(r: Rect) -> Arc<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BlendMode;
+    use crate::{BlendMode, ImageFilter};
     use valo_geometry::Color;
 
     #[test]
@@ -923,7 +959,7 @@ mod tests {
     /// Every recorded layer's `(scope_bounds, base_slot, composite_slot,
     /// can_elide)`, in recording order — so an enclosing layer comes before
     /// the layers nested inside it.
-    fn layer_facts(dl: &DisplayList) -> Vec<(Rect, u32, u32, bool)> {
+    fn layer_facts(dl: &DisplayList) -> Vec<(Bounds, u32, u32, bool)> {
         dl.ops()
             .iter()
             .filter_map(|op| match op {
@@ -939,7 +975,17 @@ mod tests {
             .collect()
     }
 
-    fn find_layer(dl: &DisplayList) -> (Rect, u32, u32, bool) {
+    fn layer_clip_bounds(dl: &DisplayList) -> Bounds {
+        dl.ops()
+            .iter()
+            .find_map(|op| match op {
+                Op::SaveLayer { clip_bounds, .. } => Some(*clip_bounds),
+                _ => None,
+            })
+            .expect("no layer recorded")
+    }
+
+    fn find_layer(dl: &DisplayList) -> (Bounds, u32, u32, bool) {
         *layer_facts(dl).first().expect("no layer recorded")
     }
 
@@ -951,7 +997,10 @@ mod tests {
         b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red());
         b.restore();
         let dl = b.build();
-        assert_eq!(dl.bounds(), Some(Rect::new(100.0, 50.0, 10.0, 10.0)));
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(100.0, 50.0, 10.0, 10.0))
+        );
         assert_eq!(dl.draw_count(), 1);
         assert_eq!(dl.depth_slots(), 1);
     }
@@ -964,7 +1013,10 @@ mod tests {
         b.draw_rect(Rect::new(25.0, 25.0, 100.0, 100.0), &red());
         b.restore();
         let dl = b.build();
-        assert_eq!(dl.bounds(), Some(Rect::new(25.0, 25.0, 25.0, 25.0)));
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(25.0, 25.0, 25.0, 25.0))
+        );
     }
 
     #[test]
@@ -1012,7 +1064,10 @@ mod tests {
         b.draw_rect(Rect::new(0.0, 0.0, 100.0, 100.0), &red());
         b.restore();
         let dl = b.build();
-        assert_eq!(dl.bounds(), Some(Rect::new(0.0, 0.0, 100.0, 100.0)));
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(0.0, 0.0, 100.0, 100.0))
+        );
     }
 
     #[test]
@@ -1056,7 +1111,165 @@ mod tests {
         );
         let dl = b.build();
         assert_eq!(dl.ops().len(), 0);
-        assert_eq!(dl.bounds(), None);
+        assert_eq!(dl.bounds(), Bounds::Empty);
+    }
+
+    /// A list's bounds are empty when it draws nothing, a rectangle around
+    /// what it draws, or unbounded when a draw fills a clip the list does
+    /// not make.
+    #[test]
+    fn a_list_records_one_of_three_cases_of_bounds() {
+        let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+        let flooding = Paint {
+            image_filter: Some(ImageFilter::color(fill_red)),
+            ..red()
+        };
+        assert_eq!(DisplayListBuilder::new().build().bounds(), Bounds::Empty);
+
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &red());
+        assert_eq!(
+            b.build().bounds(),
+            Bounds::Bounded(Rect::new(4.0, 4.0, 4.0, 4.0))
+        );
+
+        let mut b = DisplayListBuilder::new();
+        b.translate(1.0e9, 0.0);
+        b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &flooding);
+        let unbounded = b.build();
+        assert_eq!(unbounded.bounds(), Bounds::Unbounded);
+
+        let mut b = DisplayListBuilder::new();
+        b.scale(2.0, 2.0);
+        b.draw_display_list(&Arc::new(unbounded));
+        assert_eq!(
+            b.build().bounds(),
+            Bounds::Unbounded,
+            "an embedded unbounded list stays unbounded wherever it is placed"
+        );
+    }
+
+    /// A layer whose child fills a clip the layer does not crop has
+    /// unbounded content; a backdrop layer with neither clip nor hint floods
+    /// an unbounded clip.
+    #[test]
+    fn a_layer_records_unbounded_content_and_clip() {
+        let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect);
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_rect(
+            Rect::new(4.0, 4.0, 4.0, 4.0),
+            &Paint {
+                image_filter: Some(ImageFilter::color(fill_red)),
+                ..red()
+            },
+        );
+        b.restore();
+        let dl = b.build();
+        let (content, ..) = find_layer(&dl);
+        assert_eq!(content, Bounds::Unbounded, "the clip is around the layer");
+        assert_eq!(
+            layer_clip_bounds(&dl),
+            Bounds::Bounded(Rect::new(0.0, 0.0, 32.0, 32.0))
+        );
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(0.0, 0.0, 32.0, 32.0))
+        );
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer_backdrop(None, &Paint::default(), Backdrop::blur(4.0));
+        b.restore();
+        let dl = b.build();
+        assert_eq!(layer_clip_bounds(&dl), Bounds::Unbounded);
+        assert_eq!(dl.bounds(), Bounds::Unbounded);
+    }
+
+    /// A save layer whose composite is invisible records nothing inside: no
+    /// draw, no slot (Flutter's nop `saveLayer`).
+    #[test]
+    fn an_invisible_layer_records_nothing_inside() {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.0));
+        b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red());
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_rect(Rect::new(20.0, 0.0, 10.0, 10.0), &red());
+        b.restore();
+        b.restore();
+        b.draw_rect(Rect::new(40.0, 0.0, 10.0, 10.0), &red());
+        let dl = b.build();
+        assert!(
+            matches!(
+                dl.ops(),
+                [
+                    Op::Save,
+                    Op::Save,
+                    Op::Restore,
+                    Op::Restore,
+                    Op::DrawRect { slot: 1, .. }
+                ]
+            ),
+            "{:?}",
+            dl.ops()
+        );
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(40.0, 0.0, 10.0, 10.0))
+        );
+        assert_eq!(dl.depth_slots(), 1);
+    }
+
+    /// A clip that leaves its scope nothing makes the scope a nop: neither
+    /// the clip nor anything after it in the scope is recorded, and the
+    /// scope's restore ends it.
+    #[test]
+    fn a_clip_that_leaves_nothing_makes_its_scope_a_nop() {
+        let mut b = DisplayListBuilder::new();
+        b.save();
+        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(20.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Difference);
+        b.save_layer(
+            None,
+            &Paint {
+                blend_mode: BlendMode::Clear,
+                ..Default::default()
+            },
+        );
+        b.restore();
+        b.restore();
+        b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
+        let dl = b.build();
+        let clips = dl
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, Op::ClipPath { .. }))
+            .count();
+        assert_eq!(clips, 1, "only the clip that leaves something");
+        assert!(!dl.ops().iter().any(|op| matches!(op, Op::SaveLayer { .. })));
+        assert_eq!(dl.draw_count(), 1, "the draw after the scope");
+        assert_eq!(
+            dl.depth_slots(),
+            2,
+            "the first clip's expiry and the last draw"
+        );
+    }
+
+    /// A layer whose hint misses its clip is still recorded, with an empty
+    /// clip: a mask over nothing still erases what is beneath it.
+    #[test]
+    fn a_mask_whose_hint_misses_the_clip_is_recorded_with_an_empty_clip() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.save_layer_mask(Some(Rect::new(20.0, 0.0, 10.0, 10.0)), MaskKind::Alpha);
+        b.draw_rect(Rect::new(20.0, 0.0, 10.0, 10.0), &red());
+        b.restore();
+        let dl = b.build();
+        assert_eq!(layer_clip_bounds(&dl), Bounds::Empty);
+        let (content, ..) = find_layer(&dl);
+        assert_eq!(content, Bounds::Empty, "the hint culls every child");
     }
 
     // ── save layers (M4) ────────────────────────────────────────────────────
@@ -1073,7 +1286,7 @@ mod tests {
         let dl = b.build();
 
         let (bounds, base_slot, composite_slot, can_elide) = find_layer(&dl);
-        assert_eq!(bounds, Rect::new(20.0, 20.0, 70.0, 30.0));
+        assert_eq!(bounds, Bounds::Bounded(Rect::new(20.0, 20.0, 70.0, 30.0)));
         assert_eq!(base_slot, 1, "scope opened after one parent draw");
         assert_eq!(composite_slot, 4, "children keep the global line");
         assert!(
@@ -1114,6 +1327,118 @@ mod tests {
         assert!(!can_elide);
     }
 
+    /// A colour-filtered layer's composite takes an alpha in before its
+    /// filter, so an enclosing group's alpha cannot ride it (Flutter marks
+    /// such a layer incompatible with group opacity).
+    #[test]
+    fn a_colour_filtered_layer_forfeits_its_groups_elision() {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.save_layer(
+            None,
+            &Paint {
+                color_filter: Some(crate::ColorFilter::Blend(
+                    Color::rgb(1.0, 0.0, 0.0),
+                    BlendMode::SrcOver,
+                )),
+                ..Default::default()
+            },
+        );
+        b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &red());
+        b.restore();
+        b.restore();
+        let layers = layer_facts(&b.build());
+        assert!(!layers[0].3, "the group keeps its layer");
+    }
+
+    /// The recorded facts of the first layer in a list of one layer around
+    /// one rect: whether it floods its clip and whether a group's alpha can
+    /// ride it.
+    fn layer_flood_and_opacity(paint: &Paint) -> (bool, bool) {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, paint);
+        b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &red());
+        b.restore();
+        b.build()
+            .ops()
+            .iter()
+            .find_map(|op| match op {
+                Op::SaveLayer {
+                    floods_clip,
+                    takes_group_opacity,
+                    ..
+                } => Some((*floods_clip, *takes_group_opacity)),
+                _ => None,
+            })
+            .expect("a layer is recorded")
+    }
+
+    /// A layer floods its clip for a destructive blend or for a colour or
+    /// image filter that colours transparent pixels; a group's alpha rides
+    /// only a plain `SrcOver` composite.
+    #[test]
+    fn a_layer_records_its_flood_and_whether_a_group_alpha_can_ride_it() {
+        let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+        let tint = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::SrcIn);
+        let layer = |paint: Paint| layer_flood_and_opacity(&paint);
+        assert_eq!(layer(alpha_layer(0.5)), (false, true));
+        assert_eq!(
+            layer(Paint {
+                blend_mode: BlendMode::SrcIn,
+                ..Default::default()
+            }),
+            (true, false)
+        );
+        assert_eq!(
+            layer(Paint {
+                color_filter: Some(fill_red),
+                ..Default::default()
+            }),
+            (true, false)
+        );
+        assert_eq!(
+            layer(Paint {
+                image_filter: Some(ImageFilter::color(fill_red)),
+                ..Default::default()
+            }),
+            (true, false)
+        );
+        assert_eq!(
+            layer(Paint {
+                color_filter: Some(tint),
+                ..Default::default()
+            }),
+            (false, false)
+        );
+    }
+
+    /// A draw's colour filter stays inside its shape; its image filter, when
+    /// it colours transparent pixels, fills the clip.
+    #[test]
+    fn a_draws_bounds_flood_for_its_image_filter_but_not_its_colour_filter() {
+        let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
+        let bounds = |paint: Paint| {
+            let mut b = DisplayListBuilder::new();
+            b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect);
+            b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &paint);
+            b.build().bounds()
+        };
+        assert_eq!(
+            bounds(Paint {
+                color_filter: Some(fill_red),
+                ..red()
+            }),
+            Bounds::Bounded(Rect::new(4.0, 4.0, 4.0, 4.0))
+        );
+        assert_eq!(
+            bounds(Paint {
+                image_filter: Some(ImageFilter::color(fill_red)),
+                ..red()
+            }),
+            Bounds::Bounded(Rect::new(0.0, 0.0, 32.0, 32.0))
+        );
+    }
+
     #[test]
     fn destructive_layer_composite_floods_the_active_clip() {
         let mut b = DisplayListBuilder::new();
@@ -1127,8 +1452,137 @@ mod tests {
         );
         b.draw_rect(Rect::new(20.0, 20.0, 10.0, 10.0), &red());
         b.restore();
+        let dl = b.build();
+        let (bounds, ..) = find_layer(&dl);
+        assert_eq!(
+            bounds,
+            Bounds::Bounded(Rect::new(20.0, 20.0, 10.0, 10.0)),
+            "the content"
+        );
+        assert_eq!(
+            layer_clip_bounds(&dl),
+            Bounds::Bounded(Rect::new(4.0, 6.0, 80.0, 60.0))
+        );
+        assert_eq!(
+            dl.bounds(),
+            Bounds::Bounded(Rect::new(4.0, 6.0, 80.0, 60.0)),
+            "the composite paints the clip"
+        );
+    }
+
+    /// A clip around a blurred layer does not crop its content: the blur
+    /// reads the content past the clip (Flutter's layer bounds).
+    #[test]
+    fn a_clip_around_a_layer_does_not_crop_its_content() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.save_layer(
+            None,
+            &Paint {
+                image_filter: Some(ImageFilter::blur(4.0, 4.0)),
+                ..Default::default()
+            },
+        );
+        b.draw_rect(Rect::new(40.0, 10.0, 30.0, 10.0), &red());
+        b.restore();
+        let dl = b.build();
+        let (bounds, ..) = find_layer(&dl);
+        assert_eq!(bounds, Bounds::Bounded(Rect::new(40.0, 10.0, 30.0, 10.0)));
+        assert_eq!(
+            layer_clip_bounds(&dl),
+            Bounds::Bounded(Rect::new(0.0, 0.0, 50.0, 50.0))
+        );
+    }
+
+    /// A child just outside the clip still reaches inside it through a blur
+    /// on its layer, so it is kept (Flutter culls a filtered layer's children
+    /// by the clip widened by what the filter reads).
+    #[test]
+    fn a_blurred_layer_keeps_children_its_blur_reaches_across_the_clip() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.save_layer(
+            None,
+            &Paint {
+                image_filter: Some(ImageFilter::blur(4.0, 4.0)),
+                ..Default::default()
+            },
+        );
+        b.draw_rect(Rect::new(55.0, 10.0, 10.0, 10.0), &red());
+        b.draw_rect(Rect::new(80.0, 10.0, 10.0, 10.0), &red());
+        b.restore();
         let (bounds, ..) = find_layer(&b.build());
-        assert_eq!(bounds, Rect::new(4.0, 6.0, 80.0, 60.0));
+        assert_eq!(
+            bounds,
+            Bounds::Bounded(Rect::new(55.0, 10.0, 10.0, 10.0)),
+            "3σ reaches 12 past the clip: the first is kept, the second dropped"
+        );
+    }
+
+    /// A save layer records no mask blur, so it neither blurs the layer nor
+    /// widens the clip its children are culled by.
+    #[test]
+    fn a_save_layer_drops_its_mask_blur() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.save_layer(
+            None,
+            &Paint {
+                mask_blur: Some(crate::MaskBlur::new(4.0)),
+                ..alpha_layer(0.5)
+            },
+        );
+        b.draw_rect(Rect::new(10.0, 10.0, 10.0, 10.0), &red());
+        b.draw_rect(Rect::new(55.0, 10.0, 10.0, 10.0), &red());
+        b.restore();
+        let dl = b.build();
+        let paint = dl.ops().iter().find_map(|op| match op {
+            Op::SaveLayer { paint, .. } => Some(paint),
+            _ => None,
+        });
+        assert_eq!(paint, Some(&alpha_layer(0.5)));
+        let (bounds, ..) = find_layer(&dl);
+        assert_eq!(bounds, Bounds::Bounded(Rect::new(10.0, 10.0, 10.0, 10.0)));
+    }
+
+    #[test]
+    fn a_clip_inside_a_layer_crops_its_content() {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Intersect);
+        b.draw_rect(Rect::new(20.0, 20.0, 30.0, 30.0), &red());
+        b.restore();
+        let dl = b.build();
+        let (bounds, ..) = find_layer(&dl);
+        assert_eq!(bounds, Bounds::Bounded(Rect::new(20.0, 20.0, 10.0, 10.0)));
+        assert_eq!(layer_clip_bounds(&dl), Bounds::Unbounded);
+    }
+
+    #[test]
+    fn a_stroked_path_records_its_ink_in_local_coordinates() {
+        let mut b = DisplayListBuilder::new();
+        b.translate(100.0, 0.0);
+        b.draw_rect(
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            &Paint {
+                style: crate::PaintStyle::Stroke(valo_geometry::Stroke {
+                    join: valo_geometry::Join::Round,
+                    ..valo_geometry::Stroke::new(4.0)
+                }),
+                ..red()
+            },
+        );
+        let dl = b.build();
+        let content_bounds = dl
+            .ops()
+            .iter()
+            .find_map(|op| match op {
+                Op::DrawPath { content_bounds, .. } => Some(*content_bounds),
+                _ => None,
+            })
+            .expect("a stroked rect records a path");
+        // Half the width times the round join's 1.5 on every side.
+        assert_eq!(content_bounds, Rect::new(7.0, 7.0, 26.0, 26.0));
     }
 
     #[test]
@@ -1223,7 +1677,7 @@ mod tests {
         b.draw_rect(Rect::new(20.0, 20.0, 100.0, 100.0), &red());
         b.restore();
         let (bounds, ..) = find_layer(&b.build());
-        assert_eq!(bounds, Rect::new(20.0, 20.0, 20.0, 20.0));
+        assert_eq!(bounds, Bounds::Bounded(Rect::new(20.0, 20.0, 20.0, 20.0)));
     }
 
     #[test]

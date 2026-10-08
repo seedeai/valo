@@ -8,7 +8,38 @@ pub(crate) fn apply(filter: ColorFilter, destination: Color) -> Color {
         ColorFilter::Matrix(matrix) => apply_matrix(&matrix, destination),
         // ColorFilter.mode treats the constant as source and content as dst.
         ColorFilter::Blend(source, mode) => blend(destination, source, mode),
+        ColorFilter::LinearToSrgbGamma => map_rgb(destination, linear_to_srgb),
+        ColorFilter::SrgbToLinearGamma => map_rgb(destination, srgb_to_linear),
     }
+}
+
+/// `linear_to_srgb` is the sRGB transfer curve on one channel, Impeller's
+/// `Color::LinearToSRGB`.
+fn linear_to_srgb(channel: f32) -> f32 {
+    if channel <= 0.0031308 {
+        channel * 12.92
+    } else {
+        1.055 * channel.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// `srgb_to_linear` is the inverse sRGB transfer curve on one channel,
+/// Impeller's `Color::SRGBToLinear`.
+fn srgb_to_linear(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn map_rgb(color: Color, function: impl Fn(f32) -> f32) -> Color {
+    Color::rgba(
+        function(color.r),
+        function(color.g),
+        function(color.b),
+        color.a,
+    )
 }
 
 fn apply_matrix(matrix: &[f32; 20], color: Color) -> Color {
@@ -273,5 +304,51 @@ mod tests {
         matrix[18] = 1.0;
         matrix[19] = 0.25;
         assert!(ColorFilter::Matrix(matrix).modifies_transparent_black());
+        assert!(!ColorFilter::LinearToSrgbGamma.modifies_transparent_black());
+        assert!(!ColorFilter::SrgbToLinearGamma.modifies_transparent_black());
+    }
+
+    /// Mid grey both ways, each direction's knee where the linear segment
+    /// meets the power curve, and both ends.
+    #[test]
+    fn gamma_filters_follow_the_srgb_transfer_curve() {
+        let cases = [
+            (ColorFilter::SrgbToLinearGamma, 0.5, 0.214_041_14),
+            (ColorFilter::LinearToSrgbGamma, 0.5, 0.735_357),
+            (ColorFilter::SrgbToLinearGamma, 0.040_45, 0.003_130_805),
+            (ColorFilter::LinearToSrgbGamma, 0.003_130_8, 0.040_449_936),
+            (ColorFilter::SrgbToLinearGamma, 0.0, 0.0),
+            (ColorFilter::LinearToSrgbGamma, 1.0, 1.0),
+        ];
+        for (filter, input, expected) in cases {
+            let output = apply(filter, Color::rgba(input, input, input, 0.6));
+            for channel in [output.r, output.g, output.b] {
+                assert!(
+                    (channel - expected).abs() < 1e-5,
+                    "{filter:?} of {input} gave {channel}, expected {expected}"
+                );
+            }
+            assert_eq!(output.a, 0.6, "{filter:?} leaves alpha alone");
+        }
+    }
+
+    #[test]
+    fn gamma_filters_invert_each_other_on_mid_tones() {
+        for value in [0.2, 0.35, 0.5, 0.65, 0.8] {
+            let color = Color::rgba(value, 1.0 - value, value * 0.5, 0.4);
+            let linear = apply(ColorFilter::SrgbToLinearGamma, color);
+            let encoded = apply(ColorFilter::LinearToSrgbGamma, linear);
+            for (round_trip, original) in [
+                (encoded.r, color.r),
+                (encoded.g, color.g),
+                (encoded.b, color.b),
+                (encoded.a, color.a),
+            ] {
+                assert!(
+                    (round_trip - original).abs() < 1e-5,
+                    "{color:?} came back as {encoded:?}"
+                );
+            }
+        }
     }
 }

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use valo_dl::{ClipOp, DisplayList, DisplayListBuilder, MaskKind, Paint, Sampling};
+use valo_dl::{ClipOp, DisplayList, DisplayListBuilder, ImageFilter, MaskKind, Paint, Sampling};
 use valo_geometry::{Color, FillRule, Path, Rect};
 
 use crate::convert;
@@ -100,10 +100,7 @@ fn group(g: &usvg::Group, b: &mut DisplayListBuilder, cx: &mut Ctx) {
     if layered {
         let mut paint = layer_paint(g);
         if let FilterPlan::Blur(sigma) = filter {
-            paint.mask_blur = Some(valo_dl::MaskBlur {
-                sigma,
-                style: valo_dl::BlurStyle::Normal,
-            });
+            paint.image_filter = Some(ImageFilter::blur(sigma, sigma));
         }
         b.save_layer(None, &paint);
     }
@@ -210,10 +207,7 @@ fn emit_drop_shadow(
     b.save_layer(
         None,
         &Paint {
-            mask_blur: Some(valo_dl::MaskBlur {
-                sigma,
-                style: valo_dl::BlurStyle::Normal,
-            }),
+            image_filter: Some(ImageFilter::blur(sigma, sigma)),
             ..Paint::default()
         },
     );

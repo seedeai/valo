@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use valo::{
-    Color, Context, DisplayList, DisplayListBuilder, FontCollection, Hud, MemoryReport, Point,
-    Rect, RenderStats, Surface,
+    Bounds, Color, Context, DisplayList, DisplayListBuilder, FontCollection, Hud, MemoryReport,
+    Point, Rect, RenderStats, Surface,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -131,7 +131,7 @@ impl ApplicationHandler for App {
             offset: Point::ZERO,
             zoom: 1.0,
         };
-        if let Some(world) = self.scene.bounds() {
+        if let Bounds::Bounded(world) = self.scene.bounds() {
             camera.fit(world, [size.width as f32, size.height as f32]);
         }
         self.state = Some(State {
@@ -185,7 +185,7 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
                     Key::Character(ref c) if c == "1" => state.camera.zoom = 1.0,
                     Key::Character(ref c) if c == "0" => {
-                        if let Some(world) = self.scene.bounds() {
+                        if let Bounds::Bounded(world) = self.scene.bounds() {
                             let [w, h] = state.surface.size();
                             state.camera.fit(world, [w as f32, h as f32]);
                         }

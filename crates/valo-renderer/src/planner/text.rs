@@ -1,7 +1,11 @@
 //! Text: which shape a placed glyph run takes on the GPU. Routing already
 //! peeled off the paint's effects, its advanced blend, and the
-//! shader-through-a-mask desugar, so what is left is Skia's tier dispatch
-//! (`SubRunControl.cpp`) — pick by DEVICE size, then place quads:
+//! shader-through-a-mask desugar, and handed the run its colour filter,
+//! which each glyph's colour passes through before its coverage (Skia's
+//! colour filter on the source colour): a coverage glyph's colour folds it
+//! on the CPU, a colour glyph's pixels run it in their fragment. What is
+//! left is Skia's tier dispatch (`SubRunControl.cpp`) — pick by DEVICE
+//! size, then place quads:
 //!
 //! - huge text fills the glyph's real outline, stencil-then-cover like any
 //!   shape, because no atlas entry stays sharp at that size;
@@ -16,15 +20,18 @@
 use std::sync::Arc;
 
 use valo_dl::{GlyphPos, Paint, PaintStyle};
-use valo_geometry::{FillRule, Matrix, MatrixKind, Point, Stroke};
+use valo_geometry::{Color, FillRule, Matrix, MatrixKind, Point, Stroke};
 use valo_text::{Font, GlyphStroke};
 
 use crate::glyphs::{AtlasGlyph, Coverage, PageRef, TextTiers, SDF_BUCKETS};
-use crate::pipelines::TextMode;
+use crate::pipelines::{Frag, PipelineBlend};
 
-use super::emit::{alpha_tint, scaled_premul};
+use super::draw_state::DrawState;
+use super::drawing::Drawing;
+use super::emit::{Cover, Entity, Role};
 use super::primitives::subpixel_stroke_alpha;
-use super::Planner;
+use super::shading::{scaled_premul, Shading};
+use super::source::{GlyphRun, Shape};
 
 /// Emoji rasters cap here in the outline tier (colour glyphs have no
 /// outlines); past it the bitmap upscales, the way Skia clamps glyphs too
@@ -45,153 +52,140 @@ enum GlyphTier {
     Outline,
 }
 
-impl Planner<'_> {
-    /// `plan_glyph_tiers` picks the run's tier from its DEVICE size and the
+impl GlyphTier {
+    /// `stats_index` is where the tier is counted in
+    /// [`crate::RenderStats::text_tiers`]: `[bitmap mask, SDF, outline]`.
+    fn stats_index(&self) -> usize {
+        match self {
+            GlyphTier::Mask { .. } => 0,
+            GlyphTier::Sdf => 1,
+            GlyphTier::Outline => 2,
+        }
+    }
+}
+
+/// `Strike` is one font rastered at one size and coverage: what a glyph's
+/// atlas entry is keyed on, besides the glyph and its subpixel phase
+/// (Skia's strike).
+struct Strike<'f> {
+    font: &'f Arc<Font>,
+    px: f32,
+    coverage: Coverage,
+}
+
+impl Drawing<'_, '_> {
+    /// `draw_glyphs` picks the run's tier from its DEVICE size and the
     /// paint's style, then hands off to that tier's placement.
-    pub(super) fn plan_glyph_tiers(
+    pub fn draw_glyphs(
         &mut self,
-        font: &Arc<Font>,
-        size: f32,
+        run: &GlyphRun<'_>,
         paint: &Paint,
-        glyphs: &[GlyphPos],
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        let device_px = size * current.max_scale();
-        let scale = quantize_scale(current.max_scale());
-        match glyph_tier(self.glyphs.tiers, paint, scale, device_px) {
-            GlyphTier::Outline => {
-                self.stats.text_tiers[2] += 1;
-                self.plan_glyph_outlines(font, size, paint, glyphs, current, z);
-            }
+        let (font, size, glyphs) = (run.font, run.size, run.glyphs.as_slice());
+        // The tiers colour each glyph through the run's colour filter, which
+        // rides the paint from here on.
+        let paint = &Paint {
+            color_filter: run.colour_filter,
+            ..paint.clone()
+        };
+        let device_px = size * at.transform.max_scale();
+        let scale = quantize_scale(at.transform.max_scale());
+        let tier = glyph_tier(self.caches.glyphs.tiers, paint, scale, device_px);
+        self.stats.text_tiers[tier.stats_index()] += 1;
+        match tier {
+            GlyphTier::Outline => self.draw_glyph_outlines(font, size, paint, glyphs, at, blend),
             GlyphTier::Sdf => {
-                self.stats.text_tiers[1] += 1;
-                self.plan_glyph_quads(
+                let strike = Strike {
                     font,
-                    sdf_bucket(device_px),
-                    Coverage::Sdf,
-                    size,
-                    paint,
-                    glyphs,
-                    current,
-                    z,
-                );
+                    px: sdf_bucket(device_px),
+                    coverage: Coverage::Sdf,
+                };
+                self.draw_glyph_quads(&strike, size, paint, glyphs, at, blend);
             }
             GlyphTier::Mask { coverage, alpha } => {
-                self.stats.text_tiers[0] += 1;
                 let paint = Paint {
                     color: paint.color.with_alpha(paint.color.a * alpha),
                     ..paint.clone()
                 };
-                self.plan_glyph_masks(font, size, scale, coverage, &paint, glyphs, current, z);
+                let strike = Strike {
+                    font,
+                    px: size * scale,
+                    coverage,
+                };
+                self.draw_glyph_masks(&strike, size, &paint, glyphs, at, blend);
             }
         }
     }
 
-    /// `plan_glyph_masks` is the mask tier's two shapes: device-snapped
+    /// `draw_glyph_masks` is the mask tier's two shapes: device-snapped
     /// quads when the transform allows it, transformed quads over upright
     /// rasters otherwise (Impeller's shape).
-    #[expect(clippy::too_many_arguments, reason = "mirrors plan_glyph_tiers")]
-    fn plan_glyph_masks(
+    fn draw_glyph_masks(
         &mut self,
-        font: &Arc<Font>,
+        strike: &Strike,
         size: f32,
-        scale: f32,
-        coverage: Coverage,
         paint: &Paint,
         glyphs: &[GlyphPos],
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        if is_uniform_axis_aligned(current) {
-            self.plan_glyph_quads_snapped(font, scale, size, coverage, paint, glyphs, current, z);
+        if is_uniform_axis_aligned(&at.transform) {
+            self.draw_glyph_quads_snapped(strike, paint, glyphs, at, blend);
         } else {
-            self.plan_glyph_quads(
-                font,
-                size * scale,
-                coverage,
-                size,
-                paint,
-                glyphs,
-                current,
-                z,
-            );
+            self.draw_glyph_quads(strike, size, paint, glyphs, at, blend);
         }
     }
 
-    /// `plan_glyph_quads` places atlas quads in LOCAL space (the SDF tier,
-    /// and rotated masks): glyphs rastered at `px`, placed at `size/px` of
+    /// `draw_glyph_quads` places atlas quads in LOCAL space (the SDF tier,
+    /// and rotated masks): glyphs of `strike`, placed at `size / px` of
     /// their raster dimensions, with the transform applied by the MVP.
-    #[expect(clippy::too_many_arguments, reason = "mirrors the GlyphRun op + tier")]
-    fn plan_glyph_quads(
+    fn draw_glyph_quads(
         &mut self,
-        font: &Arc<Font>,
-        px: f32,
-        coverage: Coverage,
+        strike: &Strike,
         size: f32,
         paint: &Paint,
         glyphs: &[GlyphPos],
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
+        let hide_notdef = self.caches.glyphs.hides_missing_glyphs();
+        let shown: Vec<&GlyphPos> = shown_glyphs(glyphs, hide_notdef).collect();
         // Pack first, batch second — packing can GC the pages a batch
-        // already points at (see GlyphStore::ensure_run). Hosts may opt to
-        // hide glyph 0 (.notdef) and watch FontDemand instead of painting
-        // tofu; the default draws it, like Skia.
-        let hide_notdef = self.glyphs.hides_missing_glyphs();
-        let keys: Vec<(u32, u8)> = glyphs
-            .iter()
-            .filter(|g| g.id != 0 || !hide_notdef)
-            .map(|g| (g.id, 0))
-            .collect();
-        self.glyphs.ensure_run(font, px, coverage, &keys);
-        let mut batches: Vec<((TextMode, PageRef), Vec<f32>)> = Vec::new();
-        for g in glyphs.iter().filter(|g| g.id != 0 || !hide_notdef) {
-            // Under a text-raster hold, a missing size draws through the
-            // glyph's nearest resident size, scaled — the per-glyph
-            // raster→quad scale makes the mixed-size batch free.
-            let (got_px, page, entry) = match self.glyphs.entry(font.uid().0, g.id, px, coverage, 0)
-            {
-                Some((page, entry)) => (px, page, entry),
-                None => match self
-                    .glyphs
-                    .resident_stand_in(font.uid().0, g.id, coverage, px)
-                {
-                    Some(hit) => hit,
-                    None => continue,
-                },
+        // already points at (see GlyphStore::ensure_run).
+        let keys: Vec<(u32, u8)> = shown.iter().map(|g| (g.id, 0)).collect();
+        self.ensure_strike(strike, &keys);
+        let mut batches: Vec<((Frag, PageRef), Vec<f32>)> = Vec::new();
+        for g in shown {
+            // A stand-in's per-glyph raster→quad scale makes the mixed-size
+            // batch free.
+            let Some((raster_px, page, entry)) = self.atlas_glyph(strike, g.id, 0) else {
+                continue;
             };
-            let batch = batch_for(&mut batches, text_mode(page, coverage), page);
-            push_glyph_quad(batch, g.x, g.y, &entry, size / got_px);
+            let batch = batch_for(&mut batches, glyph_frag(page, strike.coverage), page);
+            push_glyph_quad(batch, g.x, g.y, &entry, size / raster_px);
         }
-        self.push_text_batches(batches, paint, current, z);
+        self.push_text_batches(batches, paint, at, blend);
     }
 
-    /// `plan_glyph_quads_snapped` is the crisp path (mask tier,
-    /// axis-aligned): glyphs rastered at the quantized device scale with a
-    /// quarter-px subpixel phase, quads in DEVICE space 1:1 with their
-    /// texels, y snapped to the pixel grid — Skia's direct masks, Impeller's
-    /// quantized rasters.
-    #[expect(clippy::too_many_arguments, reason = "mirrors the GlyphRun op + tier")]
-    fn plan_glyph_quads_snapped(
+    /// `draw_glyph_quads_snapped` is the crisp path (mask tier,
+    /// axis-aligned): glyphs of `strike`, rastered at the quantized device
+    /// scale with a quarter-px subpixel phase, quads in DEVICE space 1:1
+    /// with their texels, y snapped to the pixel grid — Skia's direct masks,
+    /// Impeller's quantized rasters.
+    fn draw_glyph_quads_snapped(
         &mut self,
-        font: &Arc<Font>,
-        scale: f32,
-        size: f32,
-        coverage: Coverage,
+        strike: &Strike,
         paint: &Paint,
         glyphs: &[GlyphPos],
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        let px = size * scale;
-        // Same optional .notdef policy as plan_glyph_quads.
-        let hide_notdef = self.glyphs.hides_missing_glyphs();
-        let placed: Vec<(f32, f32, u8, u32)> = glyphs
-            .iter()
-            .filter(|g| g.id != 0 || !hide_notdef)
+        let hide_notdef = self.caches.glyphs.hides_missing_glyphs();
+        let placed: Vec<(f32, f32, u8, u32)> = shown_glyphs(glyphs, hide_notdef)
             .map(|g| {
-                let device = current.map_point(Point::new(g.x, g.y));
+                let device = at.transform.map_point(Point::new(g.x, g.y));
                 let (x, phase) = snap_quarter(device.x);
                 (x, device.y.round(), phase, g.id)
             })
@@ -201,99 +195,126 @@ impl Planner<'_> {
             .iter()
             .map(|&(_, _, phase, id)| (id, phase))
             .collect();
-        self.glyphs.ensure_run(font, px, coverage, &keys);
-        let mut batches: Vec<((TextMode, PageRef), Vec<f32>)> = Vec::new();
+        self.ensure_strike(strike, &keys);
+        let mut batches: Vec<((Frag, PageRef), Vec<f32>)> = Vec::new();
         for (x, y, phase, id) in placed {
-            // Texels land 1:1 when the exact scale is resident; under a
-            // hold, a stand-in from another scale stretches instead
-            // (bitmaps re-raster per quantize step, the very churn the hold
-            // exists to skip).
-            let (scale, page, entry) =
-                match self.glyphs.entry(font.uid().0, id, px, coverage, phase) {
-                    Some((page, entry)) => (1.0, page, entry),
-                    None => match self
-                        .glyphs
-                        .resident_stand_in(font.uid().0, id, coverage, px)
-                    {
-                        Some((got_px, page, entry)) => (px / got_px, page, entry),
-                        None => continue,
-                    },
-                };
-            let batch = batch_for(&mut batches, text_mode(page, coverage), page);
-            push_glyph_quad(batch, x, y, &entry, scale);
+            // Texels land 1:1 when the exact scale is resident; a stand-in
+            // from another scale stretches instead (bitmaps re-raster per
+            // quantize step, the very churn a hold exists to skip).
+            let Some((raster_px, page, entry)) = self.atlas_glyph(strike, id, phase) else {
+                continue;
+            };
+            let batch = batch_for(&mut batches, glyph_frag(page, strike.coverage), page);
+            push_glyph_quad(batch, x, y, &entry, strike.px / raster_px);
         }
-        self.push_text_batches(batches, paint, &Matrix::IDENTITY, z);
+        self.push_text_batches(batches, paint, &at.with_transform(Matrix::IDENTITY), blend);
     }
 
-    /// `push_text_batches` emits one step per (mode, atlas page) batch,
-    /// tinted by mode.
+    /// `ensure_strike` packs the glyphs `keys` name (glyph id, subpixel
+    /// phase) of `strike` into the atlas.
+    fn ensure_strike(&mut self, strike: &Strike, keys: &[(u32, u8)]) {
+        self.caches
+            .glyphs
+            .ensure_run(strike.font, strike.px, strike.coverage, keys);
+    }
+
+    /// `atlas_glyph` is glyph `id` of `strike` at subpixel `phase` in the
+    /// atlas, with the size it was rastered at: the strike's own, or, under
+    /// a text-raster hold, the glyph's nearest resident size standing in for
+    /// a missing one. `None` when neither is resident.
+    fn atlas_glyph(
+        &mut self,
+        strike: &Strike,
+        id: u32,
+        phase: u8,
+    ) -> Option<(f32, PageRef, AtlasGlyph)> {
+        let font = strike.font.uid().0;
+        let glyphs = &mut self.caches.glyphs;
+        match glyphs.entry(font, id, strike.px, strike.coverage, phase) {
+            Some((page, entry)) => Some((strike.px, page, entry)),
+            None => glyphs.resident_stand_in(font, id, strike.coverage, strike.px),
+        }
+    }
+
+    /// `push_text_batches` draws one batch of glyph quads per (fragment,
+    /// atlas page), tinted by fragment; `at`'s transform places the quads.
     fn push_text_batches(
         &mut self,
-        batches: Vec<((TextMode, PageRef), Vec<f32>)>,
+        batches: Vec<((Frag, PageRef), Vec<f32>)>,
         paint: &Paint,
-        model: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        for ((mode, page), vertices) in batches {
-            let tint = text_tint(mode, paint, self.elision_alpha());
-            let mesh = self.emit.alloc_text_mesh(&vertices);
-            let bind = self.emit.atlas_bind(self.glyphs, page);
-            let frame = self.frames.last_mut().expect("frame stack never empty");
-            self.emit
-                .text_step(frame, mode, tint, paint.blend_mode, model, mesh, bind, z);
+        for ((frag, page), vertices) in batches {
+            let page = self.emit.atlas_bind(&mut self.caches.glyphs, page);
+            let entity = Entity {
+                stencil: None,
+                cover: Cover::Mesh {
+                    transform: at.transform,
+                    mesh: self.emit.alloc_glyph_mesh(&vertices),
+                },
+                role: Role::Glyphs,
+                shading: glyph_shading(frag, paint, at.alpha, page),
+                blend,
+                z: at.z,
+            };
+            self.emit.push(self.context, entity);
         }
     }
 
-    /// `plan_glyph_outlines` is the outline tier: each glyph is a real path,
+    /// `draw_glyph_outlines` is the outline tier: each glyph is a real path,
     /// filled stencil-then-cover like any shape.
-    fn plan_glyph_outlines(
+    fn draw_glyph_outlines(
         &mut self,
         font: &Arc<Font>,
         size: f32,
         paint: &Paint,
         glyphs: &[GlyphPos],
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
         // Shader-painted text desugars into a layer before it gets here, so
-        // outlines paint solid — but the STYLE rides along, which is what
-        // makes stroked text stroke.
-        let paint = Paint {
-            color: paint.color,
-            blend_mode: paint.blend_mode,
+        // outlines paint solid, their colour filter folded in — but the STYLE
+        // rides along, which is what makes stroked text stroke.
+        let outline_paint = Paint {
+            color: coverage_colour(paint),
             style: paint.style.clone(),
             ..Default::default()
         };
-        let hide_notdef = self.glyphs.hides_missing_glyphs();
+        let hide_notdef = self.caches.glyphs.hides_missing_glyphs();
         let mut no_outline: Vec<GlyphPos> = Vec::new();
-        for g in glyphs.iter().filter(|g| g.id != 0 || !hide_notdef) {
-            let Some(path) = self.glyphs.path(font, g.id, size) else {
+        for g in shown_glyphs(glyphs, hide_notdef) {
+            let Some(path) = self.caches.glyphs.path(font, g.id, size) else {
                 no_outline.push(*g);
                 continue;
             };
-            let at = current.then(&Matrix::translation(g.x, g.y));
-            self.emit_path(&path, FillRule::NonZero, &paint, &at, z);
+            let glyph = at.with_transform(at.transform.then(&Matrix::translation(g.x, g.y)));
+            let shape = Shape::of_path(&path, FillRule::NonZero, &outline_paint.style);
+            self.draw_shape(&shape, &outline_paint, &glyph, blend);
         }
         // Colour glyphs (emoji) have no outlines — clamp them to the biggest
         // mask raster instead of letting them vanish.
         if !no_outline.is_empty() {
-            let px = (size * current.max_scale()).min(MAX_COLOR_GLYPH_PX);
+            let px = (size * at.transform.max_scale()).min(MAX_COLOR_GLYPH_PX);
             let bitmap_paint = Paint {
                 style: PaintStyle::Fill,
                 ..paint.clone()
             };
-            self.plan_glyph_quads(
+            let strike = Strike {
                 font,
                 px,
-                Coverage::Fill,
-                size,
-                &bitmap_paint,
-                &no_outline,
-                current,
-                z,
-            );
+                coverage: Coverage::Fill,
+            };
+            self.draw_glyph_quads(&strike, size, &bitmap_paint, &no_outline, at, blend);
         }
     }
+}
+
+/// `shown_glyphs` is `glyphs` without glyph 0 (.notdef) when the host hides
+/// missing glyphs, to watch `FontDemand` instead of painting tofu; the
+/// default draws it, like Skia.
+fn shown_glyphs(glyphs: &[GlyphPos], hide_notdef: bool) -> impl Iterator<Item = &GlyphPos> {
+    glyphs.iter().filter(move |g| g.id != 0 || !hide_notdef)
 }
 
 /// `glyph_tier` is Skia's tier dispatch (`SubRunControl.cpp`), plus the
@@ -398,32 +419,50 @@ fn is_uniform_axis_aligned(transform: &Matrix) -> bool {
     (scale_x - scale_y).abs() <= 1e-6 * scale_x.max(scale_y).max(1.0)
 }
 
-/// `text_mode` is which text fragment a page's glyphs need.
-fn text_mode(page: PageRef, coverage: Coverage) -> TextMode {
+/// `glyph_frag` is which glyph fragment a page's glyphs need.
+fn glyph_frag(page: PageRef, coverage: Coverage) -> Frag {
     match (page.color, coverage) {
-        (true, _) => TextMode::Color,
-        (false, Coverage::Sdf) => TextMode::Sdf,
-        (false, _) => TextMode::Mask,
+        (true, _) => Frag::GlyphColor,
+        (false, Coverage::Sdf) => Frag::GlyphSdf,
+        (false, _) => Frag::GlyphMask,
     }
 }
 
-/// `text_tint` is what multiplies a batch's fragments. Colour glyphs keep
-/// their own palette, so only alpha rides their tint.
-fn text_tint(mode: TextMode, paint: &Paint, group_alpha: f32) -> [f32; 4] {
-    match mode {
-        TextMode::Color => alpha_tint(paint.color.a * group_alpha),
-        _ => scaled_premul(paint.color, group_alpha),
+/// `glyph_shading` is how a batch of `frag` glyphs from `page` is coloured,
+/// the colour filter acting on each glyph's colour before its coverage
+/// (Skia's `skpaint_to_grpaint_impl`): a coverage glyph is the paint's
+/// colour, the filter folded in, times its coverage; a colour glyph keeps
+/// its own pixels, which pass through the filter at the paint's alpha
+/// (Skia's colour-bitmap text replaces the shader with the glyph).
+fn glyph_shading(frag: Frag, paint: &Paint, group_alpha: f32, page: wgpu::BindGroup) -> Shading {
+    match frag {
+        Frag::GlyphColor => {
+            Shading::colour_glyphs(page, paint.color_filter, paint.color.a, group_alpha)
+        }
+        _ => Shading::glyphs(
+            frag,
+            scaled_premul(coverage_colour(paint), group_alpha),
+            page,
+        ),
     }
 }
 
-/// `batch_for` groups quads per (mode, atlas page) in first-seen order —
-/// deterministic step emission, one draw per page.
+/// `coverage_colour` is the colour a coverage glyph is painted: the paint's,
+/// through its colour filter.
+fn coverage_colour(paint: &Paint) -> Color {
+    paint
+        .color_filter
+        .map_or(paint.color, |filter| filter.folded_into(paint.color))
+}
+
+/// `batch_for` groups quads per (fragment, atlas page) in first-seen order
+/// — deterministic emission, one draw per page.
 fn batch_for(
-    batches: &mut Vec<((TextMode, PageRef), Vec<f32>)>,
-    mode: TextMode,
+    batches: &mut Vec<((Frag, PageRef), Vec<f32>)>,
+    frag: Frag,
     page: PageRef,
 ) -> &mut Vec<f32> {
-    let key = (mode, page);
+    let key = (frag, page);
     if let Some(at) = batches.iter().position(|(k, _)| *k == key) {
         return &mut batches[at].1;
     }

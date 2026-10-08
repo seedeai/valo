@@ -399,7 +399,8 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
             ..Default::default()
         },
     );
-    // A styled (Outer) blur on a gradient rect: blur + mask-combine pass.
+    // A styled (Outer) blur on a gradient rect: its white mask blurred,
+    // clipped to outside the rect, and filled with the gradient.
     b.draw_rect(
         Rect::new(130.0, 690.0, 90.0, 70.0),
         &Paint {
@@ -669,17 +670,19 @@ fn planner_scene_golden() {
     // Pin the scene's shape so it keeps exercising every claimed path: the
     // outer opacity group elides; the nested group, the mask, the Overlay
     // group, the overlap group, the pattern-Multiply implicit layer, and the
-    // three text layers (gradient, Multiply, blurred) materialize (the
-    // off-viewport group and mask are SKIPPED — neither elided nor
-    // rendered); the two solid Multiply rects, the Overlay composite, the
-    // Multiply star cover, the implicit composite, and the Multiply text
-    // composite snapshot. Both clips reach the depth buffer, all three text
+    // three text layers (gradient, Multiply, blurred) materialize, and the
+    // two mask-blurred gradients each fill their blurred mask in a subpass
+    // of its own (the off-viewport group and mask are SKIPPED — neither
+    // elided nor rendered); the two solid Multiply rects, the Overlay
+    // composite, the Multiply star cover, the implicit composite, and the
+    // Multiply text composite snapshot. Both clips and the outer-styled
+    // gradient's clip to its rect reach the depth buffer, all three text
     // tiers are exercised, and the cached embed fills its texture and
     // samples it in the same frame.
     assert_eq!(stats.layers_elided, 1);
-    assert_eq!(stats.layers_rendered, 13);
+    assert_eq!(stats.layers_rendered, 15);
     assert_eq!(stats.snapshots, 6);
-    assert_eq!(stats.clips, 2);
+    assert_eq!(stats.clips, 3);
     // The off-viewport rect, plus the Difference clip whose shape misses the
     // frame — both counted as culled, neither reaching the depth buffer.
     assert_eq!(stats.culled, 2);

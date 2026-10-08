@@ -1,233 +1,404 @@
-//! Geometry emitters: how each primitive becomes GPU work once the route
-//! has already decided direct / layer / dst-read. No routing decisions in
-//! here — a primitive only knows how to draw itself plain.
+//! Geometry: how each primitive becomes a draw in the top context once the
+//! route has already decided direct / layer / dst-read. No routing decisions
+//! in here — a primitive only knows how to draw itself plain, with the blend
+//! the route gave it.
 //!
 //! Clips live here as well, because a depth clip is geometry and nothing
 //! else: the same stencil-then-cover a fill uses, with the cover writing
 //! the scope's expiry depth instead of colour. It never routes, and it
 //! leaves nothing for the matching `Restore` to undo — the recorder already
-//! baked the expiry slot into the op.
+//! baked the expiry slot into the op. A mask blur's style clip is the same
+//! clip expiring right after the one draw it clips.
 
 use std::sync::Arc;
 
 use valo_dl::{ClipOp, Image, Paint, Sampling};
 use valo_geometry::{
-    dash_contours, local_tolerance, stroke_strip, FillRule, Matrix, Path, Rect, Stroke,
+    dash_contours, local_tolerance, stroke_strip, FillRule, Matrix, Path, PathBuilder, Rect, Stroke,
 };
 
-use crate::host_buffer::VertexSlot;
-use crate::pipelines::PipelineKind;
+use crate::frame::Mesh;
+use crate::pipelines::{AdvancedBlend, PipelineBlend};
 
-use super::emit::{paint_frag, tinted};
-use super::Planner;
+use super::draw_state::DrawState;
+use super::drawing::Drawing;
+use super::emit::{Cover, Entity, Marking, Role, StencilWrite};
+use super::shading::Shading;
+use super::source::Shape;
 
-impl Planner<'_> {
-    /// `emit_rect_quad` is one paint quad covering `rect` — the direct path
-    /// for rectangles.
-    pub(super) fn emit_rect_quad(&mut self, rect: &Rect, paint: &Paint, current: &Matrix, z: f32) {
-        let group_alpha = self.elision_alpha();
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit.paint_quad(
-            frame,
-            group_alpha,
-            PipelineKind::Draw(paint_frag(paint)),
-            rect,
-            paint,
-            current,
-            z,
-        );
+/// `BlendedSolid` is what a solid destination-reading draw covers: a rect,
+/// or a filled path's bounds, under the fan its cover tests.
+pub(super) enum BlendedSolid {
+    Rect(Rect),
+    Path {
+        bounds: Rect,
+        fan: Mesh,
+        rule: FillRule,
+    },
+}
+
+impl Drawing<'_, '_> {
+    /// `draw_shape` draws `shape` plain with `paint` and `blend`: a rect as
+    /// one quad, a filled path stencil-then-cover, a stroke as a triangle
+    /// strip.
+    pub fn draw_shape(
+        &mut self,
+        shape: &Shape<'_>,
+        paint: &Paint,
+        at: &DrawState,
+        blend: PipelineBlend,
+    ) {
+        match *shape {
+            Shape::Rect(rect) => self.draw_rect(&rect, paint, at, blend),
+            Shape::Path { path, rule } => self.fill_path(path, rule, paint, at, blend),
+            Shape::Stroke { path, stroke } => self.draw_stroke(path, stroke, paint, at, blend),
+        }
     }
 
-    /// `emit_path` draws a path plain: fills via stencil-then-cover (wind
-    /// the flattened path into the stencil, then one cover quad draws where
-    /// wound), strokes via a CPU triangle strip.
-    pub(super) fn emit_path(
+    /// `draw_rect` is one paint quad covering `rect`.
+    fn draw_rect(&mut self, rect: &Rect, paint: &Paint, at: &DrawState, blend: PipelineBlend) {
+        let shading = self.emit.paint_shading(paint, at.alpha);
+        let entity = Entity {
+            stencil: None,
+            cover: Cover::Quad {
+                transform: at.transform,
+                rect: *rect,
+            },
+            role: Role::Fill,
+            shading,
+            blend,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
+    }
+
+    /// `fill_path` winds the flattened path into the stencil, then one
+    /// cover quad draws where it is wound.
+    fn fill_path(
         &mut self,
         path: &Arc<Path>,
         rule: FillRule,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        let stroke = match &paint.style {
-            valo_dl::PaintStyle::Fill => {
-                let Some(mesh) = self.stencil_fan_mesh(path, current) else {
-                    return;
-                };
-                let group_alpha = self.elision_alpha();
-                let frame = self.frames.last_mut().expect("frame stack never empty");
-                self.emit.push_fan(frame, rule, current, mesh, z);
-                self.emit.paint_quad(
-                    frame,
-                    group_alpha,
-                    PipelineKind::Cover(paint_frag(paint)),
-                    &path.bounds(),
-                    paint,
-                    current,
-                    z,
-                );
-                return;
-            }
-            valo_dl::PaintStyle::Stroke(stroke) => stroke.clone(),
+        let Some(fan) = self.fan_mesh(path, &at.transform) else {
+            return;
         };
-        self.emit_path_stroke(path, &stroke, paint, current, z);
+        let shading = self.emit.paint_shading(paint, at.alpha);
+        let entity = Entity {
+            stencil: Some(StencilWrite {
+                transform: at.transform,
+                mesh: fan,
+                marking: Marking::Fan(rule),
+            }),
+            cover: Cover::Quad {
+                transform: at.transform,
+                rect: path.bounds(),
+            },
+            role: Role::StencilledFill,
+            shading,
+            blend,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
     }
 
-    /// `emit_path_stroke` is one `Strip` step along the flattened path
+    /// `draw_stroke` is one triangle strip along the flattened path
     /// (Impeller's StrokePathGeometry): dash pre-pass, hairline floor,
     /// joins + caps from the stroker. Gradients compose free (local =
     /// position).
-    fn emit_path_stroke(
+    fn draw_stroke(
         &mut self,
         path: &Arc<Path>,
         stroke: &Stroke,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
+        let vertices = self.stroke_vertices(path, stroke, &at.transform);
+        if vertices.is_empty() {
+            return;
+        }
+        let coverage = stroke_alpha_coverage(&at.transform, stroke.width);
+        let shading = self.emit.paint_shading(paint, at.alpha * coverage);
+        let entity = Entity {
+            stencil: None,
+            cover: Cover::Mesh {
+                transform: at.transform,
+                mesh: self.emit.alloc_mesh(&vertices),
+            },
+            role: Role::Stroke,
+            shading,
+            blend,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
+    }
+
+    /// `stroke_vertices` is a stroke's triangle strip in local coordinates.
+    /// Impeller renders at least one device pixel of geometry and fades a
+    /// positive subpixel stroke to keep its intended coverage
+    /// ([`stroke_alpha_coverage`]); a zero-width stroke is a true hairline.
+    fn stroke_vertices(&mut self, path: &Arc<Path>, stroke: &Stroke, current: &Matrix) -> Vec<f32> {
         let tolerance = local_tolerance(current);
-        let contours = self.contours.contours(path, tolerance);
-        // Impeller renders at least one device pixel of geometry, then fades
-        // positive subpixel strokes to preserve their intended coverage. A
-        // zero-width stroke is a true hairline and remains fully opaque.
+        let contours = self.caches.contours.contours(path, tolerance);
         let mut stroke = stroke.clone();
-        let coverage = stroke_alpha_coverage(current, stroke.width);
         stroke.width = stroke.width.max(1.0 / current.max_scale().max(1e-3));
-        let vertices = match &stroke.dash {
+        match &stroke.dash {
             Some(dash) => {
                 let dashed = dash_contours(&contours, dash);
                 stroke_strip(&dashed, &stroke, tolerance)
             }
             None => stroke_strip(&contours, &stroke, tolerance),
-        };
-        if vertices.is_empty() {
-            return;
         }
-        let tint = tinted(paint, self.elision_alpha() * coverage);
-        let mesh = self.emit.alloc_mesh(&vertices);
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit.strip_step(frame, tint, paint, current, mesh, z);
     }
 
-    /// `emit_image` is one sampled-image draw — the direct path for images,
-    /// including an inline colour filter on the sampled pixel.
+    /// `draw_image` is one sampled-image draw — the direct path for images,
+    /// including an inline colour filter on the sampled pixel. Its alpha is
+    /// the paint's alone, the image keeping its own colours.
     #[expect(
         clippy::too_many_arguments,
-        reason = "mirrors the DrawImage op's fields 1:1"
+        reason = "the DrawImage op's fields, the state and the blend"
     )]
-    pub(super) fn emit_image(
+    pub fn draw_image(
         &mut self,
         image: &Image,
         src: &Rect,
         dst: &Rect,
         sampling: Sampling,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        let group_alpha = self.elision_alpha();
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit.image_step(
-            frame,
-            group_alpha,
-            image,
-            src,
-            dst,
-            sampling,
-            paint,
-            current,
-            z,
-        );
+        let alpha = paint.color.a * at.alpha;
+        let shading = self
+            .emit
+            .image_shading(image, src, dst, sampling, paint.color_filter, alpha);
+        let entity = Entity {
+            stencil: None,
+            cover: Cover::Quad {
+                transform: at.transform,
+                rect: *dst,
+            },
+            role: Role::Fill,
+            shading,
+            blend,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
     }
 
-    /// `emit_rrect_blur` is the analytic blurred (r)rect quad.
-    pub(super) fn emit_rrect_blur(
+    /// `draw_blended_solid` is the fragment side of a solid advanced blend:
+    /// one quad, or a cover over a path's fan, whose fragment runs `mode`
+    /// against `destination`, a copy of what the context held beneath it.
+    /// The pipeline blend is SrcOver — the result replaces what the copy
+    /// captured.
+    pub fn draw_blended_solid(
+        &mut self,
+        solid: BlendedSolid,
+        paint: &Paint,
+        at: &DrawState,
+        mode: AdvancedBlend,
+        destination: &wgpu::TextureView,
+    ) {
+        let size = self.context.area.size();
+        let shading =
+            self.emit
+                .blended_solid_shading(paint.color, at.alpha, mode, destination, size);
+        let (stencil, rect, role) = match solid {
+            BlendedSolid::Rect(rect) => (None, rect, Role::Fill),
+            BlendedSolid::Path { bounds, fan, rule } => {
+                let fan = StencilWrite {
+                    transform: at.transform,
+                    mesh: fan,
+                    marking: Marking::Fan(rule),
+                };
+                (Some(fan), bounds, Role::StencilledFill)
+            }
+        };
+        let entity = Entity {
+            stencil,
+            cover: Cover::Quad {
+                transform: at.transform,
+                rect,
+            },
+            role,
+            shading,
+            blend: PipelineBlend::SrcOver,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
+    }
+
+    /// `draw_rrect_blur` is the analytic blurred (r)rect: one quad over its
+    /// blur's spread.
+    pub fn draw_rrect_blur(
         &mut self,
         rect: &Rect,
         radii: [f32; 4],
+        blur: valo_dl::MaskBlur,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        blend: PipelineBlend,
     ) {
-        let group_alpha = self.elision_alpha();
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit
-            .rrect_blur_step(frame, group_alpha, rect, radii, paint, current, z);
+        let shading = Shading::rrect_blur(rect, radii, paint.color, blur, at.alpha);
+        let entity = Entity {
+            stencil: None,
+            cover: Cover::Quad {
+                transform: at.transform,
+                rect: rect.expand((blur.sigma * 3.0).ceil()),
+            },
+            role: Role::Fill,
+            shading,
+            blend,
+            z: at.z,
+        };
+        self.emit.push(self.context, entity);
     }
 
-    /// `plan_clip` stencils the shape and writes a depth CEILING at the
-    /// clip's expiry z: an Intersect ceiling covers the shape's exterior, a
-    /// Difference ceiling its interior. Draws under a ceiling fail the depth
-    /// test, and draws recorded after the scope's restore sit above it — so
-    /// the clip expires on its own and `Restore` renders nothing.
-    pub(super) fn plan_clip(
-        &mut self,
-        path: &Arc<Path>,
-        rule: FillRule,
-        op: ClipOp,
-        current: &Matrix,
-        z: f32,
-    ) {
-        // A Difference ceiling covers the shape's INTERIOR, so an interior
-        // that lands off-viewport excludes nothing visible and the stencil
-        // plus ceiling can be skipped outright. An Intersect ceiling covers
-        // the exterior and can never be culled.
-        if op == ClipOp::Difference {
-            let visible = current
-                .map_rect(&path.bounds())
-                .intersects(&self.frame().cull_rect);
-            if !visible {
-                self.stats.culled += 1;
-                return;
-            }
-        }
-        let Some(mesh) = self.stencil_fan_mesh(path, current) else {
-            // A zero-AREA path (a rect collapsed to a line) fans no
-            // triangles. Intersecting with nothing clips EVERYTHING: with no
-            // interior marked, the full-frame ceiling covers the whole
-            // scope. An empty Difference excludes nothing — skip.
-            if op == ClipOp::Intersect {
-                self.stats.clips += 1;
-                self.push_intersect_ceiling(z);
-            }
+    /// `clip` stencils the shape and writes a depth CEILING at the clip's
+    /// expiry z, `at`'s depth: an Intersect ceiling covers the shape's
+    /// exterior, a Difference ceiling its interior. Draws under a ceiling
+    /// fail the depth test, and draws recorded after the scope's restore sit
+    /// above it — so the clip expires on its own and `Restore` renders
+    /// nothing.
+    pub fn clip(&mut self, path: &Arc<Path>, rule: FillRule, op: ClipOp, at: &DrawState) {
+        if self.excludes_nothing_visible(&path.bounds(), op, &at.transform) {
+            self.stats.culled += 1;
             return;
+        }
+        let stencil = self.fan_mesh(path, &at.transform).map(|mesh| StencilWrite {
+            transform: at.transform,
+            mesh,
+            marking: Marking::Fan(rule),
+        });
+        self.push_stencil_clip(stencil, &path.bounds(), op, at);
+    }
+
+    /// `clip_to_shape` clips the next draw, and only it, to `shape` or to
+    /// outside it: Impeller's `ApplyClippedBlurStyle`, whose clip takes the
+    /// depth of the blur it clips, `at`'s. The ceiling sits half a slot
+    /// above it, where the next draw is already past it.
+    pub fn clip_to_shape(&mut self, shape: &Shape<'_>, op: ClipOp, at: &DrawState) {
+        let expiry = DrawState {
+            z: self.context.depth.half_slot_above(at.z),
+            ..*at
+        };
+        match *shape {
+            Shape::Rect(rect) => self.clip(&rect_path(&rect), FillRule::NonZero, op, &expiry),
+            Shape::Path { path, rule } => self.clip(path, rule, op, &expiry),
+            Shape::Stroke { path, stroke } => self.clip_stroke(path, stroke, op, &expiry),
+        }
+    }
+
+    /// `clip_stroke` is `clip` for a stroke's geometry: its strip, each
+    /// triangle counting into the stencil wherever it lands, as Impeller's
+    /// clip counts geometry that may overlap itself (`kStencilIncrementAll`).
+    fn clip_stroke(&mut self, path: &Arc<Path>, stroke: &Stroke, op: ClipOp, at: &DrawState) {
+        let vertices = self.stroke_vertices(path, stroke, &at.transform);
+        let bounds = vertex_bounds(&vertices);
+        if self.excludes_nothing_visible(&bounds, op, &at.transform) {
+            self.stats.culled += 1;
+            return;
+        }
+        let stencil = (!vertices.is_empty()).then(|| StencilWrite {
+            transform: at.transform,
+            mesh: self.emit.alloc_mesh(&vertices),
+            marking: Marking::Strip,
+        });
+        self.push_stencil_clip(stencil, &bounds, op, at);
+    }
+
+    /// `excludes_nothing_visible` reports whether a clip can be skipped: a
+    /// Difference ceiling covers the shape's INTERIOR, so an interior that
+    /// lands off-viewport excludes nothing visible. An Intersect ceiling
+    /// covers the exterior and can never be culled.
+    fn excludes_nothing_visible(&self, bounds: &Rect, op: ClipOp, current: &Matrix) -> bool {
+        op == ClipOp::Difference && self.context.area.culls(&current.map_rect(bounds))
+    }
+
+    /// `push_stencil_clip` marks the clip's shape in the stencil and writes
+    /// its ceiling at `at`'s depth, over the shape's exterior for Intersect
+    /// or its interior, `bounds`, for Difference: one draw, which the
+    /// context keeps to replay after a split.
+    fn push_stencil_clip(
+        &mut self,
+        stencil: Option<StencilWrite>,
+        bounds: &Rect,
+        op: ClipOp,
+        at: &DrawState,
+    ) {
+        // A zero-AREA shape (a rect collapsed to a line) marks nothing.
+        // Intersecting with nothing clips EVERYTHING: with no interior
+        // marked, the whole-context ceiling covers the whole scope. An
+        // empty Difference excludes nothing — skip.
+        if stencil.is_none() && op == ClipOp::Difference {
+            return;
+        }
+        let (cover, role) = match op {
+            // Everything outside the shape fails depth until the scope's
+            // slots are past.
+            ClipOp::Intersect => (Cover::Texels, Role::Clip { difference: false }),
+            ClipOp::Difference => (
+                Cover::Quad {
+                    transform: at.transform,
+                    rect: *bounds,
+                },
+                Role::Clip { difference: true },
+            ),
         };
         self.stats.clips += 1;
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit.push_fan(frame, rule, current, mesh, z);
-        match op {
-            ClipOp::Intersect => self.push_intersect_ceiling(z),
-            ClipOp::Difference => {
-                let bounds = path.bounds();
-                let frame = self.frames.last_mut().expect("frame stack never empty");
-                self.emit.clip_cover_step(frame, &bounds, current, z);
-            }
-        }
+        let entity = Entity {
+            stencil,
+            cover,
+            role,
+            shading: Shading::none(),
+            blend: PipelineBlend::SrcOver,
+            z: at.z,
+        };
+        self.emit.push_clip(self.context, entity);
     }
 
-    /// `push_intersect_ceiling` writes the Intersect clip's ceiling over the
-    /// whole frame — everything outside the shape fails depth until the
-    /// scope's slots are past.
-    fn push_intersect_ceiling(&mut self, z: f32) {
-        let frame = self.frames.last_mut().expect("frame stack never empty");
-        self.emit.clip_ceiling_step(frame, z);
-    }
-
-    /// `stencil_fan_mesh` flattens at the draw's device scale and fans every
-    /// contour from its first point (winding fixes coverage — triangles may
-    /// overlap freely).
-    pub(super) fn stencil_fan_mesh(
-        &mut self,
-        path: &Arc<Path>,
-        current: &Matrix,
-    ) -> Option<(VertexSlot, u32)> {
-        let contours = self.contours.contours(path, local_tolerance(current));
+    /// `fan_mesh` is `path` flattened at the draw's device scale, every
+    /// contour fanned from its first point (winding fixes coverage —
+    /// triangles may overlap freely); `None` when it has no area to wind.
+    pub fn fan_mesh(&mut self, path: &Arc<Path>, current: &Matrix) -> Option<Mesh> {
+        let contours = self
+            .caches
+            .contours
+            .contours(path, local_tolerance(current));
         let vertices = fan_vertices(&contours);
         if vertices.is_empty() {
             return None;
         }
         Some(self.emit.alloc_mesh(&vertices))
     }
+}
+
+/// `rect_path` is a rectangle as a path, for a clip to it.
+fn rect_path(rect: &Rect) -> Arc<Path> {
+    let mut builder = PathBuilder::new();
+    builder.rect(*rect);
+    builder.build()
+}
+
+/// `vertex_bounds` is the rect holding a mesh's `x, y` vertices; empty for
+/// none.
+fn vertex_bounds(vertices: &[f32]) -> Rect {
+    let mut points = vertices.chunks_exact(2);
+    let Some(first) = points.next() else {
+        return Rect::default();
+    };
+    let [mut left, mut top] = [first[0], first[1]];
+    let [mut right, mut bottom] = [left, top];
+    for point in points {
+        left = left.min(point[0]);
+        top = top.min(point[1]);
+        right = right.max(point[0]);
+        bottom = bottom.max(point[1]);
+    }
+    Rect::from_ltrb(left, top, right, bottom)
 }
 
 /// `fan_vertices` builds a triangle-list fan per contour: (p0, pi, pi+1).

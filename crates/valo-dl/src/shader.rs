@@ -140,14 +140,9 @@ impl Shader {
             // the filter as it samples.
             Shader::Image { .. } => return false,
         };
-        let mut folded = Vec::with_capacity(stops.len());
-        for stop in stops.iter() {
-            match filter.folded_into(stop.color) {
-                Some(color) => folded.push(GradientStop { color, ..*stop }),
-                None => return false,
-            }
+        for stop in stops.iter_mut() {
+            stop.color = filter.folded_into(stop.color);
         }
-        *stops = folded;
         true
     }
 

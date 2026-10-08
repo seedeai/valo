@@ -1,372 +1,355 @@
-//! The one per-draw decision: given a draw request (geometry + paint),
-//! pick which execution pattern realizes it — a direct step, an effect
-//! layer, or a destination read. Every primitive shares the identical
-//! decision, only "draw yourself plain" differs, so the decision lives
-//! here once and primitives only know their geometry (Skia's
+//! The one per-draw decision: given a draw request (what it draws + paint +
+//! transform), pick which execution pattern realizes it — a direct step, an
+//! effect layer, or a destination read. Every primitive shares the
+//! identical decision, only "draw yourself plain" differs, so the decision
+//! lives here once, as a value ([`Route`]) worked out before anything is
+//! drawn, and primitives only know their geometry (Skia's
 //! `AutoLayerForImageFilter`, Impeller's
 //! `AddRenderEntityWithFiltersToCurrentPass`).
+//!
+//! A paint's colour filter acts on the draw's colour before its coverage,
+//! as Skia's paint does, so it is taken in before routing wherever it can
+//! be: folded into a solid's colour or a gradient's stops, baked into a
+//! pattern, or handed to a solid glyph run, which colours its glyphs
+//! through it. Impeller instead filters a finished text run, colouring its
+//! box; valo follows Skia.
 //!
 //! Three sources carry deliberate policy differences: an image applies a
 //! colour filter on its sampled pixel in the same draw (never a layer), the
 //! analytic rrect blur handles its own mask blur in the fragment, and a
 //! shader-painted glyph run paints THROUGH its glyphs instead of sampling
-//! the shader in their fragments.
+//! the shader in their fragments. A layer that holds one draw alone (an
+//! effect layer, an implicit layer) holds it as the draw would be drawn
+//! without its effects and its blend (`Drawing::draw_alone`), so a
+//! shader-painted run keeps its shader under any of them, as Skia draws a
+//! draw whole into the layer its image filter runs on
+//! (`AutoLayerForImageFilter`).
+//!
+//! A mask blur is Impeller's `CreateMaskBlur` for each kind of draw: a
+//! solid colour renders as it is and blurs; a shader paint or an image
+//! renders a white mask of its shape, which is blurred and then filled with
+//! the paint's contents; a glyph run blurs its colours (Impeller's
+//! blurred-text path).
 
 use std::sync::Arc;
 
-use valo_dl::{BlendMode, GlyphPos, Image, Paint, PaintStyle, Sampling, Shader};
-use valo_geometry::{Color, FillRule, Matrix, Path, Rect};
-use valo_text::Font;
+use valo_dl::{Image, Paint};
+use valo_geometry::{FillRule, Matrix, Path, Rect};
 
-use crate::pipelines::{Frag, PipelineKind};
+use crate::pipelines::{AdvancedBlend, Blend, PipelineBlend};
 
+use super::draw_state::DrawState;
+use super::filter_tree::{DrawMaskBlur, FilterTree};
+use super::layers::SourceSpace;
+use super::primitives::BlendedSolid;
+use super::source::{DrawSource, Shape};
 use super::Planner;
 
-/// `DrawSource` is a draw's geometry, decoupled from the decision above it.
-pub(super) enum DrawSource<'a> {
-    Rect(&'a Rect),
-    Path {
+/// `Route` is how one draw is drawn, decided from what it draws, its paint
+/// and its transform alone. The blend is decided here too, once: on the
+/// blend unit, or in a fragment against a copy of the destination.
+pub(super) enum Route<'a> {
+    /// One draw, as it is, blended by the blend unit.
+    Direct(PipelineBlend),
+    /// Its effects need its finished pixels: it is drawn plain, or as the
+    /// white mask its mask blur fills, into a layer in its source space
+    /// `space`, and the layer is drawn through `filter`, blended by
+    /// `blend`.
+    EffectLayer {
+        space: SourceSpace,
+        filter: FilterTree<'a>,
+        mask_blur: Option<DrawMaskBlur<'a>>,
+        blend: Blend,
+    },
+    /// An image drawn whole whose filters read its own texture, with no
+    /// layer between (Impeller's `TextureContents`).
+    FilteredImage {
+        space: SourceSpace,
+        filter: FilterTree<'a>,
+        image: &'a Image,
+        dst: Rect,
+        blend: Blend,
+    },
+    /// A solid rect whose fragment blends `mode` against a copy of the
+    /// destination.
+    BlendedRect { rect: Rect, mode: AdvancedBlend },
+    /// A solid filled path whose cover blends `mode` against a copy of the
+    /// destination.
+    BlendedPath {
         path: &'a Arc<Path>,
         rule: FillRule,
+        mode: AdvancedBlend,
     },
-    Image {
-        image: &'a Image,
-        src: &'a Rect,
-        dst: &'a Rect,
-        sampling: Sampling,
-    },
-    /// The recorded fast path for a solid blurred (r)rect — coverage is
-    /// analytic in the fragment, so its mask blur never opens a layer.
-    RRectBlur {
-        rect: &'a Rect,
-        radii: [f32; 4],
-    },
-    Glyphs(GlyphRun<'a>),
+    /// The draw alone in an implicit layer whose composite blends by
+    /// `blend`: a destination-reading blend on anything but a solid shape,
+    /// or shader-painted text, whose run and shader meet in a layer since
+    /// glyph coverage lives in an atlas a paint's fragment cannot sample
+    /// alongside its own colour source.
+    InImplicitLayer(Blend),
+    /// Nothing shows: an axis of the transform has no length.
+    Nothing,
 }
 
-/// `GlyphRun` is one placed run of glyphs: the font instance, the size it
-/// was laid out at, the positioned glyphs, and its recorded ink bounds
-/// already mapped into frame coords. Those device bounds ride along because
-/// glyph extents are not derivable at plan time — a layer that has to
-/// enclose the run sizes itself from them.
-#[derive(Clone, Copy)]
-pub(super) struct GlyphRun<'a> {
-    pub font: &'a Arc<Font>,
-    pub size: f32,
-    pub glyphs: &'a Arc<Vec<GlyphPos>>,
-    pub device_bounds: Rect,
+impl<'a> Route<'a> {
+    /// `of` is the route of `source` drawn with `paint` under `transform`:
+    ///
+    /// - the paint carries a blur or filter that must see the draw's
+    ///   FINISHED pixels → render plain into an effect layer, run the
+    ///   filters, composite;
+    /// - the blend mode is beyond the fixed-function blend unit → make the
+    ///   destination readable and blend in the shader;
+    /// - neither → one direct draw.
+    ///
+    /// A draw whose image filter colours transparent pixels fills its clip,
+    /// so even an image drawn whole takes an effect layer then.
+    pub fn of(source: &DrawSource<'a>, paint: &Paint, transform: &Matrix) -> Self {
+        let blend = Blend::of(paint.blend_mode);
+        if let DrawSource::RRectBlur { .. } = source {
+            // Its mask blur is the fragment's.
+            return Route::blended_whole(blend);
+        }
+        if needs_effect_layer(source, paint) {
+            let Some(space) = SourceSpace::of(transform) else {
+                return Route::Nothing;
+            };
+            if let Some(route) = Route::through_filters(source, paint, space, blend) {
+                return route;
+            }
+        }
+        match (blend, *source) {
+            (Blend::ReadsDestination(mode), source) => Route::blended(&source, paint, mode),
+            (Blend::Fixed(_), DrawSource::Glyphs(_)) if paint.shader.is_some() => {
+                Route::InImplicitLayer(blend)
+            }
+            (Blend::Fixed(blend), _) => Route::Direct(blend),
+        }
+    }
+
+    /// `through_filters` is the route of a draw through its paint's filter
+    /// tree in source space `space`; `None` when the tree does nothing.
+    fn through_filters(
+        source: &DrawSource<'a>,
+        paint: &Paint,
+        space: SourceSpace,
+        blend: Blend,
+    ) -> Option<Self> {
+        let mask_blur = paint
+            .mask_blur
+            .and_then(|blur| source.mask_blur(paint, blur));
+        let filter = FilterTree::for_draw(
+            paint,
+            mask_blur.as_ref(),
+            space.source,
+            source.blur_tile_mode(),
+        )?;
+        let whole_image = source
+            .whole_image()
+            .filter(|_| mask_blur.is_none() && !paint.draw_fills_clip());
+        Some(match whole_image {
+            Some((image, dst)) => Route::FilteredImage {
+                space,
+                filter,
+                image,
+                dst,
+                blend,
+            },
+            None => Route::EffectLayer {
+                space,
+                filter,
+                mask_blur,
+                blend,
+            },
+        })
+    }
+
+    /// `blended` is the route of a draw whose blend `mode` reads the
+    /// destination: a solid rect or filled path blends in its own fragment;
+    /// anything else first materializes in an implicit layer.
+    fn blended(source: &DrawSource<'a>, paint: &Paint, mode: AdvancedBlend) -> Self {
+        let in_layer = Route::InImplicitLayer(Blend::ReadsDestination(mode));
+        match *source {
+            DrawSource::Shape { shape, .. } if paint.shader.is_none() => match shape {
+                Shape::Rect(rect) => Route::BlendedRect { rect, mode },
+                Shape::Path { path, rule } => Route::BlendedPath { path, rule, mode },
+                Shape::Stroke { .. } => in_layer,
+            },
+            _ => in_layer,
+        }
+    }
+
+    /// `blended_whole` is the route of a draw that is drawn whole whatever
+    /// its blend: directly, or in an implicit layer for a blend that reads
+    /// the destination.
+    fn blended_whole(blend: Blend) -> Self {
+        match blend {
+            Blend::Fixed(blend) => Route::Direct(blend),
+            Blend::ReadsDestination(_) => Route::InImplicitLayer(blend),
+        }
+    }
 }
 
 impl Planner<'_> {
-    /// `plan_routed` inspects one draw request's paint and picks its
-    /// execution pattern — the same three-way decision whatever the
-    /// geometry:
-    ///
-    /// - the paint carries a blur or filter that must see this draw's
-    ///   FINISHED pixels → render plain into an effect layer, run the
-    ///   filter, composite (M3b);
-    /// - the blend mode is beyond the fixed-function blend unit → make the
-    ///   destination readable and blend in the shader;
-    /// - neither → one direct step.
-    ///
-    /// A colour filter is cheaper than a layer whenever it can fold: into a
-    /// solid's colour or a gradient's stops on the CPU, or into an image
-    /// draw's sampling fragment.
-    ///
-    /// `device_bounds` are the RECORDED effect-padded, clip-cropped bounds
-    /// mapped into frame coords — effect-layer sizing consumes them instead
-    /// of re-deriving `paint.effect_bounds` (rule: drawing facts are
-    /// computed at record time).
+    /// `plan_routed` draws one draw request the way its [`Route`] says,
+    /// counting it as drawn or, when nothing of it shows, culled. A colour
+    /// filter is cheaper than a layer whenever it can fold: into a solid's
+    /// colour or a gradient's stops on the CPU, or into an image draw's
+    /// sampling fragment.
     pub(super) fn plan_routed(
         &mut self,
-        source: DrawSource<'_>,
+        mut source: DrawSource<'_>,
         paint: &Paint,
-        current: &Matrix,
-        device_bounds: Rect,
-        z: f32,
+        at: &DrawState,
     ) {
-        self.stats.draws += 1;
-        if let DrawSource::RRectBlur { rect, radii } = source {
-            return self.plan_rrect_blur(rect, radii, paint, current, z);
-        }
-        // Neither of these folds a colour filter. An image's applies to the
-        // SAMPLED pixel in the fragment, not to the (alpha-only) paint
-        // colour. A glyph run's applies to the FINISHED run: text is
-        // coverage times colour, and filtering the colour first is a
-        // different picture wherever the filter is not linear in alpha.
-        let folded = match source {
-            DrawSource::Image { .. } | DrawSource::Glyphs(_) => None,
-            _ => self.prepare_paint(paint),
+        let prepared = self.prepare_paint(&mut source, paint);
+        let paint = prepared.as_ref().unwrap_or(paint);
+        let shown = match Route::of(&source, paint, &at.transform) {
+            Route::Direct(blend) => {
+                self.drawing().draw(source, paint, at, blend);
+                Some(())
+            }
+            Route::EffectLayer {
+                space,
+                filter,
+                mask_blur,
+                blend,
+            } => {
+                let layer = EffectLayer {
+                    space: &space,
+                    filter: &filter,
+                    mask_blur: mask_blur.as_ref(),
+                    blend,
+                };
+                self.plan_effect_layer(source, paint, at, layer)
+            }
+            Route::FilteredImage {
+                space,
+                filter,
+                image,
+                dst,
+                blend,
+            } => self.plan_filtered_image(image, &dst, paint, &filter, &space, at, blend),
+            Route::BlendedRect { rect, mode } => {
+                self.plan_blended_solid(BlendedSolid::Rect(rect), paint, at, mode);
+                Some(())
+            }
+            Route::BlendedPath { path, rule, mode } => {
+                self.plan_blended_path(path, rule, paint, at, mode)
+            }
+            Route::InImplicitLayer(blend) => self.plan_in_implicit_layer(source, paint, at, blend),
+            Route::Nothing => None,
         };
-        let paint = folded.as_ref().unwrap_or(paint);
-        if needs_effect_layer(&source, paint) {
-            return self.plan_effect_layer(source, paint, current, device_bounds, z);
+        match shown {
+            Some(()) => self.plan.stats.draws += 1,
+            None => self.plan.stats.culled += 1,
         }
-        if let Some(mode) = advanced_mode(paint) {
-            return self.plan_advanced_blend(source, paint, current, z, mode);
-        }
-        if let Some(run) = masked_glyph_run(&source, paint) {
-            return self.plan_masked_glyphs(&run, paint, current, z);
-        }
-        self.emit_direct(source, paint, current, z);
     }
 
-    /// `plan_masked_glyphs` is the shader-painted-text desugar: the run
-    /// draws as a white mask into an implicit layer, the shader fills that
-    /// layer `SrcIn` over the run's bounds, and the composite applies the
-    /// paint's blend. It is the save-layer recipe a host would write by
-    /// hand, and every tier works inside it unchanged.
-    fn plan_masked_glyphs(&mut self, run: &GlyphRun<'_>, paint: &Paint, current: &Matrix, z: f32) {
-        // The fill quad in LOCAL space. SrcIn masks it down to the glyphs,
-        // so a rotated superset of the run's bounds is harmless.
-        let local_quad = current.invert().map_or(run.device_bounds, |inverse| {
-            inverse.map_rect(&run.device_bounds)
-        });
-        let fill = Paint {
-            shader: paint.shader.clone(),
-            color: paint.color,
-            blend_mode: BlendMode::SrcIn,
-            ..Default::default()
-        };
-        let (font, glyphs, current2) = (run.font.clone(), run.glyphs.clone(), *current);
-        let (size, style) = (run.size, paint.style.clone());
-        self.plan_via_implicit_layer(run.device_bounds, z, paint.blend_mode, move |p| {
-            // The mask must be drawn the way the paint asks — a stroked
-            // gradient headline is stroked coverage, not filled coverage.
-            let mask = Paint {
-                style: style.clone(),
-                ..Paint::from_color(Color::WHITE)
-            };
-            p.plan_glyph_tiers(&font, size, &mask, &glyphs, &current2, 0.5);
-            p.emit_rect_quad(&local_quad, &fill, &current2, 0.5);
-        });
+    /// `prepare_paint` is `paint` with its colour filter taken in by
+    /// `source`, when `source` takes one before routing: folded into a
+    /// solid's colour or a gradient's stops, baked into a pattern's image,
+    /// or handed to a solid glyph run, whose glyphs are coloured through it
+    /// (a coverage glyph's colour folds it, a colour glyph's pixels run it
+    /// in their fragment). An image applies its own to the SAMPLED pixel in
+    /// the fragment, not to the (alpha-only) paint colour.
+    fn prepare_paint(&mut self, source: &mut DrawSource<'_>, paint: &Paint) -> Option<Paint> {
+        match source {
+            DrawSource::Image { .. } => None,
+            DrawSource::Glyphs(run) if paint.shader.is_none() => {
+                run.colour_filter = paint.color_filter;
+                run.colour_filter.map(|_| Paint {
+                    color_filter: None,
+                    ..paint.clone()
+                })
+            }
+            _ => folded_paint(paint).or_else(|| self.bake_pattern_colour_filter(paint)),
+        }
     }
 
-    /// `plan_effect_layer` renders the draw plain into its own layer over
-    /// its recorded bounds, then the composite runs the paint's colour
-    /// filter and blur over that texture. The recorded bounds already carry
-    /// the effect padding and the record-time clip crop, which also matches
-    /// Impeller's clipped subpass coverage.
+    /// `plan_effect_layer` renders the draw into its own layer over its
+    /// ink, in the draw's source space — plain, or as the white mask its
+    /// mask blur fills — then the composite runs the layer's filter over
+    /// that texture. A draw whose image filter colours transparent pixels
+    /// fills its clip, so its layer covers the target.
     fn plan_effect_layer(
         &mut self,
         source: DrawSource<'_>,
         paint: &Paint,
-        current: &Matrix,
-        device_bounds: Rect,
-        z: f32,
-    ) {
-        match source {
-            DrawSource::Rect(rect) => {
-                let (rect, inner_paint, current2) = (*rect, plain(paint), *current);
-                self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
-                    p.emit_rect_quad(&rect, &inner_paint, &current2, 0.5);
-                });
-            }
-            DrawSource::Path { path, rule } => {
-                let (path, inner_paint, current2) = (path.clone(), plain(paint), *current);
-                self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
-                    p.emit_path(&path, rule, &inner_paint, &current2, 0.5);
-                });
-            }
-            DrawSource::Image {
-                image,
-                src,
-                dst,
-                sampling,
-            } => {
-                let (image, src, dst, inner_paint, current2) =
-                    (image.clone(), *src, *dst, plain(paint), *current);
-                self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
-                    p.emit_image(&image, &src, &dst, sampling, &inner_paint, &current2, 0.5);
-                });
-            }
-            DrawSource::Glyphs(run) => {
-                let (font, glyphs, current2) = (run.font.clone(), run.glyphs.clone(), *current);
-                let (size, inner_paint) = (run.size, plain(paint));
-                self.plan_via_effect_layer_at(device_bounds, paint, current, z, move |p| {
-                    p.plan_glyph_tiers(&font, size, &inner_paint, &glyphs, &current2, 0.5);
-                });
-            }
-            DrawSource::RRectBlur { .. } => unreachable!("handled before routing"),
-        }
+        at: &DrawState,
+        layer: EffectLayer<'_, '_>,
+    ) -> Option<()> {
+        let content_bounds = (!paint.draw_fills_clip()).then(|| source.local_bounds());
+        let (content, content_paint) = source.in_effect_layer(paint, layer.mask_blur);
+        let picture = self.render_effect_layer(
+            content,
+            &content_paint,
+            content_bounds.as_ref(),
+            layer.filter,
+            layer.space,
+        )?;
+        let composite = at.with_transform(layer.space.remainder);
+        self.composite_picture(picture, Some(layer.filter), layer.blend, &composite);
+        Some(())
     }
 
-    /// `prepare_paint` folds what the CPU can before any routing: a colour
-    /// filter into a solid's colour or a gradient's stops. A pattern's
-    /// filter bakes into a cached filtered texture instead (Impeller's
-    /// `TiledTextureContents`): filter one immutable source snapshot, then
-    /// apply the pattern transform and tile sampler. Mask blur keeps the
-    /// filter on the paint — the effect layer needs its ordering.
-    fn prepare_paint(&mut self, paint: &Paint) -> Option<Paint> {
-        if let Some(folded) = folded_paint(paint) {
-            return Some(folded);
-        }
-        if paint.mask_blur.is_some() {
-            return None;
-        }
-        let filter = paint.color_filter?;
-        let Some(Shader::Image { image, .. }) = paint.shader.as_ref() else {
-            return None;
-        };
-        let filtered_image = self.filtered_image(image, filter);
-        let mut prepared = paint.clone();
-        let Some(Shader::Image { image, .. }) = prepared.shader.as_mut() else {
-            unreachable!("source kind changed while cloning paint");
-        };
-        *image = filtered_image;
-        prepared.color_filter = None;
-        Some(prepared)
-    }
-
-    /// `emit_direct` dispatches the plain draw to its geometry's emitter.
-    fn emit_direct(&mut self, source: DrawSource<'_>, paint: &Paint, current: &Matrix, z: f32) {
-        match source {
-            DrawSource::Rect(rect) => self.emit_rect_quad(rect, paint, current, z),
-            DrawSource::Path { path, rule } => self.emit_path(path, rule, paint, current, z),
-            DrawSource::Image {
-                image,
-                src,
-                dst,
-                sampling,
-            } => self.emit_image(image, src, dst, sampling, paint, current, z),
-            DrawSource::Glyphs(run) => {
-                self.plan_glyph_tiers(run.font, run.size, paint, run.glyphs, current, z)
-            }
-            DrawSource::RRectBlur { .. } => unreachable!("handled before routing"),
-        }
-    }
-
-    /// `plan_rrect_blur` is the analytic blurred (r)rect: one quad, no
-    /// layer, no filter passes. Advanced blends wrap it in the usual
-    /// implicit layer.
-    fn plan_rrect_blur(
+    /// `plan_blended_solid` lowers a solid shape's destination-reading
+    /// blend: it copies the destination and blends in one fragment.
+    fn plan_blended_solid(
         &mut self,
-        rect: &Rect,
-        radii: [f32; 4],
+        solid: BlendedSolid,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
+        at: &DrawState,
+        mode: AdvancedBlend,
     ) {
-        if let Some(mode) = advanced_mode(paint) {
-            let device_bounds = current.map_rect(&rect.expand(paint.mask_padding()));
-            let (rect, paint, current) = (*rect, paint.clone(), *current);
-            self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
-                p.emit_rrect_blur(&rect, radii, &paint, &current, 0.5);
-            });
-            return;
-        }
-        self.emit_rrect_blur(rect, radii, paint, current, z);
+        let destination = self.split_for_copy(at.z);
+        self.drawing()
+            .draw_blended_solid(solid, paint, at, mode, &destination.view);
     }
 
-    /// `plan_advanced_blend` lowers a destination-reading blend: a solid
-    /// source snapshots the dst and blends in one fragment (fills keep
-    /// stencil-then-cover, with the cover doing the blend); a textured
-    /// source first materializes itself in an implicit layer, whose
-    /// composite runs the mode.
-    fn plan_advanced_blend(
+    /// `plan_blended_path` lowers a solid filled path's destination-reading
+    /// blend: stencil-then-cover, with the cover doing the blend against a
+    /// snapshot of the destination; `None` when the path has no area.
+    fn plan_blended_path(
+        &mut self,
+        path: &Arc<Path>,
+        rule: FillRule,
+        paint: &Paint,
+        at: &DrawState,
+        mode: AdvancedBlend,
+    ) -> Option<()> {
+        let fan = self.drawing().fan_mesh(path, &at.transform)?;
+        let solid = BlendedSolid::Path {
+            bounds: path.bounds(),
+            fan,
+            rule,
+        };
+        self.plan_blended_solid(solid, paint, at, mode);
+        Some(())
+    }
+
+    /// `plan_in_implicit_layer` draws `source` alone into an implicit
+    /// layer whose composite blends by `blend`.
+    fn plan_in_implicit_layer(
         &mut self,
         source: DrawSource<'_>,
         paint: &Paint,
-        current: &Matrix,
-        z: f32,
-        mode: BlendMode,
-    ) {
-        match source {
-            DrawSource::Rect(rect) if paint.shader.is_none() => {
-                let snapshot = self.break_pass(&current.map_rect(rect));
-                let group_alpha = self.elision_alpha();
-                let frame = self.frames.last_mut().expect("frame stack never empty");
-                self.emit.blend_solid_quad(
-                    frame,
-                    group_alpha,
-                    PipelineKind::Draw(Frag::BlendSolid),
-                    rect,
-                    paint,
-                    current,
-                    z,
-                    mode,
-                    &snapshot,
-                );
-            }
-            DrawSource::Path { path, rule }
-                if paint.shader.is_none() && matches!(paint.style, PaintStyle::Fill) =>
-            {
-                let bounds = path.bounds();
-                let Some(mesh) = self.stencil_fan_mesh(path, current) else {
-                    return;
-                };
-                // The fan goes in BEFORE the break: the stencil write lands
-                // in the earlier segment and survives the pass split (depth/
-                // stencil attachments Load across segments); the cover then
-                // tests it from the resumed segment.
-                let frame = self.frames.last_mut().expect("frame stack never empty");
-                self.emit.push_fan(frame, rule, current, mesh, z);
-                let snapshot = self.break_pass(&current.map_rect(&bounds));
-                let group_alpha = self.elision_alpha();
-                let frame = self.frames.last_mut().expect("frame stack never empty");
-                self.emit.blend_solid_quad(
-                    frame,
-                    group_alpha,
-                    PipelineKind::Cover(Frag::BlendSolid),
-                    &bounds,
-                    paint,
-                    current,
-                    z,
-                    mode,
-                    &snapshot,
-                );
-            }
-            DrawSource::Rect(rect) => {
-                let device_bounds = current.map_rect(rect);
-                let (rect, paint, current) = (*rect, paint.clone(), *current);
-                self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
-                    p.emit_rect_quad(&rect, &paint, &current, 0.5);
-                });
-            }
-            DrawSource::Path { path, rule } => {
-                let padded = path
-                    .bounds()
-                    .expand(paint.stroke_padding_at_scale(current.max_scale()));
-                let device_bounds = current.map_rect(&padded);
-                let (path, paint, current) = (path.clone(), plain(paint), *current);
-                self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
-                    p.emit_path(&path, rule, &paint, &current, 0.5);
-                });
-            }
-            DrawSource::Image {
-                image,
-                src,
-                dst,
-                sampling,
-            } => {
-                let device_bounds = current.map_rect(dst);
-                let (image, src, dst, paint, current) =
-                    (image.clone(), *src, *dst, paint.clone(), *current);
-                self.plan_via_implicit_layer(device_bounds, z, mode, move |p| {
-                    p.emit_image(&image, &src, &dst, sampling, &paint, &current, 0.5);
-                });
-            }
-            DrawSource::Glyphs(run) => {
-                let (font, glyphs, current2) = (run.font.clone(), run.glyphs.clone(), *current);
-                let (size, inner_paint) = (run.size, plain(paint));
-                self.plan_via_implicit_layer(run.device_bounds, z, mode, move |p| {
-                    p.plan_glyph_tiers(&font, size, &inner_paint, &glyphs, &current2, 0.5);
-                });
-            }
-            DrawSource::RRectBlur { .. } => unreachable!("handled before routing"),
-        }
+        at: &DrawState,
+        blend: Blend,
+    ) -> Option<()> {
+        let device_bounds = source.device_bounds(&at.transform);
+        self.plan_via_implicit_layer(device_bounds, at, blend, |drawing, inner| {
+            drawing.draw_alone(source, paint, inner);
+        })
     }
 }
 
-/// `masked_glyph_run` is the run a shader-painted glyph draw has to paint
-/// THROUGH. Glyph coverage lives in an atlas that a paint's fragment cannot
-/// sample alongside its own colour source, so the run and the shader have to
-/// meet in a layer instead of in one draw.
-fn masked_glyph_run<'a>(source: &DrawSource<'a>, paint: &Paint) -> Option<GlyphRun<'a>> {
-    match source {
-        DrawSource::Glyphs(run) if paint.shader.is_some() => Some(*run),
-        _ => None,
-    }
+/// `EffectLayer` is what an effect layer's route decided: the source space
+/// it is drawn in, the filter over it, the draw's mask blur, and the
+/// composite's blend.
+struct EffectLayer<'r, 'a> {
+    space: &'r SourceSpace,
+    filter: &'r FilterTree<'a>,
+    mask_blur: Option<&'r DrawMaskBlur<'a>>,
+    blend: Blend,
 }
 
 /// `needs_effect_layer` decides whether the paint's remaining effects need
@@ -379,12 +362,6 @@ fn needs_effect_layer(source: &DrawSource<'_>, paint: &Paint) -> bool {
         DrawSource::Image { .. } => blur_family,
         _ => blur_family || paint.color_filter.is_some(),
     }
-}
-
-/// `advanced_mode` is `Some` when the blend equation cannot run on the
-/// fixed-function blend unit, so the shader must read the destination.
-fn advanced_mode(paint: &Paint) -> Option<BlendMode> {
-    (!paint.blend_mode.is_pipeline_blendable()).then_some(paint.blend_mode)
 }
 
 /// `folded_paint` absorbs a colour filter on the CPU, matching Impeller's
@@ -400,20 +377,148 @@ fn folded_paint(paint: &Paint) -> Option<Paint> {
                 return None;
             }
         }
-        None => folded.color = filter.folded_into(paint.color)?,
+        None => folded.color = filter.folded_into(paint.color),
     }
     folded.color_filter = None;
     Some(folded)
 }
 
-/// `plain` is the paint an inner draw of an implicit/effect layer uses:
-/// the effects moved to the layer, and the blend deferred to the composite.
-fn plain(paint: &Paint) -> Paint {
-    Paint {
-        blend_mode: BlendMode::SrcOver,
-        mask_blur: None,
-        color_filter: None,
-        image_filter: None,
-        ..paint.clone()
+/// The route of each kind of draw, decided without a GPU.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use valo_dl::{BlendMode, ImageFilter, MaskBlur, Shader};
+    use valo_geometry::{Color, PathBuilder, Point, Stroke};
+
+    const RECT: Rect = Rect {
+        x: 10.0,
+        y: 10.0,
+        width: 20.0,
+        height: 20.0,
+    };
+
+    fn rect() -> DrawSource<'static> {
+        DrawSource::Shape {
+            shape: Shape::Rect(RECT),
+            ink: RECT,
+        }
+    }
+
+    fn triangle() -> Arc<Path> {
+        let mut path = PathBuilder::new();
+        path.move_to((0.0, 0.0))
+            .line_to((10.0, 0.0))
+            .line_to((0.0, 10.0))
+            .close();
+        path.build()
+    }
+
+    fn multiply() -> Paint {
+        Paint {
+            blend_mode: BlendMode::Multiply,
+            ..Paint::default()
+        }
+    }
+
+    fn blurred() -> Paint {
+        Paint {
+            image_filter: Some(ImageFilter::blur(2.0, 2.0)),
+            ..Paint::default()
+        }
+    }
+
+    fn route_name(route: Route<'_>) -> &'static str {
+        match route {
+            Route::Direct(_) => "direct",
+            Route::EffectLayer { .. } => "effect layer",
+            Route::FilteredImage { .. } => "filtered image",
+            Route::BlendedRect { .. } => "blended rect",
+            Route::BlendedPath { .. } => "blended path",
+            Route::InImplicitLayer(_) => "in implicit layer",
+            Route::Nothing => "nothing",
+        }
+    }
+
+    fn route(source: &DrawSource<'_>, paint: &Paint) -> &'static str {
+        route_name(Route::of(source, paint, &Matrix::IDENTITY))
+    }
+
+    #[test]
+    fn a_plain_draw_is_direct_and_one_with_filters_takes_a_layer() {
+        assert_eq!(route(&rect(), &Paint::default()), "direct");
+        assert_eq!(route(&rect(), &blurred()), "effect layer");
+        let masked = Paint {
+            mask_blur: Some(MaskBlur::new(3.0)),
+            ..Paint::default()
+        };
+        assert_eq!(route(&rect(), &masked), "effect layer");
+    }
+
+    /// A filter that changes nothing needs no layer.
+    #[test]
+    fn a_draw_whose_filters_do_nothing_is_direct() {
+        let nothing = Paint {
+            image_filter: Some(ImageFilter::blur(0.0, 0.0)),
+            ..Paint::default()
+        };
+        assert_eq!(route(&rect(), &nothing), "direct");
+    }
+
+    /// Source space needs both axes: a draw squashed flat shows nothing.
+    #[test]
+    fn a_filtered_draw_under_a_flat_transform_shows_nothing() {
+        let flat = Matrix::scale(1.0, 0.0);
+        assert_eq!(route_name(Route::of(&rect(), &blurred(), &flat)), "nothing");
+    }
+
+    #[test]
+    fn a_solid_shape_blends_in_its_own_fragment_and_anything_else_in_a_layer() {
+        let path = triangle();
+        let filled = DrawSource::Shape {
+            shape: Shape::Path {
+                path: &path,
+                rule: FillRule::NonZero,
+            },
+            ink: path.bounds(),
+        };
+        let stroke = Stroke::new(2.0);
+        let stroked = DrawSource::Shape {
+            shape: Shape::Stroke {
+                path: &path,
+                stroke: &stroke,
+            },
+            ink: path.bounds(),
+        };
+        let gradient = Paint {
+            shader: Some(Shader::linear(
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Color::BLACK,
+                Color::WHITE,
+            )),
+            ..multiply()
+        };
+        assert_eq!(route(&rect(), &multiply()), "blended rect");
+        assert_eq!(route(&filled, &multiply()), "blended path");
+        assert_eq!(route(&stroked, &multiply()), "in implicit layer");
+        assert_eq!(route(&rect(), &gradient), "in implicit layer");
+        let rrect_blur = DrawSource::RRectBlur {
+            rect: RECT,
+            radii: [2.0; 4],
+            blur: MaskBlur::new(2.0),
+        };
+        assert_eq!(route(&rrect_blur, &multiply()), "in implicit layer");
+        assert_eq!(route(&rrect_blur, &Paint::default()), "direct");
+    }
+
+    /// Effects come before the blend: a blurred Multiply rect blends at its
+    /// layer's composite.
+    #[test]
+    fn a_draw_with_filters_and_a_destination_reading_blend_takes_its_effect_layer() {
+        let paint = Paint {
+            blend_mode: BlendMode::Multiply,
+            ..blurred()
+        };
+        assert_eq!(route(&rect(), &paint), "effect layer");
     }
 }

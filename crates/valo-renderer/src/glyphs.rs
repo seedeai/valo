@@ -227,6 +227,17 @@ struct Resident {
 /// that a lucky early fit doesn't over-evict.
 const EVICT_BATCH: usize = 64;
 
+/// `GlyphFrameCounts` is what the glyph store did in one frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GlyphFrameCounts {
+    /// Glyphs rasterized after cache misses.
+    pub rasters: u32,
+    /// Full atlas collections.
+    pub atlas_gcs: u32,
+    /// Misses a resident size served under a text-raster hold.
+    pub held_rasters: u32,
+}
+
 /// The renderer's glyph cache: rasterize misses via valo-text,
 /// pack with etagere, upload the region, hand out page + uv. Pages grow to
 /// [`MAX_PAGES`] per family; a full family evicts its least-recently-USED
@@ -334,11 +345,6 @@ impl GlyphStore {
     /// store would hold the borrow across the mutating batch loop).
     pub fn hides_missing_glyphs(&self) -> bool {
         self.hide_missing_glyphs
-    }
-
-    /// (cache-miss rasters, wholesale GCs, hold-skipped rasters) this frame.
-    pub fn frame_counters(&self) -> (u32, u32, u32) {
-        (self.rasters, self.gcs, self.held)
     }
 
     /// The registered collection, for overlays that lay text out against
@@ -630,11 +636,21 @@ impl GlyphStore {
         entry.path.clone()
     }
 
+    /// `frame_counts` is what this frame has done so far.
+    pub fn frame_counts(&self) -> GlyphFrameCounts {
+        GlyphFrameCounts {
+            rasters: self.rasters,
+            atlas_gcs: self.gcs,
+            held_rasters: self.held,
+        }
+    }
+
     /// Frame boundary: age-sweep the entries that hold NO page space —
-    /// outline paths and whitespace placeholders. Rasters on pages stay
-    /// until a full family evicts its coldest — idleness
-    /// alone never frees page space, demand does.
-    pub fn end_frame(&mut self) {
+    /// outline paths and whitespace placeholders — and return what the
+    /// frame did. Rasters on pages stay until a full family evicts its
+    /// coldest — idleness alone never frees page space, demand does.
+    pub fn end_frame(&mut self) -> GlyphFrameCounts {
+        let counts = self.frame_counts();
         self.frame += 1;
         self.rasters = 0;
         self.gcs = 0;
@@ -644,6 +660,7 @@ impl GlyphStore {
         self.paths.retain(|_, e| !expired(e.last_used));
         self.entries
             .retain(|_, (slot, last)| slot.is_some() || !expired(*last));
+        counts
     }
 
     /// Push every dirty page region to the GPU — ONE `write_texture` per
@@ -957,7 +974,11 @@ mod tests {
             .resident_stand_in(fonts.get(font).uid().0, glyph, Coverage::Sdf, 72.0)
             .expect("the warm bucket stands in");
         assert_eq!(px, 32.0);
-        assert_eq!(store.frame_counters().2, 1, "one held raster counted");
+        assert_eq!(
+            store.frame_counts().held_rasters,
+            1,
+            "one held raster counted"
+        );
 
         // First sight of a glyph with no stand-in rasters even while held.
         let fresh = fonts.get(font).glyph_for('Q').unwrap();
@@ -1006,7 +1027,7 @@ mod tests {
             .resident_stand_in(fonts.get(font).uid().0, glyph, Coverage::Fill, 11.96)
             .expect("the previous scale stands in");
         assert_eq!(px, 11.83);
-        assert_eq!(store.frame_counters().2, 1);
+        assert_eq!(store.frame_counts().held_rasters, 1);
 
         store.end_frame();
         store.set_text_raster_hold(false);
@@ -1078,7 +1099,7 @@ mod tests {
         for coverage in coverages {
             store.ensure(fonts.get(font), glyph, 48.0, coverage, 0);
         }
-        assert_eq!(store.frame_counters().0, 3, "one raster per coverage");
+        assert_eq!(store.frame_counts().rasters, 3, "one raster per coverage");
 
         let cells: Vec<[f32; 4]> = coverages
             .iter()
@@ -1101,7 +1122,7 @@ mod tests {
         for coverage in coverages {
             store.ensure(fonts.get(font), glyph, 48.0, coverage, 0);
         }
-        assert_eq!(store.frame_counters().0, 0, "all three were cache hits");
+        assert_eq!(store.frame_counts().rasters, 0, "all three were cache hits");
     }
 
     /// The pathological case: a run larger than the WHOLE atlas degrades to

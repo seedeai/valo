@@ -249,3 +249,59 @@ fn an_unused_entry_dies_with_the_frame_that_dropped_it() {
         "the comeback refills"
     );
 }
+
+/// Inside an elided opacity layer every child takes the group alpha on its
+/// own tint, and a cached embed is one child: its quad takes the alpha too,
+/// as Flutter draws a raster-cached picture with the inherited opacity
+/// (`DisplayListLayer::Paint`). So the cached frame matches inline replay.
+#[test]
+fn a_cached_embed_takes_the_group_alpha_of_an_elided_layer() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP: no GPU adapter");
+        return;
+    };
+    let mut ctx = Context::new(device.clone(), queue.clone());
+    // Opaque tiles in one row, each clear of the ones before it, so the
+    // layer around them can elide.
+    let tiles = {
+        let mut b = DisplayListBuilder::new();
+        for i in 0..16 {
+            b.draw_rect(
+                Rect::new(i as f32 * 18.0, 0.0, 16.0, 16.0),
+                &Paint::from_color(Color::rgb(1.0, 0.0, 0.0)),
+            );
+        }
+        Arc::new(b.build())
+    };
+    let scene = |cached: bool| {
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &Paint::from_color(Color::rgba(1.0, 1.0, 1.0, 0.5)));
+        if cached {
+            b.draw_display_list_cached(&tiles);
+        } else {
+            b.draw_display_list(&tiles);
+        }
+        b.restore();
+        Arc::new(b.build())
+    };
+
+    let (inline, inline_stats) =
+        frame_arc(&mut ctx, &device, &queue, &scene(false), Matrix::IDENTITY);
+    assert_eq!(inline_stats.layers_elided, 1, "the layer elides");
+    let (cached, cached_stats) =
+        frame_arc(&mut ctx, &device, &queue, &scene(true), Matrix::IDENTITY);
+    assert_eq!(
+        (cached_stats.raster_quads, cached_stats.layers_elided),
+        (1, 1),
+        "the cache serves the embed inside the elided layer"
+    );
+    let pixel = |pixels: &[u8]| {
+        let at = (8 * 320 + 8) * 4;
+        pixels[at..at + 4].to_vec()
+    };
+    assert_eq!(
+        pixel(&cached),
+        pixel(&inline),
+        "half-transparent red either way"
+    );
+}

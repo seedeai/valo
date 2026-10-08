@@ -1104,7 +1104,14 @@ export class ValoCanvasRenderingContext2D {
     const filter = ColorFilter.matrix(shadowColorMatrix(color));
     layerPaint.setColorFilter(filter);
     filter.free();
-    if (this.#state.shadowBlur > 0) layerPaint.setMaskBlur(this.#state.shadowBlur / 2, 0);
+    if (this.#state.shadowBlur > 0) {
+      // The layer's image filter blurs it; its colour filter then tints the
+      // blurred alpha.
+      const sigma = this.#state.shadowBlur / 2;
+      const blur = ImageFilter.blur(sigma, sigma);
+      layerPaint.setImageFilter(blur);
+      blur.free();
+    }
 
     // Canvas shadows live in device space. Cancel the complete draw transform
     // before opening the effect layer, then place the original geometry below

@@ -8,8 +8,9 @@
 //! - MIDDLE: per-corner radii `[tl, tr, br, bl]` — a sharp card and its
 //!   one-quad analytic shadow share the same corner vocabulary.
 //! - BOTTOM: styled GENERAL paths — an Outer glow on a star and a Solid
-//!   gradient square. These run blur chain + ONE combine pass merging the
-//!   blur with the sharp layer, so any blend mode composites unchanged.
+//!   gradient square. Each runs a blur chain; the Outer glow is the blur
+//!   clipped to outside the star, as Impeller clips it, and the gradient
+//!   fills its blurred white mask, so it keeps its colours inside the glow.
 
 use valo::{Color, DisplayListBuilder, MaskBlur, Paint, PathBuilder, Point, Rect, Shader};
 
@@ -73,7 +74,10 @@ fn scene() -> valo::DisplayList {
         &styled(Color::rgb(0.35, 0.6, 1.0), MaskBlur::solid(14.0)),
     );
 
-    // Styled general paths: blur chain + one combine pass each.
+    // Styled general paths: a blur chain each. The star's outer style clips
+    // its blur to outside the star; the gradient blurs a white mask, its
+    // solid style puts the sharp mask under the blur, and the gradient fills
+    // the result.
     b.draw_path(
         &star(Point::new(130.0, 420.0), 52.0),
         valo::FillRule::NonZero,

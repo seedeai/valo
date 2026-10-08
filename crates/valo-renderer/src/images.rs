@@ -218,6 +218,8 @@ struct FilteredImage {
 enum ColorFilterKey {
     Matrix([u32; 20]),
     Blend([u32; 4], BlendMode),
+    LinearToSrgbGamma,
+    SrgbToLinearGamma,
 }
 
 impl From<ColorFilter> for ColorFilterKey {
@@ -233,6 +235,8 @@ impl From<ColorFilter> for ColorFilterKey {
                 ],
                 mode,
             ),
+            ColorFilter::LinearToSrgbGamma => Self::LinearToSrgbGamma,
+            ColorFilter::SrgbToLinearGamma => Self::SrgbToLinearGamma,
         }
     }
 }

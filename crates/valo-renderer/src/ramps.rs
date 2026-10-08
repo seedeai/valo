@@ -4,7 +4,8 @@
 //! RGBA8 N×1 straight-color texture sampled linearly, with
 //! `N = min(round(1 / min_adjacent_stop_delta) + 1, 1024)` so tight stop
 //! pairs stay resolvable without absurd textures. Content-keyed; entries
-//! idle out after a few frames like pooled targets.
+//! idle out after a few frames like pooled targets. A new ramp's texels are
+//! written with the frame's other uploads, not while planning.
 
 use std::hash::{Hash, Hasher};
 
@@ -21,7 +22,16 @@ const MAX_TEXELS: u32 = 1024;
 
 pub(crate) struct RampCache {
     entries: FxHashMap<u64, Entry>,
+    /// Ramps baked this frame, written by [`RampCache::flush_uploads`].
+    pending: Vec<PendingRamp>,
     frame: u64,
+}
+
+/// `PendingRamp` is a baked ramp's texture and texels, awaiting upload.
+struct PendingRamp {
+    texture: wgpu::Texture,
+    bytes: Vec<u8>,
+    texels: u32,
 }
 
 struct Entry {
@@ -34,22 +44,30 @@ impl RampCache {
     pub fn new() -> Self {
         Self {
             entries: FxHashMap::default(),
+            pending: Vec::new(),
             frame: 0,
         }
     }
 
-    /// The ramp texture for `stops`, baking on first sight.
+    /// The ramp texture for `stops`, baking on first sight; its texels
+    /// reach it at the frame's upload.
     pub fn ensure(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         stops: &[GradientStop],
     ) -> (wgpu::TextureView, u32) {
         let key = stop_key(stops);
         let frame = self.frame;
+        let pending = &mut self.pending;
         let entry = self.entries.entry(key).or_insert_with(|| {
             let (bytes, texels) = bake(stops);
-            let view = upload(device, queue, &bytes, texels);
+            let texture = ramp_texture(device, texels);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            pending.push(PendingRamp {
+                texture,
+                bytes,
+                texels,
+            });
             Entry {
                 view,
                 texels,
@@ -58,6 +76,26 @@ impl RampCache {
         });
         entry.last_used = frame;
         (entry.view.clone(), entry.texels)
+    }
+
+    /// `flush_uploads` writes the ramps baked this frame.
+    pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
+        for ramp in self.pending.drain(..) {
+            queue.write_texture(
+                ramp.texture.as_image_copy(),
+                &ramp.bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ramp.texels * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: ramp.texels,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     pub fn end_frame(&mut self) {
@@ -136,13 +174,8 @@ fn lerp(a: valo_geometry::Color, b: valo_geometry::Color, k: f32) -> valo_geomet
     }
 }
 
-fn upload(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    bytes: &[u8],
-    texels: u32,
-) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+fn ramp_texture(device: &wgpu::Device, texels: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
         label: Some("valo gradient ramp"),
         size: wgpu::Extent3d {
             width: texels,
@@ -155,27 +188,7 @@ fn upload(
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(texels * 4),
-            rows_per_image: None,
-        },
-        wgpu::Extent3d {
-            width: texels,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+    })
 }
 
 fn stop_key(stops: &[GradientStop]) -> u64 {

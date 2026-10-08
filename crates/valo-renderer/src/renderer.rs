@@ -2,30 +2,21 @@ use valo_dl::DisplayList;
 use valo_geometry::Color;
 
 use crate::contours::ContourCache;
-use crate::frame::{FramePlan, PassColor, PlannedPass};
+use crate::encoder::Encoder;
+use crate::frame::FramePlan;
 use crate::glyphs::GlyphStore;
 use crate::gpu_timer::GpuTimer;
-use crate::host_buffer::HostBuffer;
+use crate::host_buffer::{Flushed, HostBuffer};
 use crate::images::ImageStore;
 use crate::pipelines::PipelineCache;
-use crate::planner::Planner;
+use crate::planner::{Caches, EmitterServices, LinearSamplers, Planner};
 use crate::pool::TargetPool;
-
-/// `linear_sampler` is the one linear sampler every filter/composite bind
-/// group shares — created once (a per-frame create is a JS hop on wasm).
-pub(crate) fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
-    device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("valo.linear"),
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    })
-}
 
 /// `RenderTarget` is the destination for one render operation.
 ///
 /// `texture` must be the resource behind `view` and match `format` and `size`.
-/// Advanced blends and backdrop filters require `COPY_SRC` texture usage.
+/// Advanced blends, backdrop filters and keeping the target's pixels
+/// (`clear: None`) require `COPY_SRC` texture usage.
 pub struct RenderTarget<'a> {
     /// `view` is the attachment into which Valo renders.
     pub view: &'a wgpu::TextureView,
@@ -36,7 +27,23 @@ pub struct RenderTarget<'a> {
     /// `size` is the renderable area in pixels.
     pub size: [u32; 2],
     /// `clear` replaces existing pixels when set and preserves them when `None`.
+    ///
+    /// Preserving costs a copy of the target and a full-size draw: valo draws
+    /// into multisample scratch that never keeps a picture between frames,
+    /// so it copies the target's pixels out and draws them back first.
     pub clear: Option<Color>,
+}
+
+impl RenderTarget<'_> {
+    /// `assert_can_keep_pixels` stops a render that keeps the target's
+    /// pixels on a target valo cannot copy them out of.
+    fn assert_can_keep_pixels(&self) {
+        assert!(
+            self.clear.is_some() || self.texture.usage().contains(wgpu::TextureUsages::COPY_SRC),
+            "a target drawn over without clearing (`clear: None`) needs `COPY_SRC` usage: \
+             valo copies its pixels out and draws them back"
+        );
+    }
 }
 
 /// `RenderStats` reports the work performed by one render operation.
@@ -111,17 +118,11 @@ pub struct RenderStats {
 pub struct RendererCore {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    host: HostBuffer,
-    pipelines: PipelineCache,
-    images: ImageStore,
+    /// What the planner's step emitter borrows each frame.
+    services: EmitterServices,
     pool: TargetPool,
-    glyphs: GlyphStore,
-    contours: ContourCache,
-    ramps: crate::ramps::RampCache,
-    rasters: crate::raster::ListRasterCache,
-    /// The one linear sampler every filter/composite bind group shares —
-    /// created once (a per-frame create is a JS hop on wasm).
-    sampler: wgpu::Sampler,
+    /// What planning reads and fills each frame.
+    caches: Caches,
     timer: GpuTimer,
 }
 
@@ -145,35 +146,39 @@ impl RendererCore {
 
     fn with_glyphs(device: wgpu::Device, queue: wgpu::Queue, glyphs: GlyphStore) -> Self {
         let host = HostBuffer::new(&device);
-        let pipelines = PipelineCache::new(&device, host.bind_group_layout());
-        let images = ImageStore::new(&device, &queue);
-        let pool = TargetPool::new(&device);
-        let timer = GpuTimer::new(&device, &queue);
-        let sampler = linear_sampler(&device);
+        let pipelines = PipelineCache::new(
+            &device,
+            host.bind_group_layout(),
+            host.kernel_bind_group_layout(),
+        );
         Self {
+            services: EmitterServices {
+                host,
+                pipelines,
+                images: ImageStore::new(&device, &queue),
+                ramps: crate::ramps::RampCache::new(),
+                samplers: LinearSamplers::new(&device),
+            },
+            pool: TargetPool::new(&device),
+            caches: Caches {
+                glyphs,
+                contours: ContourCache::new(),
+                rasters: crate::raster::ListRasterCache::new(),
+            },
+            timer: GpuTimer::new(&device, &queue),
             device,
             queue,
-            host,
-            pipelines,
-            images,
-            pool,
-            glyphs,
-            contours: ContourCache::new(),
-            ramps: crate::ramps::RampCache::new(),
-            rasters: crate::raster::ListRasterCache::new(),
-            sampler,
-            timer,
         }
     }
 
     /// `image_context` shares image creation without sharing the mutable drawing caches.
     pub fn image_context(&self) -> crate::ImageContext {
-        self.images.context.clone()
+        self.services.images.context.clone()
     }
 
     /// `images` returns the image store used for uploads and sampling.
     pub fn images(&mut self) -> &mut ImageStore {
-        &mut self.images
+        &mut self.services.images
     }
 
     /// `device` returns the device used by this renderer.
@@ -187,7 +192,7 @@ impl RendererCore {
     /// outlines above it. The defaults suit normal use; override them only for
     /// specialized scaling or zoom behavior.
     pub fn set_text_tiers(&mut self, tiers: crate::TextTiers) {
-        self.glyphs.tiers = tiers;
+        self.caches.glyphs.tiers = tiers;
     }
 
     /// `set_hide_missing_glyphs` controls whether unresolved characters render blank.
@@ -196,7 +201,7 @@ impl RendererCore {
     /// usually a "tofu" box. This is common when CJK fallback fonts are missing.
     /// Use [`valo_text::FontDemand`] to detect characters hidden by this option.
     pub fn set_hide_missing_glyphs(&mut self, hide: bool) {
-        self.glyphs.set_hide_missing_glyphs(hide);
+        self.caches.glyphs.set_hide_missing_glyphs(hide);
     }
 
     /// `set_text_raster_hold` allows existing text rasters to stand in for missing sizes.
@@ -205,7 +210,7 @@ impl RendererCore {
     /// useful during rapid zooming: enable it while the gesture is active and
     /// clear it afterward so the next frame renders sharply.
     pub fn set_text_raster_hold(&mut self, held: bool) {
-        self.glyphs.set_text_raster_hold(held);
+        self.caches.glyphs.set_text_raster_hold(held);
     }
 
     /// `set_raster_hold` allows cached display-list textures to be reused at any scale.
@@ -213,41 +218,21 @@ impl RendererCore {
     /// This is useful during rapid zooming: enable it when the gesture starts
     /// and clear it when the view settles so caches refill at the final scale.
     pub fn set_raster_hold(&mut self, held: bool) {
-        self.rasters.set_hold(held);
+        self.caches.rasters.set_hold(held);
     }
 
     /// `render` draws a display list into a target and returns frame statistics.
     ///
     /// Each call submits one command buffer.
-    pub fn render(&mut self, dl: &DisplayList, target: &RenderTarget) -> RenderStats {
+    pub fn render(&mut self, list: &DisplayList, target: &RenderTarget) -> RenderStats {
         #[cfg(feature = "trace")]
-        let _span = tracing::info_span!("valo.render", draws = dl.draw_count()).entered();
-        let t0 = web_time::Instant::now();
-        let blocks_before = self.host.blocks_created;
-
-        self.host.begin_frame();
-        let plan = self.plan(dl, target);
-        let t_planned = web_time::Instant::now();
-
-        let mut stats = plan.stats;
-        self.glyphs.flush_uploads();
-        (stats.uniform_bytes, stats.vertex_bytes) = self.upload_and_compile(&plan);
-        self.encode_and_submit(&plan, target, &mut stats);
-        (stats.glyph_rasters, stats.atlas_gcs, stats.held_rasters) = self.glyphs.frame_counters();
-        self.pool.end_frame();
-        self.images.end_frame();
-        self.contours.end_frame();
-        self.glyphs.end_frame();
-        self.ramps.end_frame();
-        self.rasters.end_frame();
-
-        stats.render_passes = plan.passes.len() as u32;
-        stats.blocks_created = (self.host.blocks_created - blocks_before) as u32;
-        stats.plan_ms = (t_planned - t0).as_secs_f32() * 1000.0;
-        stats.encode_ms = t_planned.elapsed().as_secs_f32() * 1000.0;
-        stats.cpu_ms = t0.elapsed().as_secs_f32() * 1000.0;
-        stats.gpu_ms = self.timer.latest_ms(&self.device);
-        stats
+        let _span = tracing::info_span!("valo.render", draws = list.draw_count()).entered();
+        target.assert_can_keep_pixels();
+        let mut frame = self.begin_frame();
+        let plan = frame.plan(list, target);
+        let flushed = frame.upload();
+        frame.encode_and_submit(&plan, flushed);
+        frame.end()
     }
 
     /// `memory_report` returns resource counts and estimated GPU memory usage.
@@ -255,223 +240,127 @@ impl RendererCore {
     /// The `counters` feature adds the counters reported by wgpu.
     pub fn memory_report(&self) -> crate::MemoryReport {
         crate::MemoryReport {
-            images: self.images.report(),
-            atlas: self.glyphs.report_atlas(),
+            images: self.services.images.report(),
+            atlas: self.caches.glyphs.report_atlas(),
             targets: self.pool.report(),
-            host_buffer: self.host.report(),
-            contours: self.contours.report(),
-            glyph_paths: self.glyphs.report_paths(),
-            ramps: self.ramps.report(),
-            raster_cache: self.rasters.report(),
+            host_buffer: self.services.host.report(),
+            contours: self.caches.contours.report(),
+            glyph_paths: self.caches.glyphs.report_paths(),
+            ramps: self.services.ramps.report(),
+            raster_cache: self.caches.rasters.report(),
             wgpu: crate::report::wgpu_counters(&self.device),
         }
     }
 
-    fn plan(&mut self, dl: &DisplayList, target: &RenderTarget) -> FramePlan {
+    /// `begin_frame` starts one render call's [`Frame`].
+    fn begin_frame(&mut self) -> Frame<'_> {
+        let started = web_time::Instant::now();
+        self.services.host.begin_frame();
+        Frame {
+            core: self,
+            started,
+            planned: None,
+            stats: RenderStats::default(),
+        }
+    }
+}
+
+/// `Frame` is one render call, in the order its methods are called:
+/// planning into the host buffer the frame began, uploading what planning
+/// wrote on the CPU, compiling the plan's pipelines and encoding and
+/// submitting one command buffer, and ending every cache's frame. Each phase
+/// records its own stats.
+struct Frame<'r> {
+    core: &'r mut RendererCore,
+    started: web_time::Instant,
+    /// When planning finished.
+    planned: Option<web_time::Instant>,
+    stats: RenderStats,
+}
+
+impl Frame<'_> {
+    /// `plan` walks `list` into `target`: the passes the encoder replays.
+    fn plan(&mut self, list: &DisplayList, target: &RenderTarget) -> FramePlan {
         #[cfg(feature = "trace")]
         let _span = tracing::info_span!("valo.plan").entered();
-        // Disjoint field borrows: the planner mutates arenas + pools while
-        // reading the pipeline cache's layouts.
-        let Self {
-            device,
-            queue,
-            host,
-            images,
-            pool,
-            pipelines,
-            glyphs,
-            contours,
-            ramps,
-            rasters,
-            sampler,
-            ..
-        } = self;
-        Planner::new(
-            device, queue, host, images, pool, pipelines, glyphs, contours, ramps, rasters,
-            sampler, target, dl,
-        )
-        .run(dl)
+        let core = &mut *self.core;
+        let plan = Planner::plan(
+            &core.device,
+            &mut core.services,
+            &mut core.pool,
+            &mut core.caches,
+            list,
+            target,
+        );
+        self.planned = Some(web_time::Instant::now());
+        self.stats = plan.stats;
+        self.stats.render_passes = plan.passes.len() as u32;
+        plan
     }
 
-    fn upload_and_compile(&mut self, plan: &FramePlan) -> (u64, u64) {
-        let bytes = self.host.flush(&self.queue);
-        for pass in &plan.passes {
-            for step in &pass.steps {
-                self.pipelines.ensure(&self.device, step.key);
-            }
-        }
-        bytes
+    /// `upload` moves what planning wrote on the CPU to the GPU: the glyph
+    /// atlas pages' dirty regions, new gradient ramps and the host buffer's
+    /// blocks. The receipt
+    /// goes to the submit.
+    fn upload(&mut self) -> Flushed {
+        self.core.caches.glyphs.flush_uploads();
+        self.core.services.ramps.flush_uploads(&self.core.queue);
+        let flushed = self.core.services.host.flush(&self.core.queue);
+        self.stats.uniform_bytes = flushed.uniform_bytes;
+        self.stats.vertex_bytes = flushed.vertex_bytes;
+        self.stats.blocks_created = flushed.blocks_created;
+        flushed
     }
 
-    fn encode_and_submit(
-        &mut self,
-        plan: &FramePlan,
-        target: &RenderTarget,
-        stats: &mut RenderStats,
-    ) {
+    /// `encode_and_submit` compiles every pipeline the plan names, records
+    /// the plan into one command buffer, with the frame's GPU timestamps,
+    /// submits it, and hands the host buffer the upload's receipt back once
+    /// the frame is submitted.
+    fn encode_and_submit(&mut self, plan: &FramePlan, flushed: Flushed) {
         #[cfg(feature = "trace")]
         let _span = tracing::info_span!("valo.encode", passes = plan.passes.len()).entered();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("valo.frame"),
-            });
-        for (index, pass) in plan.passes.iter().enumerate() {
-            self.encode_copies(&mut encoder, pass);
-            let timing = self.timer.pass_writes(index, plan.passes.len());
-            self.encode_pass(&mut encoder, pass, target, timing, stats);
-        }
-        self.timer.end_frame(&mut encoder);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.host.after_submit();
-        self.timer.after_submit();
-    }
-
-    /// Dst snapshots for advanced blends: land BEFORE the segment that
-    /// samples them. Same origin in src and dst — the snapshot shares the
-    /// target's coordinates, so only the region under the draw is copied.
-    fn encode_copies(&self, encoder: &mut wgpu::CommandEncoder, pass: &PlannedPass) {
-        for copy in &pass.pre_copies {
-            let origin = wgpu::Origin3d {
-                x: copy.origin[0],
-                y: copy.origin[1],
-                z: 0,
-            };
-            encoder.copy_texture_to_texture(
-                copy_at(&copy.src, origin),
-                copy_at(&copy.dst, origin),
-                wgpu::Extent3d {
-                    width: copy.size[0],
-                    height: copy.size[1],
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-    }
-
-    fn encode_pass(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        pass: &PlannedPass,
-        target: &RenderTarget,
-        timing: Option<wgpu::RenderPassTimestampWrites>,
-        stats: &mut RenderStats,
-    ) {
-        let color = match &pass.color {
-            PassColor::Main { msaa } => color_attachment(msaa, Some(target.view), pass),
-            PassColor::Layer { msaa, resolve } => color_attachment(msaa, Some(resolve), pass),
-            PassColor::Filter { view } => color_attachment(view, None, pass),
+        let core = &mut *self.core;
+        let pipelines = core
+            .services
+            .pipelines
+            .compile(&core.device, plan.pipeline_keys());
+        let mut command_encoder =
+            core.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("valo.frame"),
+                });
+        let encoder = Encoder {
+            host: &core.services.host,
+            pipelines: &pipelines,
         };
-        let color_attachments = [Some(color)];
-        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("valo.pass"),
-            color_attachments: &color_attachments,
-            depth_stencil_attachment: pass
-                .depth
-                .as_ref()
-                .map(|depth| depth_attachment(depth, pass.clear_depth, pass.store)),
-            timestamp_writes: timing,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        rp.set_stencil_reference(0);
-        let mut bound = None;
-        for step in &pass.steps {
-            if bound != Some(step.key) {
-                rp.set_pipeline(self.pipelines.get(&step.key));
-                bound = Some(step.key);
-                stats.pipeline_switches += 1;
-            }
-            stats.draw_calls += 1;
-            rp.set_bind_group(
-                0,
-                self.host.bind_group(step.uniforms.block),
-                &[step.uniforms.offset],
-            );
-            if let Some(texture) = &step.texture {
-                rp.set_bind_group(1, texture, &[]);
-            }
-            match step.mesh {
-                None => rp.draw(0..6, 0..1),
-                Some((slot, vertex_count)) => {
-                    let buffer = self.host.vertex_buffer(slot.block);
-                    rp.set_vertex_buffer(0, buffer.slice(slot.offset..slot.offset + slot.bytes));
-                    rp.draw(0..vertex_count, 0..1);
-                }
-            }
+        let encoded = encoder.encode(&mut command_encoder, plan, &core.timer);
+        self.stats.draw_calls = encoded.draw_calls;
+        self.stats.pipeline_switches = encoded.pipeline_switches;
+        core.timer.end_frame(&mut command_encoder);
+        core.queue.submit(std::iter::once(command_encoder.finish()));
+        core.services.host.after_submit(flushed);
+        core.timer.after_submit();
+    }
+
+    /// `end` ends every cache's frame and returns the frame's stats.
+    fn end(self) -> RenderStats {
+        let core = self.core;
+        let glyphs = core.caches.glyphs.end_frame();
+        core.pool.end_frame();
+        core.services.images.end_frame();
+        core.services.ramps.end_frame();
+        core.caches.contours.end_frame();
+        core.caches.rasters.end_frame();
+        let planned = self.planned.unwrap_or(self.started);
+        RenderStats {
+            glyph_rasters: glyphs.rasters,
+            atlas_gcs: glyphs.atlas_gcs,
+            held_rasters: glyphs.held_rasters,
+            plan_ms: (planned - self.started).as_secs_f32() * 1000.0,
+            encode_ms: planned.elapsed().as_secs_f32() * 1000.0,
+            cpu_ms: self.started.elapsed().as_secs_f32() * 1000.0,
+            gpu_ms: core.timer.latest_ms(&core.device),
+            ..self.stats
         }
-    }
-}
-
-fn copy_at(texture: &wgpu::Texture, origin: wgpu::Origin3d) -> wgpu::TexelCopyTextureInfo<'_> {
-    wgpu::TexelCopyTextureInfo {
-        texture,
-        mip_level: 0,
-        origin,
-        aspect: wgpu::TextureAspect::All,
-    }
-}
-
-/// Main/layer passes render ×4 and resolve every segment; MSAA contents are
-/// stored only when a later segment resumes the target (the final segment
-/// discards — skips the 4× write-out on tiled GPUs). Filter passes render
-/// 1-sample straight into `view` (no resolve) and always store.
-fn color_attachment<'a>(
-    view: &'a wgpu::TextureView,
-    resolve: Option<&'a wgpu::TextureView>,
-    pass: &PlannedPass,
-) -> wgpu::RenderPassColorAttachment<'a> {
-    wgpu::RenderPassColorAttachment {
-        view,
-        depth_slice: None,
-        resolve_target: resolve,
-        ops: wgpu::Operations {
-            load: match pass.clear {
-                Some(c) => wgpu::LoadOp::Clear(wgpu::Color {
-                    r: (c.r * c.a) as f64,
-                    g: (c.g * c.a) as f64,
-                    b: (c.b * c.a) as f64,
-                    a: c.a as f64,
-                }),
-                None => wgpu::LoadOp::Load,
-            },
-            store: store_op(pass.store),
-        },
-    }
-}
-
-/// Depth/stencil persist across a target's segments (clip ceilings survive
-/// pass breaks); only the first segment clears, only resumed segments store.
-fn depth_attachment(
-    view: &wgpu::TextureView,
-    clear: bool,
-    store: bool,
-) -> wgpu::RenderPassDepthStencilAttachment<'_> {
-    wgpu::RenderPassDepthStencilAttachment {
-        view,
-        depth_ops: Some(wgpu::Operations {
-            load: if clear {
-                wgpu::LoadOp::Clear(0.0)
-            } else {
-                wgpu::LoadOp::Load
-            },
-            store: store_op(store),
-        }),
-        stencil_ops: Some(wgpu::Operations {
-            load: if clear {
-                wgpu::LoadOp::Clear(0)
-            } else {
-                wgpu::LoadOp::Load
-            },
-            store: store_op(store),
-        }),
-    }
-}
-
-fn store_op(store: bool) -> wgpu::StoreOp {
-    if store {
-        wgpu::StoreOp::Store
-    } else {
-        wgpu::StoreOp::Discard
     }
 }
