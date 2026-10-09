@@ -31,5 +31,13 @@ wgpu = { workspace = true }
 bytemuck = { workspace = true }
 tracing = { workspace = true, optional = true }
 
+# Only the browser target has JavaScript: a WASI component, such as a WaOS
+# program, is wasm32 too but has none.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Asks the browser whether its WebGPU knows a newer texture usage
+# (`pool::browser_knows_transient_attachments`); wgpu already depends on it
+# in the browser.
+js-sys = "0.3"
+
 [dev-dependencies]
 pollster = { workspace = true }
