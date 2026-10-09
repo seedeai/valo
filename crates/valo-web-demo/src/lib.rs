@@ -23,21 +23,14 @@ pub async fn start() -> Result<(), JsValue> {
     let size = fit_canvas_to_window(&canvas);
 
     let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| JsValue::from_str(&format!("no WebGPU adapter: {e:?}")))?;
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("valo.web"),
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| JsValue::from_str(&format!("no device: {e:?}")))?;
+    let options = wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    };
+    let (adapter, device, queue) =
+        valo::request_device(&instance, &options, valo::FeatureLevel::Compatibility)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("no WebGPU device: {e}")))?;
     let target = wgpu::SurfaceTarget::Canvas(canvas.clone());
     let surface = Surface::new(&instance, &adapter, &device, target, size)
         .map_err(|e| JsValue::from_str(&format!("no surface: {e:?}")))?;

@@ -97,25 +97,10 @@ impl ApplicationHandler for App {
                 .expect("create window"),
         );
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let (device, queue, adapter) = pollster::block_on(async {
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    ..Default::default()
-                })
-                .await
-                .expect("adapter");
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("valo.interactive"),
-                    // Without this the GPU column reads 0.0 forever.
-                    required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-                    ..Default::default()
-                })
-                .await
-                .expect("device");
-            (device, queue, adapter)
-        });
+        let (adapter, device, queue) = pollster::block_on(crate::open_device(&instance))
+            .unwrap_or_else(|no_device| {
+                panic!("{no_device}");
+            });
         let size = window.inner_size();
         let surface = Surface::new(
             &instance,

@@ -1,3 +1,6 @@
+// First, so other targets drop the docs below as well as the items: the docs link to items
+// only Apple targets have.
+#![cfg(any(target_os = "macos", target_os = "ios"))]
 //! Apple's system image codecs for Valo, through ImageIO and Core Graphics.
 //!
 //! ImageIO reads every format the OS does — HEIC and camera RAW included — with hardware help
@@ -12,7 +15,6 @@
 //!
 //! The same `IOSurface` path is open to a host that already holds such a buffer, from
 //! ScreenCaptureKit or a camera: [`import_pixel_buffer`] wraps it as a texture without a copy.
-#![cfg(any(target_os = "macos", target_os = "ios"))]
 #![warn(missing_docs)]
 
 mod raster;

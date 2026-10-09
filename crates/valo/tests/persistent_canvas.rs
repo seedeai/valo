@@ -223,7 +223,7 @@ fn a_resize_starts_from_a_clear_canvas() {
     canvas.draw(&mut context, &empty, None);
     let pixels = read(&gpu, &canvas);
     assert!(
-        pixels.chunks_exact(4).all(|pixel| pixel[3] == 0),
+        pixels.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0),
         "a resized canvas starts empty"
     );
 }

@@ -28,10 +28,8 @@ fn write_sfnt(flavor: u32, tables: &[(u32, Vec<u8>)]) -> Vec<u8> {
                 padded.push(0);
             }
             let mut sum = 0u32;
-            for chunk in padded.chunks_exact(4) {
-                let mut word = [0u8; 4];
-                word.copy_from_slice(chunk);
-                sum = sum.wrapping_add(u32::from_be_bytes(word));
+            for word in padded.as_chunks::<4>().0 {
+                sum = sum.wrapping_add(u32::from_be_bytes(*word));
             }
             (*tag, sum, bytes.len() as u32, padded)
         })

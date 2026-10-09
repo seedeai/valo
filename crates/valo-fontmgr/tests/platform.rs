@@ -3,6 +3,17 @@
 
 use valo_fontmgr::{FontManager, Slant, Style};
 
+/// Sans families a stock install of this system carries with bold and italic
+/// faces, most common first.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const STYLED_FAMILIES: &[&str] = &["Helvetica"];
+#[cfg(target_os = "windows")]
+const STYLED_FAMILIES: &[&str] = &["Segoe UI", "Arial"];
+/// DejaVu Sans is not among them: Debian and Ubuntu ship its oblique faces in
+/// a package of their own.
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+const STYLED_FAMILIES: &[&str] = &["Liberation Sans", "Noto Sans", "Ubuntu Sans", "Nimbus Sans"];
+
 fn manager() -> Option<Box<dyn FontManager>> {
     let manager = valo_fontmgr::platform();
     if manager.face_count() == 0 {
@@ -17,11 +28,13 @@ fn a_family_answers_with_every_face_and_their_styles() {
     let Some(mut manager) = manager() else {
         return;
     };
-    let faces = manager.family("Helvetica");
-    if faces.is_empty() {
-        eprintln!("SKIP: no Helvetica installed");
+    let Some((family, faces)) = STYLED_FAMILIES.iter().find_map(|&family| {
+        let faces = manager.family(family);
+        (!faces.is_empty()).then_some((family, faces))
+    }) else {
+        eprintln!("SKIP: none of {STYLED_FAMILIES:?} installed");
         return;
-    }
+    };
     assert!(faces.iter().all(|face| face.covers('a')));
     assert!(
         faces.iter().any(|face| face.style().weight >= 700),
@@ -35,7 +48,7 @@ fn a_family_answers_with_every_face_and_their_styles() {
         weight: 700,
         ..Style::default()
     };
-    let nearest = manager.match_family_style("Helvetica", bold).unwrap();
+    let nearest = manager.match_family_style(family, bold).unwrap();
     assert!(nearest.style().weight >= 600);
 }
 

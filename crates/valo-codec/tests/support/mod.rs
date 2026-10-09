@@ -278,9 +278,14 @@ pub fn solid(size: [u32; 2], rgba: [u8; 4]) -> PixelBuffer {
     .unwrap()
 }
 
-pub fn images() -> ImageContext {
-    let (device, queue) = valo_harness::headless_device().expect("headless GPU");
-    ImageContext::new(device, queue)
+/// `images` is an image context on the test GPU, or `None` after printing
+/// why the test skips when the machine has no adapter.
+pub fn images() -> Option<ImageContext> {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP: no GPU adapter");
+        return None;
+    };
+    Some(ImageContext::new(device, queue))
 }
 
 pub fn bytes() -> Arc<[u8]> {

@@ -219,21 +219,14 @@ fn external_image_source(source: &JsValue) -> Result<wgpu::ExternalImageSource, 
 pub async fn create_device() -> Result<WebDevice, JsValue> {
     console_error_panic_hook::set_once();
     let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        })
-        .await
-        .map_err(|error| JsValue::from_str(&format!("no WebGPU adapter: {error:?}")))?;
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("valo.web"),
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-            ..Default::default()
-        })
-        .await
-        .map_err(|error| JsValue::from_str(&format!("cannot create WebGPU device: {error:?}")))?;
+    let options = wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    };
+    let (adapter, device, queue) =
+        valo::request_device(&instance, &options, valo::FeatureLevel::Compatibility)
+            .await
+            .map_err(|error| JsValue::from_str(&format!("no WebGPU device: {error}")))?;
     let unrestricted_external_copies = adapter
         .get_downlevel_capabilities()
         .flags
@@ -444,8 +437,10 @@ impl WebRenderer {
         // pixels are already safe in the backing, so the next present shows
         // them.
         if let Ok(frame) = self.surface.acquire() {
-            self.canvas
-                .present_to(&mut self.context.borrow_mut(), &frame.target(None));
+            self.canvas.present_to(
+                &mut self.context.borrow_mut(),
+                &frame.target(Some(Color::TRANSPARENT)),
+            );
             self.context.borrow().present(frame);
         }
         Some(WebRenderStats { inner })

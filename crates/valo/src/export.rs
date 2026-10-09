@@ -47,7 +47,7 @@ impl Context {
 /// channels are undefined. `pixels` must contain complete four-byte pixels;
 /// any trailing bytes are left unchanged.
 pub fn unpremultiply(pixels: &mut [u8]) {
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         let a = px[3] as u32;
         if a == 0 {
             px[0] = 0;

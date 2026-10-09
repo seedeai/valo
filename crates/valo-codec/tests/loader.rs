@@ -7,9 +7,12 @@ use valo_codec::{DecodeError, DecodeLimits, DecodeOptions, ImageLoader, Repetiti
 
 #[test]
 fn the_first_decoder_that_accepts_owns_the_image_and_later_ones_are_not_asked() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let loader = ImageLoader::new(
-        images(),
+        images,
         decoders([
             FakeDecoder::new("native").declining("animation"),
             FakeDecoder::new("software").sharing_log(&log),
@@ -26,8 +29,11 @@ fn the_first_decoder_that_accepts_owns_the_image_and_later_ones_are_not_asked() 
 
 #[test]
 fn every_decoder_declining_reports_each_reason_and_a_failure_stops_the_search() {
+    let Some(images) = images() else {
+        return;
+    };
     let loader = ImageLoader::new(
-        images(),
+        images.clone(),
         decoders([
             FakeDecoder::new("native").declining("no such container"),
             FakeDecoder::new("software").declining("unknown format"),
@@ -44,7 +50,7 @@ fn every_decoder_declining_reports_each_reason_and_a_failure_stops_the_search() 
 
     let log = Log::default();
     let loader = ImageLoader::new(
-        images(),
+        images,
         decoders([
             FakeDecoder::new("native").failing(DecodeError::InvalidData("truncated".into())),
             FakeDecoder::new("software").sharing_log(&log),
@@ -59,13 +65,18 @@ fn every_decoder_declining_reports_each_reason_and_a_failure_stops_the_search() 
 
 #[test]
 fn no_decoders_and_empty_or_oversized_input_are_rejected_before_any_decoder_runs() {
+    let Some(images) = images() else {
+        return;
+    };
     assert!(matches!(
-        block_on(ImageLoader::new(images(), Vec::new()).decode(bytes(), DecodeOptions::default())),
+        block_on(
+            ImageLoader::new(images.clone(), Vec::new()).decode(bytes(), DecodeOptions::default())
+        ),
         Err(DecodeError::NoDecoder)
     ));
     let log = Log::default();
     let loader = ImageLoader::new(
-        images(),
+        images,
         decoders([FakeDecoder::new("software").sharing_log(&log)]),
     );
     assert!(matches!(
@@ -88,9 +99,12 @@ fn no_decoders_and_empty_or_oversized_input_are_rejected_before_any_decoder_runs
 
 #[test]
 fn inline_work_happens_at_the_first_poll_and_never_if_dropped_first() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let loader = ImageLoader::new(
-        images(),
+        images,
         decoders([FakeDecoder::new("software").sharing_log(&log)]),
     );
     drop(loader.decode(bytes(), DecodeOptions::default()));
@@ -103,8 +117,11 @@ fn inline_work_happens_at_the_first_poll_and_never_if_dropped_first() {
 
 #[test]
 fn a_codec_hands_out_frames_in_order_and_wraps_after_the_last() {
+    let Some(images) = images() else {
+        return;
+    };
     let loader = ImageLoader::new(
-        images(),
+        images,
         decoders([FakeDecoder::new("software").frames(3, Repetition::Times(2))]),
     );
     let mut codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
@@ -118,9 +135,12 @@ fn a_codec_hands_out_frames_in_order_and_wraps_after_the_last() {
 
 #[test]
 fn a_frame_failure_is_reported_and_the_codec_stays_usable() {
+    let Some(images) = images() else {
+        return;
+    };
     let mut decoder = FakeDecoder::new("software").frames(2, Repetition::Forever);
     decoder.fail_frame = Some((1, DecodeError::InvalidData("bad chunk".into())));
-    let loader = ImageLoader::new(images(), decoders([decoder]));
+    let loader = ImageLoader::new(images, decoders([decoder]));
     let mut codec = block_on(loader.open(bytes(), DecodeOptions::default())).unwrap();
     assert!(block_on(codec.next_frame()).is_ok());
     assert!(matches!(
@@ -132,9 +152,12 @@ fn a_frame_failure_is_reported_and_the_codec_stays_usable() {
 
 #[test]
 fn max_size_is_passed_to_the_decoder_and_frames_come_back_at_that_size() {
+    let Some(images) = images() else {
+        return;
+    };
     let mut decoder = FakeDecoder::new("software");
     decoder.size = [400, 200];
-    let loader = ImageLoader::new(images(), decoders([decoder]));
+    let loader = ImageLoader::new(images, decoders([decoder]));
     let options = DecodeOptions {
         max_size: Some([100, 100]),
         mipmaps: true,
@@ -149,8 +172,11 @@ fn max_size_is_passed_to_the_decoder_and_frames_come_back_at_that_size() {
 
 #[test]
 fn limits_on_frames_and_pixels_apply_to_what_the_decoder_reports() {
+    let Some(images) = images() else {
+        return;
+    };
     let loader = ImageLoader::new(
-        images(),
+        images.clone(),
         decoders([FakeDecoder::new("software").frames(5, Repetition::Forever)]),
     );
     let few_frames = DecodeOptions {
@@ -166,7 +192,7 @@ fn limits_on_frames_and_pixels_apply_to_what_the_decoder_reports() {
     ));
     let mut large = FakeDecoder::new("software");
     large.size = [1000, 1000];
-    let loader = ImageLoader::new(images(), decoders([large]));
+    let loader = ImageLoader::new(images, decoders([large]));
     let few_pixels = DecodeOptions {
         limits: DecodeLimits {
             max_pixels: 10,
@@ -182,8 +208,11 @@ fn limits_on_frames_and_pixels_apply_to_what_the_decoder_reports() {
 
 #[test]
 fn a_decoder_that_answers_later_is_waited_for_rather_than_assumed_ready() {
+    let Some(images) = images() else {
+        return;
+    };
     let (decoder, release) = DelayedDecoder::new("browser");
-    let loader = ImageLoader::new(images(), vec![Box::new(decoder)]);
+    let loader = ImageLoader::new(images, vec![Box::new(decoder)]);
     let mut decoding = loader.decode(bytes(), DecodeOptions::default());
     assert!(
         decoding.try_take().is_none(),

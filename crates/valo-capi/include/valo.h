@@ -24,8 +24,9 @@ extern "C" {
 
 /* ── opaque handles ─────────────────────────────────────────────────── */
 
-/* ValoContext is the GPU renderer handle. Create with valo_context_new
- * (null when no adapter exists); dispose with valo_context_dispose. */
+/* ValoContext is the GPU renderer handle. Create with valo_context_new or
+ * valo_context_new_with_options (null when no adapter gives a device);
+ * dispose with valo_context_dispose. */
 typedef struct ValoContext ValoContext;
 /* ValoDisplayListBuilder records drawing commands. Finish with
  * valo_builder_build (consumes the handle) or abandon with
@@ -153,6 +154,20 @@ typedef struct ValoParagraphStyle {
   size_t ellipsis_length;
 } ValoParagraphStyle;
 
+/* ValoAdapterOptions says which GPU adapters a context may open and how to
+ * rank them. A zeroed struct admits every adapter with no power preference.
+ * power_preference: 0 default (the platform's order) · 1 lowPower
+ * (integrated first) · 2 highPerformance (discrete first); software
+ * adapters come last either way. force_fallback_adapter admits software
+ * adapters only. feature_level: 0 compatibility (downlevel adapters too,
+ * such as a GL driver) · 1 core (fully WebGPU-compliant adapters only).
+ * Unknown values take 0. */
+typedef struct ValoAdapterOptions {
+  int32_t power_preference;
+  bool force_fallback_adapter;
+  int32_t feature_level;
+} ValoAdapterOptions;
+
 /* ValoTextRange is a UTF-8 byte range [start, end) in paragraph text. */
 typedef struct ValoTextRange {
   size_t start, end;
@@ -170,8 +185,16 @@ typedef struct ValoLineMetrics {
 
 /* valo_context_new brings up the GPU and a valo context with no window
  * attached. Bring-up is blocking (instance → adapter → device) and happens
- * once. Returns null when no adapter exists. */
+ * once. It is valo_context_new_with_options with compatibility, high
+ * performance and no forced fallback. Returns null when no adapter gives a
+ * device. */
 ValoContext *valo_context_new(void);
+/* valo_context_new_with_options brings up a context on the adapter the
+ * options choose: every adapter their feature level admits is tried, ranked
+ * by their power preference with software adapters last, until one gives a
+ * device. Blocking. Returns null on null options or when no adapter gives a
+ * device. */
+ValoContext *valo_context_new_with_options(const ValoAdapterOptions *options);
 /* valo_context_dispose releases a context handle. Null is a no-op. */
 void valo_context_dispose(ValoContext *context);
 

@@ -615,13 +615,15 @@ fn unpremultiply_opaque(color: vec4<f32>) -> vec4<f32> {
 // Impeller's downsample pass: texture_fill.frag's one bilinear tap (edge 0,
 // ratio 1), or downsample.glsl's taps at odd texel offsets out to `edge`.
 // The geom slot maps the pass to source uv; misc = (edge, ratio, texel size
-// in uv). The downsample modes slot = (bounded, decal): a bounded blur's
-// taps outside the four edge slots — its quad's edges as (a, b, c, _) in
-// source uv, inside where every a·u + b·v + c ≥ 0 — read transparent
-// (texture_downsample_bounded.frag). A tap past the texture's edge reads as
-// the sampler's address mode says, the blur's tile mode; a decal one reads
-// transparent, tested at the tap as Impeller's GLES path does
-// (texture_downsample_gles.frag), since WebGPU has no transparent border.
+// in uv). The downsample modes slot = (bounded, decal, width, height): a
+// bounded blur's taps outside the four edge slots — its quad's edges as
+// (a, b, c, _) in source uv, inside where every a·u + b·v + c ≥ 0 — read
+// transparent (texture_downsample_bounded.frag). A tap past the texture's
+// edge reads as the sampler's address mode says, the blur's tile mode. A
+// decal one reads as Impeller's decal sampler does on Metal and Vulkan, a
+// transparent border past the edge: WebGPU has none, so the sampler clamps
+// and the tap is weighted by the share of its bilinear footprint inside the
+// texture, on the grid of the mip level it reads, width × height texels.
 
 @fragment
 fn fs_downsample(in: VsOut) -> @location(0) vec4<f32> {
@@ -643,14 +645,25 @@ fn fs_downsample(in: VsOut) -> @location(0) vec4<f32> {
 /// under a non-uniform branch is invalid WGSL.
 fn downsample_tap(uv: vec2<f32>) -> vec4<f32> {
     let texel = textureSample(t_tex, t_samp, uv);
-    return texel * decal_inside(uv) * bounds_inside(uv);
+    return texel * decal_border(uv) * bounds_inside(uv);
 }
 
-fn decal_inside(uv: vec2<f32>) -> f32 {
-    if u.payload[PAYLOAD_DOWNSAMPLE_MODES].y < 0.5 {
+/// The share of a tap's bilinear footprint, one texel square centred on
+/// it, that lies inside the texture: what a transparent border leaves of a
+/// clamped tap. A tap on the edge reads half the edge texel; one a texel
+/// past it, nothing. Testing the tap against the edge instead would read
+/// the edge texel whole or not at all as the tap's last bit fell, and a
+/// downsample whose taps land on both edges would move its blur by half a
+/// texel.
+fn decal_border(uv: vec2<f32>) -> f32 {
+    let modes = u.payload[PAYLOAD_DOWNSAMPLE_MODES];
+    if modes.y < 0.5 {
         return 1.0;
     }
-    return f32(all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
+    let texels = modes.zw;
+    let position = uv * texels;
+    let inside = clamp(min(position + 0.5, texels + 0.5 - position), vec2(0.0), vec2(1.0));
+    return inside.x * inside.y;
 }
 
 fn bounds_inside(uv: vec2<f32>) -> f32 {

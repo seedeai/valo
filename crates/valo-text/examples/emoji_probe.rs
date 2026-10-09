@@ -66,7 +66,13 @@ fn main() {
     let mut raster = Rasterizer::new();
     match raster.color(c.get(id), glyph, 64.0) {
         Some(img) => {
-            let opaque = img.data.chunks_exact(4).filter(|p| p[3] > 0).count();
+            let opaque = img
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 0)
+                .count();
             println!(
                 "COLOR raster: {}x{}, {} visible px ✓",
                 img.width, img.height, opaque

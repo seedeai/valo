@@ -3,10 +3,13 @@ use valo::{
     PixelBuffer, PixelFormat, PixelLayout, Rect,
 };
 
-fn setup() -> (ImageContext, Context) {
-    let (device, queue) = valo_harness::headless_device().unwrap();
+fn setup() -> Option<(ImageContext, Context)> {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP: no GPU adapter");
+        return None;
+    };
     let context = Context::new(device, queue);
-    (context.image_context(), context)
+    Some((context.image_context(), context))
 }
 
 fn draw(context: &mut Context, image: &valo::Image) -> Vec<u8> {
@@ -22,7 +25,9 @@ fn draw(context: &mut Context, image: &valo::Image) -> Vec<u8> {
 
 #[test]
 fn padded_bgra_straight_rows_upload_like_packed_premultiplied_rgba() {
-    let (images, mut context) = setup();
+    let Some((images, mut context)) = setup() else {
+        return;
+    };
     let pixels = PixelBuffer::new(
         PixelLayout {
             size: [1, 2],
@@ -58,7 +63,9 @@ fn pixel_buffer_rejects_a_length_that_does_not_match_its_layout() {
 
 #[test]
 fn imported_texture_gains_requested_mips_and_keeps_its_pixels() {
-    let (images, mut context) = setup();
+    let Some((images, mut context)) = setup() else {
+        return;
+    };
     let source = context.upload_image(
         ImageDesc {
             size: [2, 2],
@@ -82,7 +89,9 @@ fn imported_texture_gains_requested_mips_and_keeps_its_pixels() {
 
 #[test]
 fn import_rejects_textures_the_image_shader_cannot_sample() {
-    let (images, _) = setup();
+    let Some((images, _)) = setup() else {
+        return;
+    };
     let depth = images.device().create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {

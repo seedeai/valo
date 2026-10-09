@@ -98,7 +98,7 @@ impl PixelBuffer {
 }
 
 fn normalize_row(row: &mut [u8], layout: PixelLayout) {
-    for pixel in row.chunks_exact_mut(4) {
+    for pixel in row.as_chunks_mut::<4>().0 {
         if layout.format == PixelFormat::Bgra8 {
             pixel.swap(0, 2);
         }

@@ -264,7 +264,7 @@ impl StepEmitter<'_> {
             DownsampleKernel::ONE_TAP,
             texel,
             None,
-            false,
+            None,
         );
         Shading::of(Frag::Downsample, record, self.textured(&source.view))
     }
@@ -322,14 +322,15 @@ impl StepEmitter<'_> {
     pub fn downsample_shading(&self, taps: &DownsampleTaps, input: &wgpu::TextureView) -> Shading {
         let mut record = UniformRecord::tinted([1.0; 4]);
         let edges = taps.edges.map(|edges| edges.0);
-        let decal = taps.tile_mode == TileMode::Decal;
+        let decal_border =
+            (taps.tile_mode == TileMode::Decal).then(|| read_level_size(input.texture(), taps));
         encode_downsample(
             &mut record,
             taps.uv,
             taps.kernel,
             taps.texel,
             edges.as_ref(),
-            decal,
+            decal_border,
         );
         let bindings = Bindings::Textured(self.tiled_texture_bind(input, taps.tile_mode));
         Shading::of(Frag::Downsample, record, bindings)
@@ -687,18 +688,28 @@ impl DownsampleKernel {
     };
 }
 
+/// `read_level_size` is the size in texels of the mip level of `texture`
+/// that `taps` read: the grid a decal's transparent border lies along. A
+/// blur's input is a view of its whole texture, every level included.
+fn read_level_size(texture: &wgpu::Texture, taps: &DownsampleTaps) -> [f32; 2] {
+    let level = taps.read_level(texture.mip_level_count());
+    let size = texture.size().mip_level_size(level, texture.dimension());
+    [size.width as f32, size.height as f32]
+}
+
 /// `encode_downsample` writes the downsample fragment's payload: `uv` maps
 /// the pass's own pixels into the input's uv as `uv = p · [x, y] + [z, w]`,
 /// `kernel` is its taps, one input texel (`texel`, in uv) apart, `bounds`
-/// the edge lines a bounded blur tests its taps against, and `decal` cuts
-/// off taps past the input's edge.
+/// the edge lines a bounded blur tests its taps against, and
+/// `decal_border`, for a decal blur, the size in texels of the level its
+/// taps read, past whose edge they find a transparent border.
 fn encode_downsample(
     record: &mut UniformRecord,
     uv: [f32; 4],
     kernel: DownsampleKernel,
     texel: [f32; 2],
     bounds: Option<&[[f32; 4]; 4]>,
-    decal: bool,
+    decal_border: Option<[f32; 2]>,
 ) {
     record.set(slot::GEOM, uv);
     record.set(slot::MISC, [kernel.edge, kernel.ratio, texel[0], texel[1]]);
@@ -707,9 +718,15 @@ fn encode_downsample(
             record.set(slot::DOWNSAMPLE_EDGES + index, *line);
         }
     }
+    let [width, height] = decal_border.unwrap_or([0.0; 2]);
     record.set(
         slot::DOWNSAMPLE_MODES,
-        [f32::from(bounds.is_some()), f32::from(decal), 0.0, 0.0],
+        [
+            f32::from(bounds.is_some()),
+            f32::from(decal_border.is_some()),
+            width,
+            height,
+        ],
     );
 }
 

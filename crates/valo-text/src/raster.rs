@@ -214,7 +214,7 @@ impl Rasterizer {
             return crate::colr::raster(font, glyph, px);
         }
         let mut data = image.data;
-        for px in data.chunks_exact_mut(4) {
+        for px in data.as_chunks_mut::<4>().0 {
             let a = px[3] as u32;
             // Round half up — truncation biases emoji a hair dark and
             // breaks the round-trip with export's unpremultiply.

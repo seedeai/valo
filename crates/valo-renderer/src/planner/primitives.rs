@@ -386,17 +386,16 @@ fn rect_path(rect: &Rect) -> Arc<Path> {
 /// `vertex_bounds` is the rect holding a mesh's `x, y` vertices; empty for
 /// none.
 fn vertex_bounds(vertices: &[f32]) -> Rect {
-    let mut points = vertices.chunks_exact(2);
-    let Some(first) = points.next() else {
+    let mut points = vertices.as_chunks::<2>().0.iter();
+    let Some(&[mut left, mut top]) = points.next() else {
         return Rect::default();
     };
-    let [mut left, mut top] = [first[0], first[1]];
     let [mut right, mut bottom] = [left, top];
-    for point in points {
-        left = left.min(point[0]);
-        top = top.min(point[1]);
-        right = right.max(point[0]);
-        bottom = bottom.max(point[1]);
+    for &[x, y] in points {
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
     }
     Rect::from_ltrb(left, top, right, bottom)
 }

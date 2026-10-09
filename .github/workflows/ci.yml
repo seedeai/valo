@@ -110,10 +110,11 @@ jobs:
       # macOS goldens job: report until it proves stable, then require it.
       - name: Golden pixels on WARP (Direct3D 12)
         continue-on-error: true
-        run: cargo test -p valo -p valo-capi -p valo-harness
+        # WARP crashes inside d3d10warp.dll when several devices render at once.
+        run: cargo test -p valo -p valo-capi -p valo-harness -- --test-threads=1
 
   msrv:
-    name: msrv (1.87)
+    name: msrv (1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,10 +122,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
-      - run: rustup toolchain install 1.87.0 --profile minimal
+      - run: rustup toolchain install 1.88.0 --profile minimal
       - uses: Swatinem/rust-cache@v2
       # An explicit +toolchain overrides rust-toolchain.toml.
-      - run: cargo +1.87.0 check --workspace --all-targets
+      - run: cargo +1.88.0 check --workspace --all-targets
 
   docs:
     name: rustdoc

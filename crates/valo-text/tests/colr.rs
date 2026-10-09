@@ -34,9 +34,11 @@ fn colrv1_glyph_rasters_in_color() {
 
     let visible: Vec<[u8; 4]> = image
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[3] > 0)
-        .map(|p| [p[0], p[1], p[2], p[3]])
+        .copied()
         .collect();
     assert!(
         visible.len() > 500,

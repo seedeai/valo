@@ -6,11 +6,14 @@ use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
 use valo_codec::{DecodeError, DecodeLimits, DecodeOptions, ImageLoader, Repetition};
 use valo_codec_software::SoftwareDecoder;
 
-fn loader() -> (ImageLoader, Context) {
-    let (device, queue) = valo_harness::headless_device().expect("headless GPU");
+fn loader() -> Option<(ImageLoader, Context)> {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP: no GPU adapter");
+        return None;
+    };
     let context = Context::new(device, queue);
     let loader = ImageLoader::new(context.image_context(), vec![Box::new(SoftwareDecoder)]);
-    (loader, context)
+    Some((loader, context))
 }
 
 fn render(context: &mut Context, image: &valo::Image) -> Vec<u8> {
@@ -47,7 +50,9 @@ fn png(profile: Option<Vec<u8>>, rotated: bool, size: [u32; 2], pixels: &[u8]) -
 
 #[test]
 fn png_is_oriented_once_and_keeps_straight_alpha() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     let bytes = png(None, true, [2, 1], &[255, 0, 0, 255, 0, 255, 0, 128]);
     let mut codec = block_on(loader.open(bytes, DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().size, [1, 2]);
@@ -61,7 +66,9 @@ fn png_is_oriented_once_and_keeps_straight_alpha() {
 
 #[test]
 fn max_size_downscales_and_never_upscales() {
-    let (loader, _) = loader();
+    let Some((loader, _)) = loader() else {
+        return;
+    };
     let bytes = png(None, false, [4, 2], &[200; 32]);
     let small = DecodeOptions {
         max_size: Some([2, 2]),
@@ -85,7 +92,9 @@ fn max_size_downscales_and_never_upscales() {
 
 #[test]
 fn an_embedded_display_p3_profile_is_converted_to_srgb() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     let profile = moxcms::ColorProfile::new_display_p3().encode().unwrap();
     let bytes = png(Some(profile), false, [1, 1], &[200, 100, 40, 255]);
     let image = block_on(loader.decode(bytes, DecodeOptions::default())).unwrap();
@@ -126,7 +135,9 @@ fn animated_gif() -> Arc<[u8]> {
 
 #[test]
 fn gif_composites_disposal_keeps_its_loop_count_and_replays_from_the_start() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     let mut codec = block_on(loader.open(animated_gif(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 4);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
@@ -171,7 +182,9 @@ fn apng() -> Arc<[u8]> {
 
 #[test]
 fn apng_composites_frames_and_counts_additional_passes() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     let mut codec = block_on(loader.open(apng(), DecodeOptions::default())).unwrap();
     assert_eq!(codec.info().frame_count, 3);
     assert_eq!(codec.info().repetition, Repetition::Times(2));
@@ -188,7 +201,9 @@ fn apng_composites_frames_and_counts_additional_passes() {
 
 #[test]
 fn a_damaged_frame_is_an_error_and_the_frame_limit_bounds_header_scanning() {
-    let (loader, _) = loader();
+    let Some((loader, _)) = loader() else {
+        return;
+    };
     let mut bytes = apng().to_vec();
     let position = bytes.windows(4).position(|chunk| chunk == b"fdAT").unwrap();
     bytes[position + 8] ^= 255;
@@ -211,7 +226,9 @@ fn a_damaged_frame_is_an_error_and_the_frame_limit_bounds_header_scanning() {
 
 #[test]
 fn png_gamma_and_cicp_are_converted_rather_than_relabelled() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     for cicp in [false, true] {
         let mut bytes = Vec::new();
         {
@@ -241,7 +258,9 @@ fn png_gamma_and_cicp_are_converted_rather_than_relabelled() {
 
 #[test]
 fn a_grayscale_icc_profile_converts_to_rgb_and_keeps_alpha() {
-    let (loader, mut context) = loader();
+    let Some((loader, mut context)) = loader() else {
+        return;
+    };
     let mut bytes = Vec::new();
     let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
     encoder
@@ -264,7 +283,9 @@ fn a_grayscale_icc_profile_converts_to_rgb_and_keeps_alpha() {
 
 #[test]
 fn unrecognised_bytes_are_declined_so_another_decoder_could_take_them() {
-    let (loader, _) = loader();
+    let Some((loader, _)) = loader() else {
+        return;
+    };
     match block_on(loader.decode(Arc::from(*b"not an image at all"), DecodeOptions::default())) {
         Err(DecodeError::Unsupported(declined)) => assert_eq!(declined[0].decoder, "software"),
         other => panic!("{other:?}"),

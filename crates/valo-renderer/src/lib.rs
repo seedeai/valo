@@ -12,6 +12,7 @@
 //!   the blend one the blend unit runs ([`PipelineBlend`], of a [`Blend`]).
 
 mod contours;
+mod device_request;
 mod encoder;
 mod frame;
 mod glyphs;
@@ -30,6 +31,7 @@ mod renderer;
 mod report;
 mod shader_abi;
 
+pub use device_request::{request_device, FeatureLevel, NoDevice, Refusal, RefusedAdapter};
 pub use glyphs::TextTiers;
 pub use host_buffer::HostBuffer;
 pub use image_context::ImageContext;

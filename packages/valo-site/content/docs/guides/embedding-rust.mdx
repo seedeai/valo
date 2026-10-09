@@ -47,6 +47,13 @@ fn main() {
 `render_to_rgba` is a blocking export helper for native applications. It
 returns straight-alpha RGBA8 pixels suitable for an image encoder.
 
+An application without an adapter policy of its own can let valo choose:
+`valo::request_device(&instance, &options, valo::FeatureLevel::Compatibility)`
+tries every adapter the feature level admits, ranked by wgpu's
+`RequestAdapterOptions` with software adapters last, and returns the adapter,
+device and queue of the first that gives one. `FeatureLevel::Core` admits
+fully WebGPU-compliant adapters only.
+
 ## Draw into a window
 
 For an interactive application, create `valo::Surface` over your window and

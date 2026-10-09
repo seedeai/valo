@@ -302,7 +302,9 @@ fn color_emoji_rasterizes_rgba() {
     // Premultiplied color content: some opaque non-gray pixel exists.
     assert!(img
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[3] > 200 && (p[0] != p[1] || p[1] != p[2])));
 }
 

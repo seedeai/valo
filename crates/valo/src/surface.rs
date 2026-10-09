@@ -495,7 +495,11 @@ impl PersistentCanvas {
 
     /// `present_to` copies the current canvas pixels into a render target.
     ///
-    /// The copy is pixel-exact when the target matches [`Self::size`].
+    /// The copy is pixel-exact when the target matches [`Self::size`]. It
+    /// replaces every pixel of `target`, so the target should clear rather
+    /// than keep its pixels (`clear: Some(..)`): keeping them would copy out
+    /// pixels the copy then hides, and needs `COPY_SRC` usage that a browser
+    /// canvas texture lacks.
     pub fn present_to(&self, context: &mut crate::Context, target: &crate::RenderTarget) {
         let image = self.front();
         let source = Rect::new(0.0, 0.0, image.width(), image.height());

@@ -408,10 +408,10 @@ fn gradient_stops(offsets: &[f32], colors: &[f32]) -> Result<Vec<GradientStop>, 
     }
     Ok(offsets
         .iter()
-        .zip(colors.chunks_exact(4))
-        .map(|(&offset, color)| GradientStop {
+        .zip(colors.as_chunks::<4>().0)
+        .map(|(&offset, &[red, green, blue, alpha])| GradientStop {
             offset,
-            color: Color::rgba(color[0], color[1], color[2], color[3]),
+            color: Color::rgba(red, green, blue, alpha),
         })
         .collect())
 }

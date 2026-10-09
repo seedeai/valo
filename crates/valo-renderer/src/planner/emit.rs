@@ -67,8 +67,8 @@ impl LinearSamplers {
     }
 
     /// `for_tile_mode` reads past a texture's edge the way `tile_mode` says.
-    /// Decal reads as clamp here and the shader cuts it off: WebGPU has no
-    /// transparent border colour in its baseline.
+    /// Decal reads as clamp here and the shader adds the transparent border:
+    /// WebGPU has no transparent border colour in its baseline.
     fn for_tile_mode(&self, tile_mode: TileMode) -> &wgpu::Sampler {
         match tile_mode {
             TileMode::Clamp | TileMode::Decal => &self.clamp,
@@ -333,7 +333,7 @@ impl<'a> StepEmitter<'a> {
 
     /// `tiled_texture_bind` is [`StepEmitter::texture_bind`] with a sampler
     /// that reads past the texture's edge the way `tile_mode` says (decal
-    /// reads as clamp, for the shader to cut off).
+    /// reads as clamp, for the shader to add the transparent border).
     pub fn tiled_texture_bind(
         &self,
         view: &wgpu::TextureView,

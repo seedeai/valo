@@ -381,7 +381,7 @@ pub(super) struct DownsampleTaps {
     /// A bounded blur's edges, in the input's uv.
     pub edges: Option<EdgeLines>,
     /// The sampler's address mode past the input's edge (Impeller's
-    /// `SetTileMode`), a decal cut off in the shader.
+    /// `SetTileMode`); a decal's transparent border is the shader's.
     pub tile_mode: TileMode,
 }
 
@@ -476,6 +476,16 @@ impl DownsampleTaps {
             edges,
             tile_mode,
         }
+    }
+
+    /// `read_level` is the mip level the taps read from an input with
+    /// `mip_levels` levels: the one nearest the texels a pass pixel spans,
+    /// as a sampler whose mipmap filter is nearest picks it, or the last
+    /// there is.
+    pub fn read_level(&self, mip_levels: u32) -> u32 {
+        let span = (self.uv[0] / self.texel[0]).max(self.uv[1] / self.texel[1]);
+        let nearest = span.log2().round().max(0.0) as u32;
+        nearest.min(mip_levels.saturating_sub(1))
     }
 }
 
@@ -996,6 +1006,30 @@ mod tests {
             over_wide.output.transform.to_affine()[0],
             2.0 * over_pixels.output.transform.to_affine()[0]
         );
+    }
+
+    /// A downsample's taps read the mip level nearest the texels one of its
+    /// pixels spans, as the sampler picks it: level 1 of an input with
+    /// levels at half resolution, level 2 at a quarter, level 0 at full
+    /// resolution or of an input with no other level.
+    #[test]
+    fn a_downsample_reads_the_mip_level_its_pixels_span() {
+        let read_level = |sigma: f32, mip_levels: u32| {
+            BlurPlan::new(
+                &BlurInfo::of([sigma; 2]),
+                &picture(false),
+                None,
+                TileMode::Decal,
+                None,
+            )
+            .expect("a blur")
+            .downsample
+            .read_level(mip_levels)
+        };
+        assert_eq!(read_level(8.0, 7), 1);
+        assert_eq!(read_level(16.0, 7), 2);
+        assert_eq!(read_level(2.0, 7), 0);
+        assert_eq!(read_level(8.0, 1), 0);
     }
 
     #[test]

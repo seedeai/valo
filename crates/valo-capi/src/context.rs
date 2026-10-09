@@ -4,17 +4,30 @@
 
 use valo::{Color, ImageDesc};
 
-use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoDisplayList};
+use crate::{
+    borrow, borrow_mut, dispose_handle, into_handle, ValoAdapterOptions, ValoColor, ValoDisplayList,
+};
 
 /// `ValoContext` is the GPU renderer handle for C embedders.
 ///
-/// Create it with [`valo_context_new`] (null when no adapter exists) and
-/// release it with [`valo_context_dispose`]. It owns the wgpu device and an
-/// optional presentable surface. Handles are not thread-safe. Pair it with
-/// [`valo_context_attach_metal_layer`] to present, or render headless with
-/// [`valo_context_render_to_pixels`].
+/// Create it with [`valo_context_new`] or [`valo_context_new_with_options`]
+/// (null when no adapter gives a device) and release it with
+/// [`valo_context_dispose`]. It owns the wgpu device and an optional
+/// presentable surface. Handles are not thread-safe. On macOS and iOS, pair
+/// it with `valo_context_attach_metal_layer` to present; anywhere, render
+/// headless with [`valo_context_render_to_pixels`].
 pub struct ValoContext {
+    /// `instance` and `adapter` create the surface a window attaches, which
+    /// only a Metal layer does so far.
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "ios")),
+        expect(dead_code, reason = "only a Metal layer attaches a surface")
+    )]
     instance: wgpu::Instance,
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "ios")),
+        expect(dead_code, reason = "only a Metal layer attaches a surface")
+    )]
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     context: valo::Context,
@@ -33,12 +46,48 @@ pub struct ValoImage {
 
 /// `valo_context_new` brings up the GPU and a valo context with no window attached.
 ///
-/// Bring-up is blocking (instance → adapter → device) and happens once.
-/// Pair with [`valo_context_attach_metal_layer`] to present, or render
-/// headless. Returns null when no adapter exists.
+/// Bring-up is blocking (instance → adapter → device) and happens once. It
+/// is [`valo_context_new_with_options`] with any adapter admitted
+/// (compatibility), high performance first and no forced fallback. On macOS
+/// and iOS, pair with `valo_context_attach_metal_layer` to present;
+/// anywhere, render headless. Returns null when no adapter gives a device.
 #[no_mangle]
 pub extern "C" fn valo_context_new() -> *mut ValoContext {
-    let Some((instance, adapter, device, queue)) = request_gpu() else {
+    let options = ValoAdapterOptions {
+        power_preference: 2,
+        force_fallback_adapter: false,
+        feature_level: 0,
+    };
+    context_from(&options)
+}
+
+/// `valo_context_new_with_options` brings up a context on the adapter
+/// `options` choose: `valo::request_device`.
+///
+/// Every adapter the options' feature level admits is tried, ranked by their
+/// power preference with software adapters last, until one gives a device.
+/// Blocking, like [`valo_context_new`]. Returns null on a null `options` or
+/// when no adapter gives a device.
+///
+/// # Safety
+/// `options` must be null or point to a valid [`ValoAdapterOptions`].
+#[no_mangle]
+pub unsafe extern "C" fn valo_context_new_with_options(
+    options: *const ValoAdapterOptions,
+) -> *mut ValoContext {
+    match unsafe { options.as_ref() } {
+        Some(options) => context_from(options),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `context_from` opens a device as `options` say and wraps a context
+/// around it; null when no adapter gives one.
+fn context_from(options: &ValoAdapterOptions) -> *mut ValoContext {
+    let instance = wgpu::Instance::default();
+    let wgpu_options = options.wgpu_options();
+    let request = valo::request_device(&instance, &wgpu_options, options.feature_level());
+    let Ok((adapter, device, queue)) = pollster::block_on(request) else {
         return std::ptr::null_mut();
     };
     let context = valo::Context::new(device.clone(), queue);
@@ -68,6 +117,7 @@ pub unsafe extern "C" fn valo_context_dispose(context: *mut ValoContext) {
 /// # Safety
 /// `context` must be a live handle; `metal_layer` must be a valid
 /// `CAMetalLayer*` that outlives the surface.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[no_mangle]
 pub unsafe extern "C" fn valo_context_attach_metal_layer(
     context: *mut ValoContext,
@@ -193,7 +243,6 @@ fn reclaim(ctx: &mut ValoContext) {
 ///
 /// # Safety
 /// `context` must be a live handle (or null, a no-op).
-#[cfg(target_os = "macos")]
 #[no_mangle]
 pub unsafe extern "C" fn valo_context_wait_for_gpu(context: *mut ValoContext) {
     if let Some(ctx) = unsafe { borrow_mut(context) } {
@@ -355,27 +404,4 @@ pub unsafe extern "C" fn valo_context_create_image(
 #[no_mangle]
 pub unsafe extern "C" fn valo_image_dispose(image: *mut ValoImage) {
     unsafe { dispose_handle(image) }
-}
-
-/// instance → adapter → device/queue, blocking (bring-up happens once).
-fn request_gpu() -> Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-    pollster::block_on(async {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("valo.capi"),
-                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
-        Some((instance, adapter, device, queue))
-    })
 }

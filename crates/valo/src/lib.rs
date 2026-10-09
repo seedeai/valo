@@ -50,8 +50,8 @@ pub use valo_geometry::{
     Rect, Size, Stroke, Winding,
 };
 pub use valo_renderer::{
-    AtlasReport, ImageDesc, MemoryReport, PoolReport, RenderStats, RenderTarget, TextTiers,
-    WgpuCounters,
+    request_device, AtlasReport, FeatureLevel, ImageDesc, MemoryReport, NoDevice, PoolReport,
+    Refusal, RefusedAdapter, RenderStats, RenderTarget, TextTiers, WgpuCounters,
 };
 pub use valo_text::{
     Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,

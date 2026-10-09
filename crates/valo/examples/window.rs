@@ -41,24 +41,16 @@ impl ApplicationHandler for App {
         // Metal/DX12 need no display handle; a Wayland host would pass the
         // winit display via `new_with_display_handle`.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let (device, queue, adapter) = pollster::block_on(async {
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    ..Default::default()
-                })
-                .await
-                .expect("adapter");
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("valo.window"),
-                    required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-                    ..Default::default()
-                })
-                .await
-                .expect("device");
-            (device, queue, adapter)
-        });
+        let options = wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        };
+        let (adapter, device, queue) = pollster::block_on(valo::request_device(
+            &instance,
+            &options,
+            valo::FeatureLevel::Compatibility,
+        ))
+        .unwrap_or_else(|no_device| panic!("{no_device}"));
 
         let size = window.inner_size();
         let surface = Surface::new(

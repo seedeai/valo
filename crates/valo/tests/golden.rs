@@ -3057,7 +3057,12 @@ fn a_bare_move_to_paints_nothing_but_a_zero_length_subpath_does() {
         let mut b = DisplayListBuilder::new();
         b.draw_path(&path.build(), FillRule::NonZero, &paint);
         let pixels = context.render_to_rgba(&b.build(), [40, 40], Some(Color::TRANSPARENT));
-        pixels.chunks_exact(4).filter(|p| p[3] > 0).count()
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] > 0)
+            .count()
     };
 
     for cap in [Cap::Butt, Cap::Round, Cap::Square] {
@@ -3772,7 +3777,7 @@ fn color_filter_that_changes_transparent_black_floods_layer_scope() {
     );
     builder.restore();
     let pixels = context.render_to_rgba(&builder.build(), [8, 8], Some(Color::TRANSPARENT));
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert_eq!(pixel, &[64, 128, 191, 128]);
     }
 }
@@ -3916,7 +3921,7 @@ fn composed_image_filter_runs_inner_before_outer() {
     builder.restore();
     let mut context = Context::new(device, queue);
     let pixels = context.render_to_rgba(&builder.build(), [4, 8], Some(Color::TRANSPARENT));
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert!(pixel[0].abs_diff(153) <= 2, "unexpected pixel {pixel:?}");
         assert_eq!(&pixel[1..], &[0, 0, 255]);
     }
@@ -3956,7 +3961,7 @@ fn a_layer_colour_filter_takes_the_layer_alpha_in_first() {
     let stats = context.render(&list, &target.target(Some(Color::TRANSPARENT)));
     assert_eq!(stats.filter_passes, 0, "the composite draws the filter");
     let pixels = context.render_to_rgba(&list, [4, 4], Some(Color::TRANSPARENT));
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert_eq!(pixel, &[255, 0, 0, 255], "unexpected pixel {pixel:?}");
     }
 }
@@ -3995,7 +4000,17 @@ fn an_opacity_group_keeps_its_alpha_off_a_colour_filtered_layer() {
     builder.restore();
     let pixels = context.render_to_rgba(&builder.build(), [32, 32], Some(Color::WHITE));
     let at = (20 * 32 + 20) * 4;
-    assert_eq!(&pixels[at..at + 4], &[255, 128, 128, 255]);
+    let pixel = &pixels[at..at + 4];
+    // Red at half alpha over white is 127.5 in green and blue, which a GPU
+    // may round either way. A lost group alpha comes out solid red instead.
+    let half_red_over_white = [255u8, 128, 128, 255];
+    assert!(
+        pixel
+            .iter()
+            .zip(half_red_over_white)
+            .all(|(got, want)| got.abs_diff(want) <= 1),
+        "the filter should show at half alpha over white, not solid red: {pixel:?}"
+    );
 }
 
 /// Impeller's `GaussianBlurRotatedNonUniform` (`aiks_dl_blur_unittests.cc`):

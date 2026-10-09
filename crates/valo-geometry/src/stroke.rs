@@ -897,8 +897,10 @@ mod tests {
         ]);
         let diagonal = |strip: &[f32]| {
             strip
-                .chunks_exact(2)
-                .map(|v| v[0] + v[1])
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[x, y]| x + y)
                 .fold(f32::MIN, f32::max)
         };
         let strip = stroke_strip(&angle, &Stroke::new(20.0), 0.25);

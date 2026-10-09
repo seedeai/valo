@@ -22,9 +22,12 @@ fn wait_for(log: &Log, count: usize) {
 
 #[test]
 fn decoding_runs_on_the_worker_and_the_result_wakes_the_caller() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let loader = ImageLoader::with_worker(
-        images(),
+        images,
         decoders([FakeDecoder::new("software").sharing_log(&log)]),
     )
     .unwrap();
@@ -39,9 +42,12 @@ fn decoding_runs_on_the_worker_and_the_result_wakes_the_caller() {
 
 #[test]
 fn a_codec_keeps_its_reader_on_the_worker_and_releases_it_when_dropped() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let loader = ImageLoader::with_worker(
-        images(),
+        images,
         decoders([FakeDecoder::new("software")
             .frames(2, Repetition::Forever)
             .sharing_log(&log)]),
@@ -68,11 +74,14 @@ fn a_codec_keeps_its_reader_on_the_worker_and_releases_it_when_dropped() {
 
 #[test]
 fn cancelling_an_open_in_flight_releases_the_late_reader_on_the_worker() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let (release, gate) = mpsc::channel();
     let mut decoder = FakeDecoder::new("software").sharing_log(&log);
     decoder.open_gate = Some(Arc::new(Mutex::new(gate)));
-    let loader = ImageLoader::with_worker(images(), decoders([decoder])).unwrap();
+    let loader = ImageLoader::with_worker(images, decoders([decoder])).unwrap();
     let mut pending = loader.open(bytes(), DecodeOptions::default());
     assert!(pending.try_take().is_none());
     wait_for(&log, 1);
@@ -86,11 +95,14 @@ fn cancelling_an_open_in_flight_releases_the_late_reader_on_the_worker() {
 
 #[test]
 fn a_request_dropped_before_the_worker_reaches_it_is_skipped() {
+    let Some(images) = images() else {
+        return;
+    };
     let log = Log::default();
     let (release, gate) = mpsc::channel();
     let mut slow = FakeDecoder::new("software").sharing_log(&log);
     slow.open_gate = Some(Arc::new(Mutex::new(gate)));
-    let loader = ImageLoader::with_worker(images(), decoders([slow])).unwrap();
+    let loader = ImageLoader::with_worker(images, decoders([slow])).unwrap();
     let mut first = loader.decode(bytes(), DecodeOptions::default());
     assert!(first.try_take().is_none());
     let abandoned = loader.decode(bytes(), DecodeOptions::default());
@@ -111,6 +123,9 @@ fn a_request_dropped_before_the_worker_reaches_it_is_skipped() {
 
 #[test]
 fn a_worker_that_dies_resolves_waiting_and_later_requests_with_closed() {
+    let Some(images) = images() else {
+        return;
+    };
     struct Panics;
     impl valo_codec::Decoder for Panics {
         fn name(&self) -> &'static str {
@@ -124,7 +139,7 @@ fn a_worker_that_dies_resolves_waiting_and_later_requests_with_closed() {
             panic!("decoder bug");
         }
     }
-    let loader = ImageLoader::with_worker(images(), vec![Box::new(Panics)]).unwrap();
+    let loader = ImageLoader::with_worker(images, vec![Box::new(Panics)]).unwrap();
     let first = loader.decode(bytes(), DecodeOptions::default());
     assert!(matches!(block_on(first), Err(DecodeError::Closed)));
     thread::sleep(Duration::from_millis(20));
@@ -134,8 +149,11 @@ fn a_worker_that_dies_resolves_waiting_and_later_requests_with_closed() {
 
 #[test]
 fn the_worker_sleeps_through_a_decode_that_answers_later_and_wakes_for_the_answer() {
+    let Some(images) = images() else {
+        return;
+    };
     let (decoder, release) = DelayedDecoder::new("browser");
-    let loader = ImageLoader::with_worker(images(), vec![Box::new(decoder)]).unwrap();
+    let loader = ImageLoader::with_worker(images, vec![Box::new(decoder)]).unwrap();
     let decoding = loader.decode(bytes(), DecodeOptions::default());
     let releaser = thread::spawn(move || {
         thread::sleep(Duration::from_millis(20));

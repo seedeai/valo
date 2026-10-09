@@ -90,7 +90,10 @@ fn draw(context: &mut Context, image: &valo::Image) -> Vec<u8> {
 
 #[test]
 fn a_gpu_frame_is_drawn_from_its_own_texture_and_copied_only_for_mipmaps() {
-    let (device, queue) = valo_harness::headless_device().expect("headless GPU");
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP: no GPU adapter");
+        return;
+    };
     let mut context = Context::new(device.clone(), queue.clone());
     let loader = ImageLoader::new(context.image_context(), vec![Box::new(TextureDecoder)]);
 
@@ -120,6 +123,9 @@ fn a_gpu_frame_is_drawn_from_its_own_texture_and_copied_only_for_mipmaps() {
 
 #[test]
 fn a_gpu_frame_of_the_wrong_size_is_rejected() {
+    let Some(images) = images() else {
+        return;
+    };
     struct WrongSize;
     impl Decoder for WrongSize {
         fn name(&self) -> &'static str {
@@ -149,7 +155,7 @@ fn a_gpu_frame_of_the_wrong_size_is_rejected() {
             ))))
         }
     }
-    let loader = ImageLoader::new(images(), vec![Box::new(WrongSize)]);
+    let loader = ImageLoader::new(images, vec![Box::new(WrongSize)]);
     assert!(matches!(
         block_on(loader.decode(bytes(), DecodeOptions::default())),
         Err(DecodeError::InvalidData(_))

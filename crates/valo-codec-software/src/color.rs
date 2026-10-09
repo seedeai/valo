@@ -102,9 +102,9 @@ fn apply_profile_blockwise(
     let mut gray = [0u8; 2048];
     for block in pixels.chunks_mut(output.len()) {
         if layout == moxcms::Layout::GrayAlpha {
-            for (rgba, gray) in block.chunks_exact(4).zip(gray.chunks_exact_mut(2)) {
-                gray[0] = rgba[0];
-                gray[1] = rgba[3];
+            let gray_pixels = gray.as_chunks_mut::<2>().0;
+            for (rgba, gray) in block.as_chunks::<4>().0.iter().zip(gray_pixels) {
+                *gray = [rgba[0], rgba[3]];
             }
             transform
                 .transform(&gray[..block.len() / 2], &mut output[..block.len()])

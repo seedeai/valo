@@ -28,29 +28,30 @@ pub fn example_fonts() -> valo::FontCollection {
     fonts
 }
 
-/// Bring up a headless native device. `None` when the machine has no adapter
-/// (CI shells) — golden tests skip gracefully instead of failing.
+/// Bring up a headless native device. `None` when no adapter gives one (CI
+/// shells) — golden tests skip gracefully instead of failing.
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("valo.harness"),
-                // GPU timing when the adapter offers it (stats.gpu_ms).
-                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-                ..Default::default()
-            })
-            .await
-            .ok()?;
-        Some((device, queue))
-    })
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let (_, device, queue) = pollster::block_on(open_device(&instance)).ok()?;
+    Some((device, queue))
+}
+
+/// `open_device` opens the device tests and examples render with:
+/// [`valo::request_device`] at [`valo::FeatureLevel::Core`], high
+/// performance first.
+///
+/// Core keeps the tests on what the WebGPU specification guarantees: where
+/// a GPU has only a downlevel driver they render on a compliant software
+/// adapter instead (lavapipe beside a virtual machine's virgl GL), and they
+/// skip where no compliant adapter exists.
+pub async fn open_device(
+    instance: &wgpu::Instance,
+) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), valo::NoDevice> {
+    let options = wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    };
+    valo::request_device(instance, &options, valo::FeatureLevel::Core).await
 }
 
 /// Read an RGBA8 texture back to tightly-packed bytes (row padding stripped).

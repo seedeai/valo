@@ -24,9 +24,11 @@ const VERTEX_BLOCK_SIZE: u64 = 256 * 1024;
 /// `HostBuffer` bump-allocates per-draw uniforms and transient vertex data.
 ///
 /// Each frame writes into CPU scratch; [`Self::flush`] moves the touched
-/// blocks to the GPU the way the device's [`BlockWriter`] does it. A 3-frame
+/// blocks to the GPU, mapping them in place where the device's buffers are
+/// host-visible and writing them through the queue elsewhere. A 3-frame
 /// ring of persistent buffers means warm frames create nothing — the cost
-/// that matters most on wasm.
+/// that matters most on wasm — as long as frames are paced: a mapped block
+/// still in the GPU's hands at its next turn is passed over for a new one.
 ///
 /// Uniforms bind once per block via a dynamic offset: a draw's record at
 /// group 0, a blur pass's kernel at group 2, both from the same blocks as
@@ -195,7 +197,7 @@ impl HostBuffer {
     /// `kernel_bind_group_layout` returns the group-2 layout for a blur
     /// pass's kernel.
     ///
-    /// Binding 0 is a dynamic-offset uniform buffer [`KERNEL_SIZE`] long,
+    /// Binding 0 is a dynamic-offset uniform buffer one blur kernel long,
     /// read from the same blocks as the draw records.
     pub fn kernel_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.factory.kernel_layout
@@ -532,21 +534,13 @@ fn write_scratch<Views>(block: &mut Block<Views>, offset: u64, bytes: &[u8]) {
 mod tests {
     use super::*;
 
-    /// A device with host-visible primary buffers, where the adapter offers them.
+    /// The test device, when its adapter offers host-visible primary buffers.
     fn mappable_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::default();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-        if !adapter
+        let (_, device, queue) = crate::device_request::test_device()?;
+        device
             .features()
             .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
-        {
-            return None;
-        }
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: wgpu::Features::MAPPABLE_PRIMARY_BUFFERS,
-            ..Default::default()
-        }))
-        .ok()
+            .then_some((device, queue))
     }
 
     #[test]
@@ -583,13 +577,9 @@ mod tests {
         assert_eq!(host.blocks_created, 0, "and no block is created for it");
     }
 
+    /// The device valo's GPU tests render with (`valo_harness::open_device`).
     fn headless() -> Option<wgpu::Device> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .ok()?;
-        let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        let (_, device, _) = crate::device_request::test_device()?;
         Some(device)
     }
 

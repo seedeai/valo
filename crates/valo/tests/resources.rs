@@ -67,6 +67,13 @@ fn no_resource_growth_over_300_frames() {
     let mut blocks_created_warm = 0u32;
     for i in 60..300 {
         let stats = ctx.render(&scene(&mut fonts, i), &offscreen.target(Some(Color::BLACK)));
+        // Paced like a host's frames: where the device's buffers are mapped
+        // in place, a block comes back to the ring only once the GPU is done
+        // with it, and an unthrottled loop outruns the GPU and passes blocks
+        // over (creating others, which drain again).
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the frame completes");
         // Spike frames legitimately re-create their dedicated block: it
         // DRAINED while idle (that's the point — memory isn't pinned
         // between spikes). Warm frames must never allocate.

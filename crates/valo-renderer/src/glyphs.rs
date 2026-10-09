@@ -821,12 +821,10 @@ impl GlyphStore {
 mod tests {
     use super::*;
 
+    /// The device valo's GPU tests render with (`valo_harness::open_device`).
     fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        let (_, device, queue) = crate::device_request::test_device()?;
+        Some((device, queue))
     }
 
     use valo_text::FontCollection;

@@ -131,6 +131,49 @@ pub struct ValoPaint {
     pub color_filter: *const crate::ValoColorFilter,
 }
 
+/// `ValoAdapterOptions` says which GPU adapters a context may open and how
+/// to rank them, passed by value to `valo_context_new_with_options`.
+///
+/// A zeroed struct admits every adapter, with no power preference and no
+/// forced software fallback. Unknown integer enums take those defaults.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ValoAdapterOptions {
+    /// `power_preference` ranks hardware adapters: 0 default (the
+    /// platform's order) · 1 low power (integrated first) · 2 high
+    /// performance (discrete first). Software adapters come last either way.
+    pub power_preference: i32,
+    /// `force_fallback_adapter` admits software adapters only.
+    pub force_fallback_adapter: bool,
+    /// `feature_level` is WebGPU's feature level: 0 compatibility (downlevel
+    /// adapters too, such as a GL driver) · 1 core (fully WebGPU-compliant
+    /// adapters only).
+    pub feature_level: i32,
+}
+
+impl ValoAdapterOptions {
+    /// `wgpu_options` is the ranking part of these options in wgpu's terms.
+    pub(crate) fn wgpu_options(&self) -> wgpu::RequestAdapterOptions<'static, 'static> {
+        wgpu::RequestAdapterOptions {
+            power_preference: match self.power_preference {
+                1 => wgpu::PowerPreference::LowPower,
+                2 => wgpu::PowerPreference::HighPerformance,
+                _ => wgpu::PowerPreference::None,
+            },
+            force_fallback_adapter: self.force_fallback_adapter,
+            ..Default::default()
+        }
+    }
+
+    /// `feature_level` is which adapters these options admit.
+    pub(crate) fn feature_level(&self) -> valo::FeatureLevel {
+        match self.feature_level {
+            1 => valo::FeatureLevel::Core,
+            _ => valo::FeatureLevel::Compatibility,
+        }
+    }
+}
+
 impl From<ValoColor> for Color {
     fn from(c: ValoColor) -> Color {
         Color::rgba(c.red, c.green, c.blue, c.alpha)

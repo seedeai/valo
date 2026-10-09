@@ -112,13 +112,64 @@ fn circular(radius: f32) -> ValoCornerRadii {
     }
 }
 
+/// `core_context` is a C context on the harness's adapter: core feature
+/// level, high performance first. Both routes of a parity test render on one
+/// adapter, so their pixels can be compared byte for byte.
+fn core_context() -> *mut ValoContext {
+    let options = ValoAdapterOptions {
+        power_preference: 2,
+        force_fallback_adapter: false,
+        feature_level: 1,
+    };
+    unsafe { valo_context_new_with_options(&options) }
+}
+
+/// Options choose the context's adapter: core options open one exactly
+/// where the harness opens one, and it renders; null options open nothing.
+#[test]
+fn options_choose_the_context_adapter() {
+    assert!(unsafe { valo_context_new_with_options(std::ptr::null()) }.is_null());
+    let context = core_context();
+    let harness_has_a_device = valo_harness::headless_device().is_some();
+    assert_eq!(
+        !context.is_null(),
+        harness_has_a_device,
+        "core options open a context exactly where the harness opens a device"
+    );
+    if context.is_null() {
+        eprintln!("SKIP options_choose_the_context_adapter: no compliant adapter");
+        return;
+    }
+    let builder = valo_builder_new();
+    let mut pixels = vec![0u8; 4 * 4 * 4];
+    unsafe {
+        valo_builder_draw_rect(builder, rect(0.0, 0.0, 4.0, 4.0), fill(1.0, 0.0, 0.0));
+        let list = valo_builder_build(builder);
+        assert!(valo_context_render_to_pixels(
+            context,
+            list,
+            CLEAR,
+            4,
+            4,
+            pixels.as_mut_ptr()
+        ));
+        valo_display_list_dispose(list);
+        valo_context_dispose(context);
+    }
+    assert!(pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [255, 0, 0, 255]));
+}
+
 /// The same scene, twice: every drawn element through both routes.
 #[test]
 fn c_scene_matches_the_rust_scene_byte_for_byte() {
     let size = [360u32, 240u32];
 
     // ── the C route ──────────────────────────────────────────────────
-    let context = valo_context_new();
+    let context = core_context();
     if context.is_null() {
         eprintln!("SKIP: no GPU adapter");
         return;
@@ -403,7 +454,7 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
     let size = [140u32, 80u32];
 
     // ── the C route ──────────────────────────────────────────────────
-    let context = valo_context_new();
+    let context = core_context();
     if context.is_null() {
         eprintln!("SKIP text rendering: no GPU adapter");
         return;
@@ -434,7 +485,11 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
         255,
     ];
     assert!(
-        c_pixels.chunks_exact(4).any(|pixel| pixel != clear_pixel),
+        c_pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| *pixel != clear_pixel),
         "glyphs made it to the frame"
     );
 
@@ -489,7 +544,7 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
         ..fill(1.0, 0.85, 0.2)
     };
 
-    let context = valo_context_new();
+    let context = core_context();
     if context.is_null() {
         eprintln!("SKIP stroked text rendering: no GPU adapter");
         return;
@@ -574,6 +629,20 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
     );
 }
 
+/// Sans families a stock install of this system carries, most common first.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const SYSTEM_FAMILIES: &[&str] = &["Helvetica"];
+#[cfg(target_os = "windows")]
+const SYSTEM_FAMILIES: &[&str] = &["Segoe UI", "Arial"];
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+const SYSTEM_FAMILIES: &[&str] = &[
+    "DejaVu Sans",
+    "Noto Sans",
+    "Liberation Sans",
+    "Ubuntu Sans",
+    "Nimbus Sans",
+];
+
 /// The demand loop over the FFI: a paragraph wanting an uninstalled-in-the-
 /// collection family and an uncovered codepoint reports both, one
 /// `valo_fonts_satisfy_demand` answers from the OS, and the rebuilt
@@ -581,6 +650,16 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
 /// cannot answer.
 #[test]
 fn system_fonts_answer_demands_over_the_ffi() {
+    use valo::FontSource;
+    let mut installed = valo_system_fonts::SystemFonts::load();
+    let Some(&family) = SYSTEM_FAMILIES
+        .iter()
+        .find(|family| !installed.family(family).is_empty())
+    else {
+        eprintln!("SKIP: none of {SYSTEM_FAMILIES:?} installed");
+        return;
+    };
+
     let fonts = valo_fonts_new();
     let bytes = fira_sans_bytes();
     let face = unsafe { valo_fonts_add(fonts, bytes.as_ptr(), bytes.len()) };
@@ -589,7 +668,6 @@ fn system_fonts_answer_demands_over_the_ffi() {
 
     let system_fonts = valo_system_fonts_new();
     let build_and_layout = |fonts| {
-        let family = "Helvetica";
         let mut style = white_text_style();
         style.families_utf8 = family.as_ptr();
         style.families_length = family.len();
@@ -606,7 +684,7 @@ fn system_fonts_answer_demands_over_the_ffi() {
         let families_length = valo_paragraph_demand_families(first, std::ptr::null_mut(), 0);
         let mut families = vec![0u8; families_length];
         valo_paragraph_demand_families(first, families.as_mut_ptr(), families.len());
-        assert_eq!(String::from_utf8(families).as_deref(), Ok("Helvetica"));
+        assert_eq!(String::from_utf8(families).as_deref(), Ok(family));
 
         let codepoint_count = valo_paragraph_demand_codepoints(first, std::ptr::null_mut(), 0);
         let mut codepoints = vec![0u32; codepoint_count];
@@ -648,25 +726,7 @@ fn null_handles_never_crash() {
     unsafe {
         valo_context_dispose(std::ptr::null_mut());
         valo_context_resize(std::ptr::null_mut(), 10, 10);
-        assert!(valo_context_metal_device(std::ptr::null_mut()).is_null());
         valo_context_wait_for_gpu(std::ptr::null_mut());
-        assert!(valo_context_import_metal_texture(
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            1,
-            1,
-            0
-        )
-        .is_null());
-        assert!(!valo_context_render_to_metal_texture(
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            CLEAR,
-            std::ptr::null_mut(),
-            1,
-            1,
-            0
-        ));
         assert!(!valo_context_render(
             std::ptr::null_mut(),
             std::ptr::null(),
@@ -786,6 +846,38 @@ fn null_handles_never_crash() {
         valo_paragraph_dispose(std::ptr::null_mut());
         valo_paragraph_layout(std::ptr::null_mut(), 100.0);
         assert_eq!(valo_paragraph_width(std::ptr::null()), 0.0);
+    }
+}
+
+/// The macOS-only functions keep the same promise.
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_functions_never_crash_on_null_handles() {
+    unsafe {
+        assert!(!valo_context_attach_metal_layer(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+            1
+        ));
+        assert!(valo_context_metal_device(std::ptr::null_mut()).is_null());
+        assert!(valo_context_import_metal_texture(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+            1,
+            0
+        )
+        .is_null());
+        assert!(!valo_context_render_to_metal_texture(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            CLEAR,
+            std::ptr::null_mut(),
+            1,
+            1,
+            0
+        ));
     }
 }
 
