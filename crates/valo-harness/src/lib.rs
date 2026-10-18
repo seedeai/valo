@@ -36,22 +36,63 @@ pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some((device, queue))
 }
 
-/// `open_device` opens the device tests and examples render with:
-/// [`valo::request_device`] at [`valo::FeatureLevel::Core`], high
-/// performance first.
+/// `open_device` opens the device tests and examples render with: on the
+/// adapter [`valo::request_device`] chooses at [`valo::FeatureLevel::Core`],
+/// high performance first, and within WebGPU's default limits.
 ///
 /// Core keeps the tests on what the WebGPU specification guarantees: where
 /// a GPU has only a downlevel driver they render on a compliant software
 /// adapter instead (lavapipe beside a virtual machine's virgl GL), and they
-/// skip where no compliant adapter exists.
+/// skip where no compliant adapter exists. The default limits are the
+/// portable baseline every core adapter supports, so a pass that outgrows
+/// them fails here, although `request_device` asks for all an adapter
+/// offers.
 pub async fn open_device(
     instance: &wgpu::Instance,
 ) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), valo::NoDevice> {
+    let (adapter, features) = core_adapter(instance).await?;
+    let (device, queue) = open_within_default_limits(&adapter, features).await?;
+    Ok((adapter, device, queue))
+}
+
+/// `core_adapter` is the adapter [`valo::request_device`] chooses at
+/// [`valo::FeatureLevel::Core`], high performance first, and the features
+/// it opened its device with; that device is let go.
+async fn core_adapter(
+    instance: &wgpu::Instance,
+) -> Result<(wgpu::Adapter, wgpu::Features), valo::NoDevice> {
     let options = wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     };
-    valo::request_device(instance, &options, valo::FeatureLevel::Core).await
+    let (adapter, device, _) =
+        valo::request_device(instance, &options, valo::FeatureLevel::Core).await?;
+    Ok((adapter, device.features()))
+}
+
+/// `open_within_default_limits` opens a device on `adapter` with `features`
+/// and WebGPU's default limits, and reports a refusal as
+/// [`valo::request_device`] does.
+async fn open_within_default_limits(
+    adapter: &wgpu::Adapter,
+    features: wgpu::Features,
+) -> Result<(wgpu::Device, wgpu::Queue), valo::NoDevice> {
+    let descriptor = wgpu::DeviceDescriptor {
+        label: Some("valo"),
+        required_features: features,
+        required_limits: wgpu::Limits::default(),
+        ..Default::default()
+    };
+    adapter
+        .request_device(&descriptor)
+        .await
+        .map_err(|error| valo::NoDevice {
+            refused: vec![valo::RefusedAdapter {
+                adapter: adapter.get_info(),
+                refusal: valo::Refusal::Device(error),
+            }],
+            no_adapter: None,
+        })
 }
 
 /// Read an RGBA8 texture back to tightly-packed bytes (row padding stripped).

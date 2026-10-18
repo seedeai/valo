@@ -207,13 +207,7 @@ impl Surface {
             // physically "more correct" but diverge from every browser and
             // from Skia — Canvas2D parity is the goal, so sRGB it is.
             color_space: wgpu::SurfaceColorSpace::Srgb,
-            // COPY_SRC where the platform allows it: advanced blends snapshot
-            // the resolved target mid-frame when rendering direct to the
-            // swapchain. WebGL2's default framebuffer cannot be a copy source
-            // — and never needs to be, because on that path every frame blits
-            // from the persistent backing, which carries its own COPY_SRC.
-            usage: (wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC)
-                & caps.usages,
+            usage: usage_for(backend, caps.usages),
             format,
             width: size[0].max(1),
             height: size[1].max(1),
@@ -351,6 +345,22 @@ fn alpha_mode_for(
         return Mode::Inherit;
     }
     first
+}
+
+/// The usages a surface is configured with: `RENDER_ATTACHMENT`, and `COPY_SRC` where the
+/// platform allows it, since advanced blends snapshot the resolved target mid-frame when
+/// rendering direct to the swapchain.
+///
+/// WebGL2's default framebuffer cannot be a copy source, and never needs to be: on that path
+/// every frame blits from the persistent backing, which carries its own `COPY_SRC`. A WebGPU
+/// canvas takes any usage its format allows, though wgpu's capabilities list
+/// `RENDER_ATTACHMENT` only, so there it asks without consulting them.
+fn usage_for(backend: wgpu::Backend, offered: wgpu::TextureUsages) -> wgpu::TextureUsages {
+    let wanted = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+    if backend == wgpu::Backend::BrowserWebGpu {
+        return wanted;
+    }
+    wanted & offered
 }
 
 /// What a configured mode amounts to for the caller.
@@ -665,6 +675,29 @@ mod tests {
                 &[Mode::Opaque]
             ),
             Mode::PreMultiplied
+        );
+    }
+
+    #[test]
+    fn webgpu_canvases_copy_without_consulting_the_capabilities() {
+        assert_eq!(
+            usage_for(
+                Backend::BrowserWebGpu,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            ),
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+        );
+    }
+
+    #[test]
+    fn other_surfaces_copy_only_where_the_platform_allows() {
+        assert_eq!(
+            usage_for(Backend::Gl, wgpu::TextureUsages::RENDER_ATTACHMENT),
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        );
+        assert_eq!(
+            usage_for(Backend::Metal, wgpu::TextureUsages::all()),
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
         );
     }
 

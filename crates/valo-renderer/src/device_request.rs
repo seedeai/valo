@@ -272,7 +272,9 @@ impl Ranking {
 }
 
 /// `test_device` is the device valo's GPU tests render with, as the
-/// harness opens it: core feature level, high performance first.
+/// harness opens it: on the adapter [`request_device`] chooses at core
+/// feature level, high performance first, and within WebGPU's default
+/// limits, so a pass that outgrows the portable baseline fails in the tests.
 #[cfg(test)]
 pub(crate) fn test_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -280,7 +282,15 @@ pub(crate) fn test_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     };
-    pollster::block_on(request_device(&instance, &options, FeatureLevel::Core)).ok()
+    let (adapter, _, _) =
+        pollster::block_on(request_device(&instance, &options, FeatureLevel::Core)).ok()?;
+    let within_default_limits = wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits::default(),
+        ..device_descriptor(&adapter)
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&within_default_limits))
+        .expect("a core adapter supports WebGPU's default limits");
+    Some((adapter, device, queue))
 }
 
 impl fmt::Display for NoDevice {
@@ -441,7 +451,8 @@ mod tests {
     }
 
     /// The harness's request, without the harness: where the platform has a
-    /// compliant adapter, `Core` opens a device on one.
+    /// compliant adapter, `Core` opens a device on one, and the tests render
+    /// on it within WebGPU's default limits.
     #[test]
     fn core_opens_a_device_on_a_compliant_adapter() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -449,8 +460,9 @@ mod tests {
             .iter()
             .any(|adapter| adapter.get_downlevel_capabilities().is_webgpu_compliant());
         match test_device() {
-            Some((adapter, _, _)) => {
+            Some((adapter, device, _)) => {
                 assert!(adapter.get_downlevel_capabilities().is_webgpu_compliant());
+                assert_eq!(device.limits(), wgpu::Limits::default());
             }
             None => {
                 assert!(
