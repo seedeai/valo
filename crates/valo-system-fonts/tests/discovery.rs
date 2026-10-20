@@ -196,3 +196,23 @@ fn the_system_family_carries_its_weights() {
     assert!(fonts.iter().any(|font| font.attrs().weight >= 700));
     assert!(fonts.iter().any(|font| font.attrs().weight <= 400));
 }
+
+/// The system font is variable in width as well as weight, with compressed
+/// instances whose weights lie nearer some requests than any normal-width
+/// one's: a weight of the system family must still come at the width asked
+/// for, the normal one.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn the_system_family_keeps_the_normal_width() {
+    let mut system = SystemFonts::load();
+    let fonts = system.system_family(17.0);
+    if fonts.is_empty() {
+        eprintln!("SKIP: no system UI font");
+        return;
+    }
+    let widths: Vec<f32> = fonts.iter().map(|font| font.attrs().stretch).collect();
+    assert!(
+        widths.iter().all(|&width| width == 100.0),
+        "every weight at the normal width: {widths:?}"
+    );
+}

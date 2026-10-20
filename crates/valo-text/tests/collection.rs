@@ -2,7 +2,7 @@
 //! (Skia's `registerTypeface(typeface, familyName)`), and per-glyph
 //! coverage across same-family faces (cn-font-split subset chunks).
 
-use valo_text::{FaceSet, Font, FontAttrs};
+use valo_text::{match_style, FaceSet, Font, FontAttrs, FontId};
 
 fn asset(name: &str) -> Vec<u8> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
@@ -379,4 +379,113 @@ fn static_fonts_offer_exactly_one_instance() {
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].attrs(), FontAttrs::default());
     assert!(instances[0].variation_coordinates().is_empty());
+}
+
+#[test]
+fn fonts_rendered_from_their_own_bytes_have_no_remote_id() {
+    let bytes = asset("fira_sans.ttf");
+    assert_eq!(Font::from_bytes(bytes.clone()).unwrap().remote_id(), None);
+    let instances = Font::instances_from_data(std::sync::Arc::new(bytes.clone()), 0);
+    assert!(instances.iter().all(|font| font.remote_id().is_none()));
+    let mut c = FaceSet::default();
+    let id = c.register("Fira Sans", bytes).unwrap();
+    assert_eq!(c.get(id).remote_id(), None);
+}
+
+#[test]
+fn every_instance_of_a_remote_face_answers_its_id() {
+    let data = std::sync::Arc::new(asset("fira_sans.ttf"));
+    let font = Font::from_data_with_remote_id(data.clone(), 0, 7).unwrap();
+    assert_eq!(font.remote_id(), Some(7));
+    let instances = Font::instances_from_data_with_remote_id(data, 0, 7);
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].remote_id(), Some(7));
+}
+
+/// One family whose faces are the same file registered at each of `attrs`,
+/// in order: what [`match_style`] picks among is the attributes alone.
+fn styled(attrs: &[FontAttrs]) -> FaceSet {
+    let bytes = asset("fira_sans.ttf");
+    let mut c = FaceSet::default();
+    for attrs in attrs {
+        c.register_with("Styled", *attrs, bytes.clone()).unwrap();
+    }
+    c
+}
+
+#[test]
+fn match_style_takes_width_then_style_then_weight() {
+    let regular = FontAttrs::default();
+    let italic = FontAttrs {
+        italic: true,
+        ..regular
+    };
+    let bold = FontAttrs {
+        weight: 700,
+        ..regular
+    };
+    let condensed = FontAttrs {
+        stretch: 75.0,
+        ..regular
+    };
+    let c = styled(&[italic, bold, condensed]);
+    let picked = |attrs| {
+        let fonts = c.faces("Styled").map(|id| c.get(id));
+        match_style(fonts, attrs).unwrap().attrs()
+    };
+    // Upright before a nearer weight.
+    assert_eq!(picked(regular), bold);
+    assert_eq!(picked(italic), italic);
+    // Width before style and weight: a condensed bold italic request still
+    // takes the one condensed face.
+    let condensed_bold_italic = FontAttrs {
+        weight: 700,
+        italic: true,
+        stretch: 75.0,
+    };
+    assert_eq!(picked(condensed_bold_italic), condensed);
+}
+
+#[test]
+fn match_style_ties_to_the_first() {
+    let light = FontAttrs {
+        weight: 300,
+        ..FontAttrs::default()
+    };
+    let medium = FontAttrs {
+        weight: 500,
+        ..FontAttrs::default()
+    };
+    let c = styled(&[medium, light]);
+    let fonts: Vec<&Font> = c.faces("Styled").map(|id| c.get(id)).collect();
+    // 400 is as far from 300 as from 500.
+    let nearest = match_style(fonts.iter().copied(), FontAttrs::default());
+    assert_eq!(nearest, Some(fonts[0]));
+}
+
+#[test]
+fn match_style_finds_nothing_among_no_fonts() {
+    assert_eq!(match_style(std::iter::empty(), FontAttrs::default()), None);
+}
+
+#[test]
+fn family_variant_answers_the_face_match_style_picks() {
+    let wide = FontAttrs {
+        stretch: 125.0,
+        ..FontAttrs::default()
+    };
+    let wide_bold = FontAttrs {
+        weight: 700,
+        ..wide
+    };
+    let c = styled(&[FontAttrs::default(), wide, wide_bold]);
+    let ids: Vec<FontId> = c.faces("Styled").collect();
+    assert_eq!(c.family_variant("Styled", wide_bold), Some(ids[2]));
+    assert_eq!(c.family_variant("Styled", wide), Some(ids[1]));
+    // Nearer the wide faces than the normal one, and bold among them.
+    let nearly_wide_bold = FontAttrs {
+        stretch: 120.0,
+        ..wide_bold
+    };
+    assert_eq!(c.family_variant("Styled", nearly_wide_bold), Some(ids[2]));
 }

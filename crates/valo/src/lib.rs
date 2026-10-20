@@ -54,10 +54,10 @@ pub use valo_renderer::{
     Refusal, RefusedAdapter, RenderStats, RenderTarget, TextTiers, WgpuCounters,
 };
 pub use valo_text::{
-    Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand,
-    FontId, FontSource, FontUid, GlyphImage, GlyphRaster, GlyphStroke, Line, LineMetrics,
-    Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PositionWithAffinity, Rasterizer,
-    Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
+    match_style, Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData,
+    FontDemand, FontId, FontSource, FontUid, GlyphImage, GlyphRaster, GlyphStroke, Line,
+    LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PositionWithAffinity,
+    Rasterizer, Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
 };
 
 mod text;

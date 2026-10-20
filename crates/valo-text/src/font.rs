@@ -51,6 +51,9 @@ struct SharedFace {
     /// Which face inside `data` — TrueType collections (.ttc) pack
     /// several; 0 for single-face files.
     face_index: u32,
+    /// The face's id in the process that renders its glyphs, which every
+    /// instance answers alike; None when glyphs render from `data`.
+    remote_id: Option<u64>,
     /// cmap materialized ONCE — fallback resolution is per-character and
     /// must never re-parse the font (Skia caches per-typeface the same way).
     charmap: HashMap<u32, u32>,
@@ -138,7 +141,7 @@ impl Font {
         face_index: u32,
         variation_coordinates: Vec<([u8; 4], f32)>,
     ) -> Option<Self> {
-        let shared = SharedFace::parse(data, face_index)?;
+        let shared = SharedFace::parse(data, face_index, None)?;
         Self::at_coordinates(shared, family, attrs, variation_coordinates)
     }
 
@@ -201,6 +204,19 @@ impl Font {
     /// `face_index` returns this face's index within [`Self::data`].
     pub fn face_index(&self) -> u32 {
         self.shared.face_index
+    }
+
+    /// `remote_id` returns this face's id in the process that renders its glyphs.
+    ///
+    /// It is Skia's `SkTypefaceProxy::remoteTypefaceID`. A host whose glyphs are
+    /// rendered by another process makes its fonts with
+    /// [`Self::from_data_with_remote_id`] or [`Self::instances_from_data_with_remote_id`],
+    /// and its [`GlyphRaster`](crate::GlyphRaster) reads the id back to name the face to
+    /// that process, with [`Self::variation_coordinates`] naming the instance: every
+    /// named instance of a face answers the face's id. It is `None` for a font rendered
+    /// from its own bytes, and valo itself never reads it.
+    pub fn remote_id(&self) -> Option<u64> {
+        self.shared.remote_id
     }
 
     /// `variation_coordinates` returns user-space axis tags and values.
@@ -372,6 +388,24 @@ pub trait FontSource {
 
     /// `face_for_codepoint` returns a covering face nearest to `attrs`.
     fn face_for_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> Option<Font>;
+}
+
+/// `match_style` returns the font nearest `attrs` among `fonts`, by CSS font
+/// matching's precedence: width, then style, then weight; ties to the first.
+///
+/// It is Skia's `SkFontStyleSet::matchStyle`, for a [`FontSource`] choosing
+/// among a family's faces, or among a variable face's named instances, so that
+/// a bold span's fallback arrives bold. The distances are plain absolute
+/// differences rather than CSS's directional walk: a request between two
+/// weights takes the closer, not the one CSS's direction prefers. It returns
+/// `None` when `fonts` is empty.
+pub fn match_style<'a>(
+    fonts: impl IntoIterator<Item = &'a Font>,
+    attrs: FontAttrs,
+) -> Option<&'a Font> {
+    fonts
+        .into_iter()
+        .min_by_key(|font| style_distance(font.attrs, attrs))
 }
 
 /// `FaceSet` stores registered fonts and their global fallback order.
@@ -601,10 +635,11 @@ impl FaceSet {
 
     /// `family_variant` returns the family face nearest to requested attributes.
     ///
-    /// Width is matched first, then italic style and weight. Registration order
-    /// breaks ties.
+    /// Faces are matched as [`match_style`] matches them: width first, then
+    /// italic style and weight. Registration order breaks ties.
     pub fn family_variant(&self, name: &str, attrs: FontAttrs) -> Option<FontId> {
-        self.nearest(self.variants(name), attrs)
+        let nearest = match_style(self.variants(name).map(|(_, font)| font), attrs)?;
+        self.faces(name).find(|id| self.get(*id) == nearest)
     }
 
     /// `resolve` selects a font for a character and requested style.
@@ -687,41 +722,15 @@ impl FaceSet {
             .map(|id| (*id, self.get(*id)))
     }
 
-    /// CSS-style nearest among `faces`: width first, then matching style,
-    /// then smallest weight distance, ties to the first registered. That is
-    /// the CSS font-matching precedence; the distances themselves stay plain
-    /// absolute differences rather than CSS's directional walk.
-    fn nearest<'a>(
-        &self,
-        faces: impl Iterator<Item = (FontId, &'a Font)>,
-        attrs: FontAttrs,
-    ) -> Option<FontId> {
-        faces
-            .min_by_key(|(_, f)| {
-                (
-                    stretch_distance(f.attrs.stretch, attrs.stretch),
-                    f.attrs.italic != attrs.italic,
-                    f.attrs.weight.abs_diff(attrs.weight),
-                )
-            })
-            .map(|(id, _)| id)
-    }
-
-    /// `faces` in [`Self::nearest`]'s order: the face `nearest` would pick
-    /// first, and so on, with ties in registration order.
+    /// `faces` in [`match_style`]'s order: the face it would pick first, and
+    /// so on, with ties in registration order.
     fn nearest_first<'a>(
         &self,
         faces: impl Iterator<Item = (FontId, &'a Font)>,
         attrs: FontAttrs,
     ) -> Vec<FontId> {
         let mut faces: Vec<(FontId, &Font)> = faces.collect();
-        faces.sort_by_key(|(_, f)| {
-            (
-                stretch_distance(f.attrs.stretch, attrs.stretch),
-                f.attrs.italic != attrs.italic,
-                f.attrs.weight.abs_diff(attrs.weight),
-            )
-        });
+        faces.sort_by_key(|(_, f)| style_distance(f.attrs, attrs));
         faces.into_iter().map(|(id, _)| id).collect()
     }
 
@@ -772,8 +781,19 @@ impl Font {
     /// Use face index zero for a single-face file. It returns `None` when the
     /// index or font data is invalid.
     pub fn from_data(data: FontData, face_index: u32) -> Option<Font> {
-        let (data, face_index) = unwrapped(data, face_index)?;
-        Self::instance(data, face_index, Vec::new())
+        Self::parse_face(data, face_index, None)
+    }
+
+    /// `from_data_with_remote_id` parses one face whose glyphs another process renders.
+    ///
+    /// It is [`Self::from_data`] for a font that names its face to that process by
+    /// `remote_id`, which [`Self::remote_id`] answers.
+    pub fn from_data_with_remote_id(
+        data: FontData,
+        face_index: u32,
+        remote_id: u64,
+    ) -> Option<Font> {
+        Self::parse_face(data, face_index, Some(remote_id))
     }
 
     /// `instances_from_data` parses the registrable instances of one face.
@@ -781,18 +801,42 @@ impl Font {
     /// Static fonts produce one item. Variable fonts with named instances
     /// produce one [`Font`] per instance. Invalid data returns an empty vector.
     pub fn instances_from_data(data: FontData, face_index: u32) -> Vec<Font> {
+        Self::parse_instances(data, face_index, None)
+    }
+
+    /// `instances_from_data_with_remote_id` parses the registrable instances of one face
+    /// whose glyphs another process renders.
+    ///
+    /// It is [`Self::instances_from_data`] for a face that [`Self::from_data_with_remote_id`]
+    /// describes: every instance answers `remote_id` from [`Self::remote_id`].
+    pub fn instances_from_data_with_remote_id(
+        data: FontData,
+        face_index: u32,
+        remote_id: u64,
+    ) -> Vec<Font> {
+        Self::parse_instances(data, face_index, Some(remote_id))
+    }
+
+    /// [`Self::from_data`], with the face's remote id if it has one.
+    fn parse_face(data: FontData, face_index: u32, remote_id: Option<u64>) -> Option<Font> {
+        let (data, face_index) = unwrapped(data, face_index)?;
+        Self::instance(data, face_index, remote_id, Vec::new())
+    }
+
+    /// [`Self::instances_from_data`], with the face's remote id if it has one.
+    fn parse_instances(data: FontData, face_index: u32, remote_id: Option<u64>) -> Vec<Font> {
         let Some((data, face_index)) = unwrapped(data, face_index) else {
             return Vec::new();
         };
         let instances = named_instance_coordinates((*data).as_ref(), face_index);
         if instances.is_empty() {
-            return Self::instance(data, face_index, Vec::new())
+            return Self::instance(data, face_index, remote_id, Vec::new())
                 .into_iter()
                 .collect();
         }
         // The expensive halves (cmap, shaping caches) parse ONCE; each
         // instance adds only its metrics and axis data.
-        let Some(shared) = SharedFace::parse(data, face_index) else {
+        let Some(shared) = SharedFace::parse(data, face_index, remote_id) else {
             return Vec::new();
         };
         instances
@@ -803,8 +847,13 @@ impl Font {
 
     /// One face at one set of coordinates, self-described from its tables
     /// (attrs overridden by the coordinates' weight/italic axes).
-    fn instance(data: FontData, face_index: u32, coordinates: Vec<([u8; 4], f32)>) -> Option<Font> {
-        let shared = SharedFace::parse(data, face_index)?;
+    fn instance(
+        data: FontData,
+        face_index: u32,
+        remote_id: Option<u64>,
+        coordinates: Vec<([u8; 4], f32)>,
+    ) -> Option<Font> {
+        let shared = SharedFace::parse(data, face_index, remote_id)?;
         Self::shared_instance(shared, coordinates)
     }
 
@@ -822,7 +871,7 @@ impl Font {
 }
 
 impl SharedFace {
-    fn parse(data: FontData, face_index: u32) -> Option<Arc<Self>> {
+    fn parse(data: FontData, face_index: u32, remote_id: Option<u64>) -> Option<Arc<Self>> {
         let bytes: &[u8] = (*data).as_ref();
         let font = skrifa::FontRef::from_index(bytes, face_index).ok()?;
         let charmap = font
@@ -835,6 +884,7 @@ impl SharedFace {
         Some(Arc::new(Self {
             data,
             face_index,
+            remote_id,
             charmap,
             shaper_data,
         }))
@@ -878,6 +928,16 @@ fn instance_attrs(base: FontAttrs, coordinates: &[([u8; 4], f32)]) -> FontAttrs 
         }
     }
     attrs
+}
+
+/// How far `candidate` is from `wanted`, as the sort key of CSS font
+/// matching's precedence: width, then style, then weight.
+fn style_distance(candidate: FontAttrs, wanted: FontAttrs) -> (u32, bool, u16) {
+    (
+        stretch_distance(candidate.stretch, wanted.stretch),
+        candidate.italic != wanted.italic,
+        candidate.weight.abs_diff(wanted.weight),
+    )
 }
 
 /// Ordered width distance for variant matching. Quantized to 1/16 of a
@@ -1086,5 +1146,33 @@ impl FontCollection {
         }
         self.unanswered.add_codepoint(codepoint, attrs);
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fira() -> FontData {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/fira_sans.ttf"
+        );
+        Arc::new(std::fs::read(path).unwrap())
+    }
+
+    /// A variable face's named instances are built over its one shared
+    /// parse, each at its own coordinates — the path `parse_instances`
+    /// takes, driven here directly because no test font is variable. The
+    /// process rendering the glyphs tells instances apart by their
+    /// coordinates, so every one must still name the face it came from.
+    #[test]
+    fn named_instances_answer_their_face_remote_id() {
+        let shared = SharedFace::parse(fira(), 0, Some(7)).unwrap();
+        for weight in [300.0, 700.0] {
+            let instance = Font::shared_instance(shared.clone(), vec![(*b"wght", weight)]).unwrap();
+            assert_eq!(instance.remote_id(), Some(7));
+            assert_eq!(instance.variation_coordinates(), &[(*b"wght", weight)]);
+        }
     }
 }

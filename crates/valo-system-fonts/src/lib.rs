@@ -4,12 +4,12 @@
 //! to the two questions valo's font collection asks a source: the faces of a family, and
 //! a face covering a character. The manager decides how the platform is asked (CoreText,
 //! a directory scan, or a host across a boundary); this crate parses the answers into
-//! [`Font`]s and picks the instance nearest the request, so it builds anywhere
-//! `valo-text` does, wasm included.
+//! [`Font`]s and picks the instance nearest the request with valo's [`match_style`], so
+//! it builds anywhere `valo-text` does, wasm included.
 
 pub use valo_fontmgr::{self as fontmgr, Watch};
 use valo_fontmgr::{FontManager, Slant, Style, Typeface};
-use valo_text::{FaceSet, Font, FontAttrs, FontDemand, FontSource};
+use valo_text::{match_style, FaceSet, Font, FontAttrs, FontDemand, FontSource};
 
 /// `SystemFonts` is a [`FontSource`] over the platform's font manager.
 ///
@@ -70,7 +70,7 @@ impl SystemFonts {
             let Some(typeface) = self.manager.system_font(size, style_of(attrs)) else {
                 continue;
             };
-            let Some(font) = nearest_instance(fonts_of(typeface), attrs) else {
+            let Some(font) = match_instance(typeface, attrs) else {
                 continue;
             };
             if !fonts.iter().any(|known| known.attrs() == font.attrs()) {
@@ -101,7 +101,7 @@ impl FontSource for SystemFonts {
         let typeface = self
             .manager
             .match_character(None, style_of(attrs), &locales, codepoint)?;
-        nearest_instance(fonts_of(typeface), attrs).filter(|font| font.covers(codepoint))
+        match_instance(typeface, attrs).filter(|font| font.covers(codepoint))
     }
 }
 
@@ -111,15 +111,14 @@ fn fonts_of(typeface: Typeface) -> Vec<Font> {
     Font::instances_from_data(typeface.shared_data(), typeface.index())
 }
 
-/// A variable face answers with its instance nearest the request (a bold span's
-/// fallback arrives bold); static fonts pass through unchanged.
-fn nearest_instance(instances: Vec<Font>, attrs: FontAttrs) -> Option<Font> {
-    instances.into_iter().min_by_key(|face| {
-        (
-            face.attrs().italic != attrs.italic,
-            face.attrs().weight.abs_diff(attrs.weight),
-        )
-    })
+/// The instance of `typeface` that [`match_style`] picks for `attrs`: a variable face
+/// answers with its instance nearest the request (a bold span's fallback arrives bold),
+/// a static face with its one font.
+fn match_instance(typeface: Typeface, attrs: FontAttrs) -> Option<Font> {
+    let mut instances = fonts_of(typeface);
+    let nearest = match_style(&instances, attrs)?;
+    let index = instances.iter().position(|font| font == nearest)?;
+    Some(instances.swap_remove(index))
 }
 
 fn style_of(attrs: FontAttrs) -> Style {

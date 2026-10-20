@@ -198,6 +198,45 @@ pub trait FontManager: Send {
     fn watch(&mut self, on_change: Box<dyn Fn() + Send + Sync>) -> Option<Watch>;
 }
 
+/// A boxed manager is a manager, as std makes a `Box<W: Write + ?Sized>` a writer: what
+/// [`platform`] answers can go wherever a [`FontManager`] is expected, behind a lock shared
+/// by several users among them.
+impl<M: FontManager + ?Sized> FontManager for Box<M> {
+    fn family(&mut self, family: &str) -> Vec<Typeface> {
+        (**self).family(family)
+    }
+
+    fn match_family_style(&mut self, family: &str, style: Style) -> Option<Typeface> {
+        (**self).match_family_style(family, style)
+    }
+
+    fn match_character(
+        &mut self,
+        family: Option<&str>,
+        style: Style,
+        locales: &[&str],
+        character: char,
+    ) -> Option<Typeface> {
+        (**self).match_character(family, style, locales, character)
+    }
+
+    fn system_font(&mut self, size: f32, style: Style) -> Option<Typeface> {
+        (**self).system_font(size, style)
+    }
+
+    fn families(&self) -> Vec<String> {
+        (**self).families()
+    }
+
+    fn face_count(&self) -> usize {
+        (**self).face_count()
+    }
+
+    fn watch(&mut self, on_change: Box<dyn Fn() + Send + Sync>) -> Option<Watch> {
+        (**self).watch(on_change)
+    }
+}
+
 /// `Watch` is a subscription to the installed fonts changing; drop it to stop.
 pub struct Watch {
     _subscription: Box<dyn Any + Send>,

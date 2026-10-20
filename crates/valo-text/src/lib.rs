@@ -23,7 +23,8 @@ pub fn woff2_to_sfnt_for_probe(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub use font::{
-    FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId, FontSource, FontUid,
+    match_style, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId,
+    FontSource, FontUid,
 };
 pub use paragraph::{
     Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PositionWithAffinity,

@@ -3,8 +3,8 @@
 
 use valo_geometry::Color;
 use valo_text::{
-    FaceSet, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer, TextAlign,
-    TextStyle,
+    FaceSet, Font, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer,
+    TextAlign, TextStyle,
 };
 mod valo {
     pub use valo_geometry::Point;
@@ -674,4 +674,18 @@ fn ink_bounds_contain_the_advance_box() {
         run.ink.height > run.bounds.height,
         "Fira's ink box exceeds its ascent/descent box"
     );
+}
+
+/// The renderer hands a glyph raster the font a run resolved to, out of the
+/// face set the paragraph cloned when it was built; a raster whose glyphs
+/// render in another process reads back the id the font was made with.
+#[test]
+fn a_run_renders_with_the_remote_id_its_font_was_made_with() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
+    let data = std::sync::Arc::new(std::fs::read(format!("{dir}/fira_sans.ttf")).unwrap());
+    let mut c = FontCollection::new();
+    c.add(Font::from_data_with_remote_id(data, 0, 7).unwrap());
+    let p = laid_out(&mut c, "Hello", f32::INFINITY);
+    let run = &p.lines()[0].runs[0];
+    assert_eq!(p.faces().get(run.font).remote_id(), Some(7));
 }
