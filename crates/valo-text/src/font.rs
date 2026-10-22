@@ -85,6 +85,10 @@ impl FontUid {
 ///
 /// It retains immutable source bytes and exposes the names, attributes,
 /// coverage, and metrics needed for shaping and rendering.
+///
+/// A clone shares the parsed file and keeps the identifier: it is the same
+/// face at the same instance, as Skia shares an `SkTypeface` by reference.
+#[derive(Clone)]
 pub struct Font {
     uid: FontUid,
     shared: Arc<SharedFace>,
