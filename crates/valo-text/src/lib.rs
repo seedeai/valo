@@ -27,10 +27,11 @@ pub use font::{
     FontSource, FontUid,
 };
 pub use paragraph::{
-    Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PositionWithAffinity,
+    Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PlaceholderBox,
+    PositionWithAffinity,
 };
 pub use raster::{glyph_path, GlyphImage, GlyphRaster, GlyphStroke, Rasterizer, SDF_PAD};
 pub use style::{
-    Decoration, DecorationKind, ParagraphStyle, Shadow, TextAlign, TextDirection, TextStyle,
-    VariantCaps,
+    Decoration, DecorationKind, ParagraphStyle, PlaceholderAlignment, PlaceholderStyle, Shadow,
+    TextAlign, TextBaseline, TextDirection, TextStyle, VariantCaps,
 };

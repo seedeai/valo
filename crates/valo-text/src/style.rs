@@ -195,6 +195,59 @@ pub enum TextDirection {
     Rtl,
 }
 
+/// `PlaceholderAlignment` says where a placeholder's box sits against the text of its line.
+///
+/// The `Top`, `Bottom` and `Middle` alignments measure against the font of the
+/// [`TextStyle`] the placeholder was added with, as Skia's do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaceholderAlignment {
+    /// `Baseline` puts the point `baseline_offset` below the box's top on the baseline.
+    #[default]
+    Baseline,
+    /// `AboveBaseline` puts the box's bottom on the baseline.
+    AboveBaseline,
+    /// `BelowBaseline` puts the box's top on the baseline.
+    BelowBaseline,
+    /// `Top` lines the box's top up with the top of the font's ascent.
+    Top,
+    /// `Bottom` lines the box's bottom up with the bottom of the font's descent.
+    Bottom,
+    /// `Middle` centres the box on the middle of the font's ascent and descent.
+    Middle,
+}
+
+/// `TextBaseline` names the baseline a placeholder's `baseline_offset` measures to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextBaseline {
+    /// `Alphabetic` is the baseline Latin letters sit on.
+    #[default]
+    Alphabetic,
+    /// `Ideographic` is the bottom of ideographic characters, taken as half the line's
+    /// descent below the alphabetic baseline, as Skia takes it.
+    Ideographic,
+}
+
+/// `PlaceholderStyle` is a box laid out inline with text, such as a widget a host draws
+/// inside a paragraph.
+///
+/// The box takes up its width in the line, wraps like a word, and makes its line tall enough
+/// to hold it. The paragraph draws nothing for it; the host reads where it landed from
+/// [`crate::Paragraph::placeholder_boxes`] and draws the box's content there.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlaceholderStyle {
+    /// `width` is the box's advance in logical pixels.
+    pub width: f32,
+    /// `height` is the box's height in logical pixels.
+    pub height: f32,
+    /// `alignment` places the box against the line's text.
+    pub alignment: PlaceholderAlignment,
+    /// `baseline` is the baseline `baseline_offset` measures to.
+    pub baseline: TextBaseline,
+    /// `baseline_offset` is the distance from the box's top to its baseline, used only by
+    /// [`PlaceholderAlignment::Baseline`].
+    pub baseline_offset: f32,
+}
+
 /// `ParagraphStyle` controls layout behavior for a complete paragraph.
 #[derive(Clone, Debug, Default)]
 pub struct ParagraphStyle {

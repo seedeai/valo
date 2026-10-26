@@ -4,7 +4,9 @@ use unicode_bidi::BidiInfo;
 use valo_geometry::Color;
 
 use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
-use crate::style::{Decoration, Shadow, TextStyle};
+use crate::style::{
+    Decoration, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline, TextStyle,
+};
 
 /// One shaped glyph, unpositioned: advances/offsets in px, `cluster` a byte
 /// index into the paragraph text (the wrap slicer's key).
@@ -31,19 +33,73 @@ pub struct ShapedRun {
     pub decoration: Option<Decoration>,
     pub shadows: Vec<Shadow>,
     pub glyphs: Vec<ShapedGlyph>,
+    /// The placeholder this run stands for: its one glyph is the box's advance, and it has
+    /// nothing to draw.
+    pub placeholder: Option<ShapedPlaceholder>,
+}
+
+/// `ShapedPlaceholder` is a placeholder's box in place of glyphs: its index in the order the
+/// placeholders were added, its style, and the font metrics of the text style it was added
+/// with, which `Top`, `Bottom` and `Middle` measure against.
+#[derive(Clone, Copy, Debug)]
+pub struct ShapedPlaceholder {
+    pub index: usize,
+    pub style: PlaceholderStyle,
+    pub font_ascent: f32,
+    pub font_descent: f32,
+}
+
+impl ShapedPlaceholder {
+    /// The box's (ascent, descent) on a line whose text descends `line_descent` below the
+    /// baseline: Skia's `Run::updateMetrics`, with ascents measured upward.
+    pub fn extent(&self, line_descent: f32) -> (f32, f32) {
+        let PlaceholderStyle {
+            height,
+            baseline_offset: offset,
+            ..
+        } = self.style;
+        let shift = match self.style.baseline {
+            TextBaseline::Alphabetic => 0.0,
+            TextBaseline::Ideographic => line_descent / 2.0,
+        };
+        match self.style.alignment {
+            PlaceholderAlignment::Baseline => (offset - shift, shift + height - offset),
+            PlaceholderAlignment::AboveBaseline => (height - shift, shift),
+            PlaceholderAlignment::BelowBaseline => (-shift, shift + height),
+            PlaceholderAlignment::Top => (self.font_ascent, height - self.font_ascent),
+            PlaceholderAlignment::Bottom => (height - self.font_descent, self.font_descent),
+            PlaceholderAlignment::Middle => {
+                let middle = (self.font_ascent - self.font_descent) / 2.0;
+                (height / 2.0 + middle, height / 2.0 - middle)
+            }
+        }
+    }
 }
 
 /// Split the paragraph into uniform runs and shape each. `spans` cover the
-/// text exactly, in order.
+/// text exactly, in order; `placeholders` are the byte offsets of the spans that
+/// stand for placeholder boxes, in the order added.
 pub fn shape_runs(
     collection: &mut FontCollection,
     text: &str,
     spans: &[(Range<usize>, TextStyle)],
+    placeholders: &[(usize, PlaceholderStyle)],
     bidi: &BidiInfo,
     demand: &mut FontDemand,
 ) -> Vec<ShapedRun> {
     let mut runs = Vec::new();
     for (span, style) in spans {
+        if let Some(index) = placeholders.iter().position(|(at, _)| *at == span.start) {
+            let placeholder = placeholders[index].1;
+            runs.push(placeholder_run(
+                collection.faces(),
+                span.clone(),
+                style,
+                index,
+                placeholder,
+            ));
+            continue;
+        }
         // The by-name miss point: the collection consults its own sources
         // (Skia `findTypefaces` walking its managers).
         for name in &style.families {
@@ -166,6 +222,47 @@ fn shape_segment(
         decoration: style.decoration,
         shadows: style.shadows.clone(),
         glyphs,
+        placeholder: None,
+    }
+}
+
+/// A placeholder's run: one cluster as wide as the box, with the metrics of the font its
+/// text style resolves to. Without any faces the font is never read, so its id is a stand-in.
+fn placeholder_run(
+    faces: &FaceSet,
+    range: Range<usize>,
+    style: &TextStyle,
+    index: usize,
+    placeholder: PlaceholderStyle,
+) -> ShapedRun {
+    let (font, font_ascent, font_descent) = if faces.is_empty() {
+        (FontId(0), 0.0, 0.0)
+    } else {
+        let id = faces.resolve(&style.families, style.font_attrs(), ' ');
+        let face = faces.get(id);
+        (id, face.ascent_px(style.size), face.descent_px(style.size))
+    };
+    ShapedRun {
+        glyphs: vec![ShapedGlyph {
+            id: 0,
+            cluster: range.start,
+            x_advance: placeholder.width,
+            x_offset: 0.0,
+            y_offset: 0.0,
+        }],
+        range,
+        font,
+        size: style.size,
+        color: style.color,
+        height: None,
+        decoration: None,
+        shadows: Vec::new(),
+        placeholder: Some(ShapedPlaceholder {
+            index,
+            style: placeholder,
+            font_ascent,
+            font_descent,
+        }),
     }
 }
 
@@ -220,6 +317,7 @@ pub(crate) fn shape_isolated(
         decoration: None,
         shadows: Vec::new(),
         glyphs,
+        placeholder: None,
     }
 }
 

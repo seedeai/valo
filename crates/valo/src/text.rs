@@ -44,7 +44,7 @@ impl DrawGlyphRunExt for DisplayListBuilder {
     ) {
         let origin = origin.into();
         for line in paragraph.lines() {
-            for run in &line.runs {
+            for run in line.runs.iter().filter(|run| run.placeholder.is_none()) {
                 draw_shadows(self, paragraph, run, origin);
                 draw_run(self, paragraph.faces(), run, origin, paint);
                 draw_decoration(self, paragraph, line, run, origin);
@@ -57,7 +57,7 @@ impl DrawParagraphExt for DisplayListBuilder {
     fn draw_paragraph(&mut self, paragraph: &Paragraph, origin: impl Into<Point>) {
         let origin = origin.into();
         for line in paragraph.lines() {
-            for run in &line.runs {
+            for run in line.runs.iter().filter(|run| run.placeholder.is_none()) {
                 draw_shadows(self, paragraph, run, origin);
                 draw_run(
                     self,

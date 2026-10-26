@@ -4,7 +4,7 @@ use unicode_bidi::BidiInfo;
 
 use crate::font::FaceSet;
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
-use crate::shape::{shape_isolated, ShapedRun};
+use crate::shape::{shape_isolated, ShapedPlaceholder, ShapedRun};
 use crate::style::{ParagraphStyle, TextAlign};
 
 /// The wrap tier's output: chosen line ranges, truncation, and the
@@ -226,10 +226,18 @@ pub fn place_lines(
             .iter()
             .filter(|r| r.range.start < range.end && r.range.end > range.start)
             .collect();
-        if let Some(h) = line_heights(collection, &overlapping) {
+        let text_runs: Vec<&ShapedRun> = overlapping
+            .iter()
+            .filter(|run| run.placeholder.is_none())
+            .copied()
+            .collect();
+        let text_heights = line_heights(collection, &text_runs);
+        if let Some(h) = text_heights {
             last_heights = h;
         }
-        let (ascent, _descent, height) = last_heights;
+        let text_descent = text_heights.map_or(0.0, |(_, descent, _)| descent);
+        let (ascent, _descent, height) =
+            fit_placeholders(text_heights, &overlapping, text_descent).unwrap_or(last_heights);
         let baseline = y + ascent;
         let ellipsis = ellipsis_for(
             collection,
@@ -242,6 +250,7 @@ pub fn place_lines(
         let line = LineSpec {
             range,
             baseline,
+            text_descent,
             max_width,
             is_last: index + 1 == count,
             align: style.align,
@@ -273,6 +282,8 @@ pub fn place_lines(
 struct LineSpec {
     range: Range<usize>,
     baseline: f32,
+    /// How far the line's text, without its placeholders, reaches below the baseline.
+    text_descent: f32,
     max_width: f32,
     is_last: bool,
     align: TextAlign,
@@ -299,7 +310,10 @@ fn ellipsis_for(
         return None;
     }
     let text = style.ellipsis.as_deref()?;
-    let tail = overlapping.last()?;
+    let tail = overlapping
+        .iter()
+        .rev()
+        .find(|run| run.placeholder.is_none())?;
     Some(shape_isolated(
         collection, tail.font, tail.size, tail.color, text,
     ))
@@ -357,7 +371,7 @@ fn place_line(
             runs,
             para,
             &content,
-            line.baseline,
+            (line.baseline, line.text_descent),
             extra_per_space,
             &mut x,
             &mut placed,
@@ -453,7 +467,7 @@ fn place_visual_runs(
     runs: &[&ShapedRun],
     para: &unicode_bidi::ParagraphInfo,
     content: &Range<usize>,
-    baseline: f32,
+    (baseline, text_descent): (f32, f32),
     extra_per_space: f32,
     x: &mut f32,
     placed: &mut Vec<PlacedRun>,
@@ -475,6 +489,7 @@ fn place_visual_runs(
             let slice = Slice {
                 range: segment.start.max(content.start)..segment.end.min(content.end),
                 baseline,
+                text_descent,
                 extra_per_space,
                 rtl,
             };
@@ -488,6 +503,7 @@ fn place_visual_runs(
 struct Slice {
     range: Range<usize>,
     baseline: f32,
+    text_descent: f32,
     extra_per_space: f32,
     rtl: bool,
 }
@@ -502,6 +518,9 @@ fn place_slice(
     slice: &Slice,
     x: &mut f32,
 ) -> Option<PlacedRun> {
+    if let Some(placeholder) = &run.placeholder {
+        return place_placeholder(run, placeholder, slice, x);
+    }
     let font = collection.get(run.font);
     let start_x = *x;
     let mut last_origin = *x;
@@ -543,6 +562,47 @@ fn place_slice(
         rtl: slice.rtl,
         bounds,
         ink: ink_bounds(font, run.size, start_x, last_origin, *x, slice.baseline),
+        placeholder: None,
+    })
+}
+
+/// A placeholder's box at the cursor, when its cluster is in the slice: one glyph for carets
+/// and hit testing, and its box as both bounds and ink.
+fn place_placeholder(
+    run: &ShapedRun,
+    placeholder: &ShapedPlaceholder,
+    slice: &Slice,
+    x: &mut f32,
+) -> Option<PlacedRun> {
+    if !slice.range.contains(&run.range.start) {
+        return None;
+    }
+    let (ascent, descent) = placeholder.extent(slice.text_descent);
+    let start_x = *x;
+    *x += placeholder.style.width;
+    let rect = valo_geometry::Rect::from_ltrb(
+        start_x,
+        slice.baseline - ascent,
+        *x,
+        slice.baseline + descent,
+    );
+    Some(PlacedRun {
+        font: run.font,
+        size: run.size,
+        color: run.color,
+        decoration: None,
+        shadows: Vec::new(),
+        glyphs: vec![PlacedGlyph {
+            id: 0,
+            x: start_x,
+            y: slice.baseline,
+            cluster: run.range.start,
+            advance: placeholder.style.width,
+        }],
+        rtl: slice.rtl,
+        bounds: rect,
+        ink: rect,
+        placeholder: Some(placeholder.index),
     })
 }
 
@@ -616,7 +676,37 @@ fn place_isolated(
             baseline + font.descent_px(run.size),
         ),
         ink: ink_bounds(font, run.size, start_x, last_origin, *x, baseline),
+        placeholder: None,
     });
+}
+
+/// A line's (ascent, descent, height) grown to hold its placeholders: the text's metrics,
+/// each side raised to the tallest placeholder's, or the placeholders' alone on a line with no
+/// text, as Skia's line metrics add placeholder runs. `None` when the line has neither.
+fn fit_placeholders(
+    text: Option<(f32, f32, f32)>,
+    runs: &[&ShapedRun],
+    text_descent: f32,
+) -> Option<(f32, f32, f32)> {
+    let mut extents = runs
+        .iter()
+        .filter_map(|run| run.placeholder.as_ref())
+        .map(|placeholder| placeholder.extent(text_descent));
+    let Some(first) = extents.next() else {
+        return text;
+    };
+    let (ascent, descent) = extents.fold(first, |(a, d), (pa, pd)| (a.max(pa), d.max(pd)));
+    Some(match text {
+        Some((text_ascent, text_descent, height)) => {
+            let (ascent, descent) = (ascent.max(text_ascent), descent.max(text_descent));
+            (
+                ascent,
+                descent,
+                height + (ascent - text_ascent) + (descent - text_descent),
+            )
+        }
+        None => (ascent, descent, ascent + descent),
+    })
 }
 
 /// Max-over-runs line metrics (the strut-free rule).

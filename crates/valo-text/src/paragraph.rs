@@ -6,7 +6,7 @@ use valo_geometry::{Color, Rect};
 
 use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::shape::{shape_runs, ShapedRun};
-use crate::style::{ParagraphStyle, TextDirection, TextStyle};
+use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
 use crate::wrap::{place_lines, wrap_lines, Wrapped};
 
 /// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
@@ -45,6 +45,20 @@ pub struct PlacedRun {
     pub bounds: Rect,
     /// `ink` conservatively bounds visible glyph pixels in paragraph coordinates.
     pub ink: Rect,
+    /// `placeholder` is the index of the placeholder this run stands for, in the order they
+    /// were added. Such a run has one glyph, for carets and hit testing, and its box as both
+    /// `bounds` and `ink`; it draws nothing.
+    pub placeholder: Option<usize>,
+}
+
+/// `PlaceholderBox` is where a placeholder landed: its box in paragraph coordinates, and the
+/// direction of the text around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaceholderBox {
+    /// `rect` is the placeholder's box.
+    pub rect: Rect,
+    /// `direction` is the direction of the run the placeholder is in.
+    pub direction: TextDirection,
 }
 
 /// `Line` contains the visually ordered runs and metrics of one laid-out line.
@@ -175,6 +189,39 @@ impl Paragraph {
     /// It is empty before [`Self::layout`] is called.
     pub fn lines(&self) -> &[Line] {
         self.layout.as_ref().map_or(&[], |l| &l.lines)
+    }
+
+    /// `placeholder_boxes` returns where each placeholder landed, in the order they were added.
+    ///
+    /// A placeholder cut off by `max_lines` has no box, so the list can be shorter than the
+    /// number added. It is empty before [`Self::layout`] is called.
+    pub fn placeholder_boxes(&self) -> Vec<PlaceholderBox> {
+        let mut boxes: Vec<(usize, PlaceholderBox)> = self
+            .lines()
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .filter_map(|run| {
+                let direction = if run.rtl {
+                    TextDirection::Rtl
+                } else {
+                    TextDirection::Ltr
+                };
+                run.placeholder.map(|index| {
+                    (
+                        index,
+                        PlaceholderBox {
+                            rect: run.bounds,
+                            direction,
+                        },
+                    )
+                })
+            })
+            .collect();
+        boxes.sort_by_key(|(index, _)| *index);
+        boxes
+            .into_iter()
+            .map(|(_, placeholder)| placeholder)
+            .collect()
     }
 
     /// `width` returns the nonnegative width of the widest laid-out line.
@@ -313,6 +360,7 @@ pub struct ParagraphBuilder<'a> {
     style: ParagraphStyle,
     text: String,
     spans: Vec<(Range<usize>, TextStyle)>,
+    placeholders: Vec<(usize, PlaceholderStyle)>,
 }
 
 impl<'a> ParagraphBuilder<'a> {
@@ -323,6 +371,7 @@ impl<'a> ParagraphBuilder<'a> {
             style: ParagraphStyle::default(),
             text: String::new(),
             spans: Vec::new(),
+            placeholders: Vec::new(),
         }
     }
 
@@ -343,6 +392,24 @@ impl<'a> ParagraphBuilder<'a> {
         self
     }
 
+    /// `add_placeholder` appends a box laid out inline with the text, as Skia's
+    /// `addPlaceholder` does.
+    ///
+    /// The paragraph text gets U+FFFC OBJECT REPLACEMENT CHARACTER in its place, which line
+    /// breaking lets wrap like a word. `style` is the text the box sits in: the `Top`,
+    /// `Bottom` and `Middle` alignments measure against its font. It takes the next span
+    /// index, as [`Self::add_text`] does. [`Paragraph::placeholder_boxes`] then reports where
+    /// the box landed.
+    pub fn add_placeholder(
+        &mut self,
+        placeholder: PlaceholderStyle,
+        style: &TextStyle,
+    ) -> &mut Self {
+        let start = self.text.len();
+        self.placeholders.push((start, placeholder));
+        self.add_text("\u{FFFC}", style)
+    }
+
     /// `build` shapes the accumulated spans and drains the builder.
     ///
     /// Font sources are consulted for missing text. The returned paragraph
@@ -351,7 +418,15 @@ impl<'a> ParagraphBuilder<'a> {
     pub fn build(&mut self) -> Paragraph {
         let bidi = BidiInfo::new(&self.text, base_level(&self.style));
         let mut demand = FontDemand::default();
-        let shaped = shape_runs(self.fonts, &self.text, &self.spans, &bidi, &mut demand);
+        let placeholders = std::mem::take(&mut self.placeholders);
+        let shaped = shape_runs(
+            self.fonts,
+            &self.text,
+            &self.spans,
+            &placeholders,
+            &bidi,
+            &mut demand,
+        );
         let faces = self.fonts.faces().clone();
         let empty_metrics = empty_line_metrics(&faces, self.spans.first());
         Paragraph {
