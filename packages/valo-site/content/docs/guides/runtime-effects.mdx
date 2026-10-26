@@ -1,0 +1,114 @@
+---
+title: Runtime effects
+description: Write WGSL that valo runs as a paint shader or as an image filter over a layer or a backdrop.
+icon: Sparkles
+---
+
+A runtime effect is one WGSL function that valo splices into its own pipelines. As a paint
+shader it colours the shapes a paint fills; as a filter it shades a layer's content or the
+backdrop behind a layer, reading that content as `source`. valo writes the fragment entry around
+the function, so clipping, antialiasing, the paint's alpha and blending stay valo's and an effect
+cannot break them.
+
+```rust
+use valo::{Paint, RuntimeEffect, RuntimeShader, Shader};
+
+let effect = RuntimeEffect::shader(
+    "
+struct Uniforms { tint: vec4<f32> }
+@group(2) @binding(0) var<uniform> u: Uniforms;
+
+fn shade(position: vec2<f32>) -> vec4<f32> {
+    let band = 0.5 + 0.5 * sin(position.x * 0.1);
+    return u.tint * band;
+}
+",
+)?;
+let tint: [f32; 4] = [0.2, 0.5, 1.0, 1.0];
+let uniforms: Vec<u8> = tint.iter().flat_map(|v| v.to_ne_bytes()).collect();
+let shader = RuntimeShader::new(effect.clone(), uniforms, Vec::new())?;
+let paint = Paint::from_shader(Shader::runtime(shader)?);
+```
+
+Creating an effect parses and validates the WGSL with naga, together with what valo declares for
+its kind, and needs no GPU device. Errors point into your source.
+
+## The contract
+
+Every effect defines
+
+```wgsl
+fn shade(position: vec2<f32>) -> vec4<f32>
+```
+
+`position` is in the draw's local coordinates: the coordinates the shape was recorded in, before
+the transform. The colour returned is **premultiplied**, as images and `source` sample and as
+Skia's, Impeller's and Metal's shaders return it.
+
+An effect's own bindings follow valo's groups:
+
+| Group | What |
+| --- | --- |
+| 0 | valo's own draw record. An effect never declares anything here. |
+| 1 | Images: `texture_2d<f32>` / `sampler` pairs at bindings 0 and 1, 2 and 3, and so on. A `RuntimeShader` supplies one `EffectImage` (an image and its `Sampling`) per pair. |
+| 2 | Uniforms: one struct at binding 0, at most 1024 bytes. A `RuntimeShader` supplies exactly its bytes, laid out as WGSL lays the struct out; `effect.uniforms()` lists each field's offset and type. |
+| 3 | A filter's `source` and `source_sampler`, which valo declares. |
+
+An effect defines no entry points. Pipeline-overridable constants (`override`) choose variants:
+each needs a default, valo compiles one pipeline per set of values, and a draw sets the ones it
+changes with `RuntimeShader::constant`.
+
+## Filters
+
+```rust
+use valo::{Backdrop, FilterInputs, ImageFilter, RuntimeEffect, RuntimeShader};
+
+let lens = RuntimeEffect::filter(
+    "
+fn shade(position: vec2<f32>) -> vec4<f32> {
+    let bounds = filter_bounds();
+    let centre = bounds.xy + bounds.zw * 0.5;
+    let seen = centre + (position - centre) * 0.6;
+    return textureSampleLevel(source, source_sampler, uv_of(seen), 0.0);
+}
+",
+    FilterInputs { margin: 24.0, source_scale: 0.5, ..FilterInputs::default() },
+)?;
+let filter = ImageFilter::runtime(RuntimeShader::new(lens, Vec::new(), Vec::new())?)?;
+builder.save_layer_backdrop(Some(bounds), &Paint::default(), Backdrop::new(filter));
+builder.restore();
+```
+
+A filter reads its input through three helpers valo defines:
+
+- `uv_of(position)`: the uv in `source` of a local position.
+- `source_levels()`: how many levels `source` has, 1 unless the filter asks for a pyramid.
+- `filter_bounds()`: the area the filter shades, `(x, y, width, height)` in local coordinates —
+  a layer's content, or the area a backdrop covers.
+
+`FilterInputs` says what valo prepares as `source`:
+
+- `margin`: how far past the shaded area the filter reads, in local units. valo captures that
+  much more of the backdrop, or renders that much more of the layer, so a refraction near the
+  edge finds real pixels. A draw whose reach follows its uniforms sets its own with
+  `RuntimeShader::margin`.
+- `source_scale`: the resolution of `source` relative to the target. A backdrop that is blurred
+  anyway reads as well from half resolution at a quarter of the cost.
+- `source_mips`: whether `source` carries a blur pyramid. Level 0 is the source; each level after
+  it is half the size and blurred by Core Animation's 13-tap downsample (σ ≈ 3.5 of the level
+  above's texels), down to a texel. `textureSampleLevel` at a fractional level blends two levels,
+  so a filter can blur by any amount, varying per pixel, in one pass.
+
+A filter shades what its input covers, as Flutter's `ImageFilter.shader` does: it never colours
+pixels outside its input, however far it reads.
+
+## What it costs
+
+- An effect's module compiles the first time it is drawn, and each set of override values
+  compiles one pipeline the first time it is drawn; both are kept for the life of the renderer.
+- A paint shader costs what a gradient costs: one fragment over the shape's pixels.
+- A filter on a backdrop that is the backdrop's only filter reads the backdrop's copy directly;
+  with `source_scale` or `source_mips` it adds one resample pass, and a pass per pyramid level,
+  each a quarter of the one before.
+- A filter at the end of a layer's filters draws straight into the destination; one that another
+  filter reads renders into a texture of its area first.

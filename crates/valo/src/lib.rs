@@ -41,8 +41,10 @@ pub use valo_renderer::{
 
 pub use valo_dl::{
     Backdrop, BackdropGroup, BlendMode, BlurStyle, Bounds, ClipOp, ColorFilter, DisplayList,
-    DisplayListBuilder, Filter, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind,
-    MipmapMode, Op, Paint, PaintStyle, Sampling, Shader, SpreadMode, TileMode,
+    DisplayListBuilder, EffectError, EffectImage, EffectKind, Filter, FilterInputs, FocalCircle,
+    GradientStop, Image, ImageFilter, MaskBlur, MaskKind, MipmapMode, Op, Paint, PaintStyle,
+    RuntimeEffect, RuntimeShader, Sampling, Shader, SpreadMode, TileMode, UniformField,
+    UniformLayout, UniformType, MAX_UNIFORM_BYTES,
 };
 pub use valo_geometry::{
     constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,

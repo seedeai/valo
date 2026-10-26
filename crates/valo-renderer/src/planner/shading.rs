@@ -5,8 +5,8 @@
 //! record's transform is written when the draw is placed (`emit`).
 
 use valo_dl::{
-    ColorFilter, FocalCircle, GradientStop, Image, MaskBlur, MaskKind, Paint, Sampling, Shader,
-    SpreadMode, TileMode, MAX_GRADIENT_STOPS,
+    ColorFilter, FocalCircle, GradientStop, Image, MaskBlur, MaskKind, Paint, RuntimeShader,
+    Sampling, Shader, SpreadMode, TileMode, MAX_GRADIENT_STOPS,
 };
 use valo_geometry::{Color, Matrix, Point, Rect};
 
@@ -19,7 +19,7 @@ use crate::shader_abi::{
 use super::emit::StepEmitter;
 use super::filter_output::Merge;
 use super::gaussian::{BlurPass, DownsampleTaps};
-use super::snapshot::Snapshot;
+use super::snapshot::{Placement, Snapshot};
 
 /// `Shading` is how a draw's pixels are coloured: its fragment, the
 /// record it reads, and what it reads besides.
@@ -102,8 +102,8 @@ impl Shading {
 impl StepEmitter<'_> {
     /// `paint_shading` is a paint's colour or shader at `alpha` times its
     /// own: a solid, a gradient (its stops in the record, or baked into a
-    /// ramp past the record's budget), or a pattern. It is opaque when the
-    /// paint covers every pixel it touches.
+    /// ramp past the record's budget), a pattern, or a runtime effect. It is
+    /// opaque when the paint covers every pixel it touches.
     pub fn paint_shading(&mut self, paint: &Paint, alpha: f32) -> Shading {
         let mut record = UniformRecord::tinted(tinted(paint, alpha));
         let (frag, bindings) = match PaintSource::of(paint) {
@@ -128,6 +128,7 @@ impl StepEmitter<'_> {
                 fill_gradient_payload(&mut record, &gradient, None);
                 (gradient.frag(), Bindings::Plain)
             }
+            PaintSource::Runtime(shader) => self.runtime(shader),
         };
         Shading {
             opaque: alpha >= 1.0 && is_opaque_paint(paint),
@@ -252,12 +253,12 @@ impl StepEmitter<'_> {
         Shading::of(Frag::BlendTexture, record, bindings)
     }
 
-    /// `resample_shading` is a filter pass copying what `source` holds of
-    /// `region`, one bilinear tap per pixel.
-    pub fn resample_shading(&self, source: &Snapshot, region: &Rect) -> Shading {
+    /// `resample_shading` is a filter pass copying `source` into the texels
+    /// `into` places, one bilinear tap per pixel.
+    pub fn resample_shading(&self, source: &Snapshot, into: &Placement) -> Shading {
         let mut record = UniformRecord::tinted([1.0; 4]);
         let texel = source.placement.size.map(|size| 1.0 / size as f32);
-        let uv = source.placement.region_uv_mapping(region);
+        let uv = source.placement.uv_mapping_from(into);
         encode_downsample(
             &mut record,
             uv,
@@ -336,6 +337,54 @@ impl StepEmitter<'_> {
         Shading::of(Frag::Downsample, record, bindings)
     }
 
+    /// `pyramid_downsample_shading` is one level of a blur pyramid, `size`
+    /// texels big, from `above`, the level before it, `above_size` big.
+    pub fn pyramid_downsample_shading(
+        &self,
+        above: &wgpu::TextureView,
+        above_size: [u32; 2],
+        size: [u32; 2],
+    ) -> Shading {
+        let mut record = UniformRecord::tinted([1.0; 4]);
+        let [width, height] = size.map(|size| 1.0 / size as f32);
+        record.set(slot::GEOM, [width, height, 0.0, 0.0]);
+        let [dx, dy] = above_size.map(|size| 1.0 / size as f32);
+        record.set(slot::MISC, [dx, dy, 0.0, 0.0]);
+        Shading::of(Frag::PyramidDownsample, record, self.textured(above))
+    }
+
+    /// `runtime_filter_shading` is `shader`'s filter over `source` at
+    /// `alpha`, shading `local_bounds`. The fragment's varying reaches the
+    /// effect's local space through `varying_to_local`; `effect_transform`
+    /// takes local space into the tree's, where `source` is placed.
+    pub fn runtime_filter_shading(
+        &mut self,
+        shader: &RuntimeShader,
+        source: &Snapshot,
+        local_bounds: &Rect,
+        varying_to_local: &Matrix,
+        effect_transform: &Matrix,
+        alpha: f32,
+    ) -> Shading {
+        let mut record = UniformRecord::tinted(alpha_tint(alpha));
+        let bounds = local_bounds;
+        record.set(
+            slot::GEOM,
+            [bounds.x, bounds.y, bounds.width, bounds.height],
+        );
+        set_affine(&mut record, slot::LOCAL, varying_to_local);
+        let placement = &source.placement;
+        let [width, height] = placement.size.map(|size| size as f32);
+        let local_to_uv = Matrix::scale(1.0 / width, 1.0 / height)
+            .then(&placement.texel_transform())
+            .then(effect_transform);
+        set_affine(&mut record, slot::SOURCE_UV, &local_to_uv);
+        let levels = source.view.texture().mip_level_count() as f32;
+        record.set(slot::MISC, [levels, 0.0, 0.0, 0.0]);
+        let (frag, bindings) = self.runtime_filter(shader, &source.view);
+        Shading::of(frag, record, bindings)
+    }
+
     /// `blur_pass_shading` is one direction of the Gaussian over `input`,
     /// a texture `size` texels big, its kernel beside the record.
     pub fn blur_pass_shading(
@@ -368,6 +417,14 @@ impl StepEmitter<'_> {
     fn textured(&self, view: &wgpu::TextureView) -> Bindings {
         Bindings::Textured(self.texture_bind(view))
     }
+}
+
+/// `set_affine` writes `matrix`'s 2D block into two slots from `slot`:
+/// `(a, b, c, d | tx, ty, _, _)`.
+fn set_affine(record: &mut UniformRecord, slot: usize, matrix: &Matrix) {
+    let [a, b, c, d, tx, ty] = matrix.to_affine();
+    record.set(slot, [a, b, c, d]);
+    record.set(slot + 1, [tx, ty, 0.0, 0.0]);
 }
 
 /// `set_destination_read` writes an advanced blend's mode and the size of
@@ -416,6 +473,7 @@ enum PaintSource<'a> {
         local: &'a Matrix,
     },
     Gradient(Gradient<'a>),
+    Runtime(&'a RuntimeShader),
 }
 
 impl<'a> PaintSource<'a> {
@@ -435,6 +493,7 @@ impl<'a> PaintSource<'a> {
                     local,
                 }
             }
+            Shader::Runtime(shader) => return PaintSource::Runtime(shader),
             Shader::Linear {
                 start,
                 end,
@@ -558,8 +617,9 @@ fn shader_opaque(shader: &Shader) -> bool {
         Shader::Linear { stops, .. }
         | Shader::Radial { stops, .. }
         | Shader::Sweep { stops, .. } => stops,
-        // A pattern's alpha lives in texels nobody has read at plan time.
-        Shader::Image { .. } => return false,
+        // A pattern's alpha lives in texels nobody has read at plan time,
+        // and an effect's in a function nobody has run.
+        Shader::Image { .. } | Shader::Runtime(_) => return false,
     };
     stops.iter().all(|stop| stop.color.a >= 1.0)
 }
@@ -793,9 +853,7 @@ fn fill_gradient_payload(
     record.set(slot::CONICAL_FLAGS, setup.flags);
 
     // Gradient locals are affine by construction — the 2D block is exact.
-    let [a, b, c, d, tx, ty] = inverse.to_affine();
-    record.set(slot::LOCAL, [a, b, c, d]);
-    record.set(slot::LOCAL + 1, [tx, ty, 0.0, 0.0]);
+    set_affine(record, slot::LOCAL, &inverse);
 
     let count = gradient.stops.len().min(MAX_GRADIENT_STOPS);
     let count_lane = match ramp_texels {
@@ -839,9 +897,7 @@ fn fill_pattern_payload(
     let inverse = local
         .invert()
         .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
-    let [a, b, c, d, tx, ty] = inverse.to_affine();
-    record.set(slot::LOCAL, [a, b, c, d]);
-    record.set(slot::LOCAL + 1, [tx, ty, 0.0, 0.0]);
+    set_affine(record, slot::LOCAL, &inverse);
 }
 
 /// `image_uv` is uv = local × scale + offset, mapping `dst` (local px) onto

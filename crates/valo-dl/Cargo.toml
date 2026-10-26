@@ -19,6 +19,8 @@ valo-geometry = { workspace = true }
 valo-text = { workspace = true }
 # Resource HANDLES only (Image wraps a texture) — recording never needs a device.
 wgpu = { workspace = true }
+# Checks runtime effects' WGSL at creation, with no device.
+naga = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

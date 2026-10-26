@@ -19,7 +19,9 @@
 //! drops nothing. A save layer's mask blur is dropped when it is recorded,
 //! as Flutter's display list drops it.
 
-use valo_dl::{ColorFilter, Image, ImageFilter, MaskBlur, Paint, Sampling, TileMode};
+use valo_dl::{
+    ColorFilter, Image, ImageFilter, MaskBlur, Paint, RuntimeShader, Sampling, TileMode,
+};
 use valo_geometry::{Color, Matrix, Point, Rect};
 
 use super::gaussian::{
@@ -87,6 +89,10 @@ pub(super) enum Filter<'a> {
         sigma_y: f32,
         color: Color,
     },
+    /// A runtime filter: its effect's `shade` over what its input covers,
+    /// reading the input as far as the effect's margin past it (Flutter's
+    /// `DlRuntimeEffectImageFilter`, which reads no margin).
+    Runtime(RuntimeShader),
 }
 
 /// `StyleShape` is what a mask blur's style keeps the blur to: the draw's
@@ -434,6 +440,7 @@ impl<'a> FilterInput<'a> {
             ImageFilter::Compose { outer, inner } => self
                 .with_image_filter(Some(inner), TileMode::Clamp)
                 .with_image_filter(Some(outer), TileMode::Clamp),
+            ImageFilter::Runtime(shader) => self.with(Filter::Runtime(shader.clone())),
         }
     }
 
@@ -464,19 +471,33 @@ impl Filter<'_> {
             Filter::DropShadow {
                 sigma_x, sigma_y, ..
             } => Some(blur_of_drop_shadow([*sigma_x, *sigma_y], effect_transform)),
-            Filter::Color(_) => None,
+            Filter::Color(_) | Filter::Runtime(_) => None,
         }
+    }
+
+    /// `margin` is how far past its output a runtime filter reads, in the
+    /// tree's space: its local margin on every side, taken through
+    /// `effect_transform`'s basis; nothing for any other filter.
+    fn margin(&self, effect_transform: &Matrix) -> [f32; 2] {
+        let Filter::Runtime(shader) = self else {
+            return [0.0; 2];
+        };
+        let margin = shader.read_margin();
+        let [a, b, c, d] = basis_of(effect_transform);
+        [margin * (a.abs() + c.abs()), margin * (b.abs() + d.abs())]
     }
 
     /// `input_hint` is the coverage hint this filter hands its input when
     /// its own is `hint`: a blur's grown by its padding, as Impeller's blurs
-    /// hand theirs on; none from a colour filter or a drop shadow.
+    /// hand theirs on, and a runtime filter's by its margin; none from a
+    /// colour filter or a drop shadow.
     pub fn input_hint(&self, hint: Option<Rect>, effect_transform: &Matrix) -> Option<Rect> {
         match self {
             Filter::Blur { .. } | Filter::MaskBlur { .. } => {
                 let blur = self.blur(effect_transform)?;
                 Some(expanded(&hint?, blur.local_padding()))
             }
+            Filter::Runtime(_) => Some(expanded(&hint?, self.margin(effect_transform))),
             Filter::Color(_) | Filter::DropShadow { .. } => None,
         }
     }
@@ -502,6 +523,7 @@ impl Filter<'_> {
     /// limit grown by its radius, as Impeller computes it; a mask blur's and
     /// a drop shadow's blur reach as far as the σ rule they run by takes
     /// them, and a drop shadow also needs the limit moved back by its offset.
+    /// A runtime filter needs the limit grown by its margin.
     fn source_coverage(&self, effect_transform: &Matrix, output_limit: &Rect) -> Rect {
         let reach = self
             .blur(effect_transform)
@@ -512,6 +534,7 @@ impl Filter<'_> {
             } => blur_source_coverage(effect_transform, [*sigma_x, *sigma_y], output_limit),
             Filter::MaskBlur { .. } => expanded(output_limit, reach),
             Filter::Color(_) => *output_limit,
+            Filter::Runtime(_) => expanded(output_limit, self.margin(effect_transform)),
             Filter::DropShadow { offset, .. } => {
                 let [x, y] = device_offset(effect_transform, *offset);
                 output_limit.union(&expanded(&shifted(output_limit, [-x, -y]), reach))

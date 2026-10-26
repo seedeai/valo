@@ -29,6 +29,7 @@ mod ramps;
 mod raster;
 mod renderer;
 mod report;
+mod runtime;
 mod shader_abi;
 
 pub use device_request::{request_device, FeatureLevel, NoDevice, Refusal, RefusedAdapter};
@@ -44,3 +45,4 @@ pub use pixels::{AlphaType, ImageError, PixelBuffer, PixelFormat, PixelLayout};
 pub use pool::TargetPool;
 pub use renderer::{RenderStats, RenderTarget, RendererCore};
 pub use report::{AtlasReport, MemoryReport, PoolReport, WgpuCounters};
+pub use runtime::RuntimeKey;

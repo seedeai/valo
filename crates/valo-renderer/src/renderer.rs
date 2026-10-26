@@ -150,6 +150,7 @@ impl RendererCore {
             &device,
             host.bind_group_layout(),
             host.kernel_bind_group_layout(),
+            host.effect_bind_group_layout(),
         );
         Self {
             services: EmitterServices {

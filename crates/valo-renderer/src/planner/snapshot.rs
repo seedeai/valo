@@ -95,6 +95,16 @@ impl Placement {
         [1.0 / (a * w), 1.0 / (d * h), -tx / (a * w), -ty / (d * h)]
     }
 
+    /// `uv_mapping_from` is [`Placement::uv_mapping`] for a pass whose own
+    /// pixels are the texels of `texels`: what a pass writing that texture
+    /// samples this one with.
+    pub fn uv_mapping_from(&self, texels: &Placement) -> [f32; 4] {
+        let [x, y, z, w] = self.uv_mapping();
+        let [a, b, c, d, tx, ty] = texels.transform.to_affine();
+        debug_assert!(b == 0.0 && c == 0.0, "uv mapping from a turned snapshot");
+        [a * x, d * y, tx * x + z, ty * y + w]
+    }
+
     /// `region_uv_mapping` is [`Placement::uv_mapping`] for a pass whose own
     /// pixels count from `region`'s origin: what a filter pass covering
     /// `region` samples this snapshot with.

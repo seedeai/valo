@@ -112,6 +112,25 @@ impl DrawRecorder<'_, '_> {
                     &[kernel.offset],
                 );
             }
+            Bindings::Runtime {
+                images,
+                uniforms,
+                source,
+            } => {
+                if let Some(images) = images {
+                    self.pass.set_bind_group(1, images, &[]);
+                }
+                if let Some(uniforms) = uniforms {
+                    self.pass.set_bind_group(
+                        2,
+                        self.host.effect_bind_group(uniforms.block),
+                        &[uniforms.offset],
+                    );
+                }
+                if let Some(source) = source {
+                    self.pass.set_bind_group(3, source, &[]);
+                }
+            }
         }
     }
 

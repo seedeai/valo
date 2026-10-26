@@ -19,13 +19,13 @@
 //! the placed picture itself may cut it to that hint; whatever a node makes
 //! is not placed.
 
-use valo_dl::{BlendMode, BlurStyle, ClipOp, ColorFilter, Image, Paint, TileMode};
+use valo_dl::{BlendMode, BlurStyle, ClipOp, ColorFilter, FilterInputs, Image, Paint, TileMode};
 
 use crate::pipelines::{Blend, PipelineBlend};
 use valo_geometry::{Color, Matrix, Rect};
 
 use super::draw_state::DrawState;
-use super::filter_output::{FilterOutput, Merge, StyleClip};
+use super::filter_output::{FilterOutput, Merge, RuntimeOutput, StyleClip};
 use super::filter_passes::FilterPasses;
 use super::filter_tree::{device_offset, Fill, Filter, FilterInput, FilterTree, StyleShape};
 use super::gaussian::{BlurBounds, BlurPlan};
@@ -128,21 +128,27 @@ impl Planner<'_> {
                 let input =
                     self.render_filter_tree(&node.input, source, effect_transform, input_hint);
                 let input = self.snapshot_output(input);
-                self.render_filter(&node.filter, input, effect_transform, input_hint)
+                let hints = Hints {
+                    output: hint,
+                    input: input_hint,
+                };
+                self.render_filter(&node.filter, input, effect_transform, hints)
             }
         }
     }
 
     /// `render_filter` is one node over its input's texture, its parameters
-    /// under `effect_transform`. A blur cuts a placed input to `input_hint`
-    /// when the input holds it.
+    /// under `effect_transform`. A blur cuts a placed input to its input
+    /// hint when the input holds it; a runtime filter shades only what its
+    /// output hint asks for.
     fn render_filter<'t>(
         &mut self,
         filter: &Filter<'t>,
         input: Snapshot,
         effect_transform: &Matrix,
-        input_hint: Option<Rect>,
+        hints: Hints,
     ) -> FilterOutput<'t> {
+        let input_hint = hints.input;
         let plan = |placement: &Placement, tile_mode, bounds| {
             let blur = filter.blur(effect_transform)?;
             BlurPlan::new(&blur, placement, input_hint.as_ref(), tile_mode, bounds)
@@ -188,6 +194,51 @@ impl Planner<'_> {
                 };
                 drop_shadow(input, shadow, device_offset(effect_transform, *offset))
             }
+            Filter::Runtime(shader) => {
+                let inputs = shader
+                    .effect
+                    .filter_inputs()
+                    .expect("an image filter's effect is made by `RuntimeEffect::filter`");
+                let coverage = input.placement.coverage();
+                // A hint the coverage misses cuts nothing, as a fill's does.
+                let region = hints
+                    .output
+                    .and_then(|hint| hint.intersect(&coverage))
+                    .unwrap_or(coverage);
+                let source = self.runtime_source(input, inputs, input_hint);
+                FilterOutput::Runtime(RuntimeOutput {
+                    shader: shader.clone(),
+                    source,
+                    region,
+                    effect_transform: *effect_transform,
+                })
+            }
+        }
+    }
+
+    /// `runtime_source` is what a runtime filter reads as its `source`: its
+    /// input as it is, or what the input holds of `needed` resampled to the
+    /// resolution the effect asks for, with its blur pyramid when the effect
+    /// reads levels.
+    fn runtime_source(
+        &mut self,
+        input: Snapshot,
+        inputs: FilterInputs,
+        needed: Option<Rect>,
+    ) -> Snapshot {
+        if inputs.source_scale >= 1.0 && !inputs.source_mips {
+            return input;
+        }
+        let coverage = input.placement.coverage();
+        let region = needed
+            .and_then(|needed| needed.intersect(&coverage))
+            .unwrap_or(coverage);
+        let scale = inputs.source_scale;
+        if inputs.source_mips {
+            self.filter_passes().push_pyramid(&input, &region, scale)
+        } else {
+            self.filter_passes()
+                .push_scaled_resample(&input, &region, scale)
         }
     }
 
@@ -234,6 +285,14 @@ impl FilterPasses<'_, '_> {
         let tint = ColorFilter::Blend(color, BlendMode::SrcIn);
         self.push_recolour(source, tint, 1.0)
     }
+}
+
+/// `Hints` are a node's coverage hints: the region its output has to cover,
+/// and the one it hands its input.
+#[derive(Clone, Copy)]
+struct Hints {
+    output: Option<Rect>,
+    input: Option<Rect>,
 }
 
 /// `drop_shadow` is the end of Skia's drop-shadow graph: the blurred,

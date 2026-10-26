@@ -21,6 +21,7 @@ pub struct TargetPool {
     layers: Shelf<LayerTarget>,
     copy_textures: Shelf<CopyTexture>,
     filters: Shelf<FilterTarget>,
+    pyramids: Shelf<PyramidTarget>,
     attachments: Shelf<Attachments>,
 }
 
@@ -140,6 +141,17 @@ pub struct FilterTarget {
     pub view: wgpu::TextureView,
 }
 
+/// `PyramidTarget` is a single-sample colour target with a full mip chain:
+/// a runtime filter's source and its blur pyramid. Each level is rendered
+/// from the one above through its own view, and the whole chain is sampled
+/// through `view`.
+#[derive(Clone)]
+pub struct PyramidTarget {
+    pub view: wgpu::TextureView,
+    /// One view per level, level 0 first.
+    pub levels: Vec<wgpu::TextureView>,
+}
+
 impl TargetPool {
     /// `new` creates an empty pool for `device`.
     pub fn new(device: &wgpu::Device) -> Self {
@@ -150,6 +162,7 @@ impl TargetPool {
             layers: Shelf::new(),
             copy_textures: Shelf::new(),
             filters: Shelf::new(),
+            pyramids: Shelf::new(),
             attachments: Shelf::new(),
         }
     }
@@ -207,6 +220,18 @@ impl TargetPool {
         })
     }
 
+    /// `take_pyramid` returns a pooled pyramid target of `size` and `format`,
+    /// its chain down to a texel.
+    ///
+    /// Exact-size match, as a filter target. The returned views must not be
+    /// used after [`Self::end_frame`].
+    pub fn take_pyramid(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> PyramidTarget {
+        let key = PoolKey { size, format };
+        let device = &self.device;
+        self.pyramids
+            .take(key, self.frame, || new_pyramid(device, size, format))
+    }
+
     /// `end_frame` returns this frame's takes to the pool and drops idle entries.
     pub fn end_frame(&mut self) {
         self.frame += 1;
@@ -214,6 +239,7 @@ impl TargetPool {
         self.layers.end_frame(cutoff);
         self.copy_textures.end_frame(cutoff);
         self.filters.end_frame(cutoff);
+        self.pyramids.end_frame(cutoff);
         self.attachments.end_frame(cutoff);
     }
 }
@@ -343,6 +369,43 @@ fn new_copy_texture(
     }
 }
 
+/// `new_pyramid` creates a sampleable render target with every mip level
+/// down to a texel, and a view of each level.
+fn new_pyramid(
+    device: &wgpu::Device,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> PyramidTarget {
+    let mip_level_count = crate::mips::full_mip_count(size);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("valo.pyramid"),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let levels = (0..mip_level_count)
+        .map(|level| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        })
+        .collect();
+    PyramidTarget {
+        view: texture.create_view(&Default::default()),
+        levels,
+    }
+}
+
 /// `attachment_texture` creates a render-attachment texture for `role`.
 fn attachment_texture(
     device: &wgpu::Device,
@@ -390,6 +453,10 @@ impl TargetPool {
         self.layers.keys().for_each(|key| add(key, layer_bpp));
         self.copy_textures.keys().for_each(|key| add(key, FLAT_BPP));
         self.filters.keys().for_each(|key| add(key, FLAT_BPP));
+        // A full chain adds a third of its base.
+        self.pyramids
+            .keys()
+            .for_each(|key| add(key, FLAT_BPP * 4 / 3));
         self.attachments
             .keys()
             .for_each(|key| add(key, scratch_bpp));

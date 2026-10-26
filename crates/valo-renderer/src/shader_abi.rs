@@ -84,9 +84,13 @@ pub(crate) mod slot {
     pub const DOWNSAMPLE_MODES: usize = 8;
     /// A two-input fragment's second uv mapping.
     pub const SECOND_UV: usize = 3;
+    /// Two slots: a runtime filter's map from its local space into its
+    /// source's uv `(a, b, c, d | tx, ty, _, _)`.
+    pub const SOURCE_UV: usize = 3;
     /// Eight slots of gradient stop colours, straight.
     pub const COLORS: usize = 5;
-    /// Two slots: the inverse gradient or pattern local matrix
+    /// Two slots: the inverse gradient or pattern local matrix, or a
+    /// runtime filter's map from its varying into its local space
     /// `(a, b, c, d | tx, ty, _, _)`.
     pub const LOCAL: usize = 13;
     /// A two-point conical gradient's case and constants.
@@ -165,6 +169,7 @@ pub(crate) fn wgsl_prelude() -> String {
         ("PAYLOAD_DOWNSAMPLE_EDGES", slot::DOWNSAMPLE_EDGES),
         ("PAYLOAD_DOWNSAMPLE_MODES", slot::DOWNSAMPLE_MODES),
         ("PAYLOAD_SECOND_UV", slot::SECOND_UV),
+        ("PAYLOAD_SOURCE_UV", slot::SOURCE_UV),
         ("PAYLOAD_COLORS", slot::COLORS),
         ("PAYLOAD_LOCAL", slot::LOCAL),
         ("PAYLOAD_CONICAL", slot::CONICAL),

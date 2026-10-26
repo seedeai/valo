@@ -146,4 +146,11 @@ pub(crate) enum Bindings {
         texture: wgpu::BindGroup,
         kernel: UniformSlot,
     },
+    /// A runtime effect's images at group 1, its uniforms at group 2 and a
+    /// filter's source at group 3, each only when the effect declares it.
+    Runtime {
+        images: Option<wgpu::BindGroup>,
+        uniforms: Option<UniformSlot>,
+        source: Option<wgpu::BindGroup>,
+    },
 }

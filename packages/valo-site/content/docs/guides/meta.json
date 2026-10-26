@@ -5,6 +5,7 @@
     "rust-browser",
     "raw-api",
     "canvas2d",
+    "runtime-effects",
     "shared-device",
     "integrations"
   ]

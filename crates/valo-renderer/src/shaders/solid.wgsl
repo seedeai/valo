@@ -2,48 +2,12 @@
 // stride anyway): mvp + color + a generic payload the family interprets.
 // The payload's slots (`PAYLOAD_*`) and the ids the fragments switch on are
 // constants generated from `shader_abi.rs`, which declares what each slot
-// holds; this module begins with them. Colors are premultiplied everywhere;
-// depth (the draw's slot) rides in mvp.
-
-struct DrawUniforms {
-    mvp: mat4x4<f32>,
-    color: vec4<f32>,
-    payload: array<vec4<f32>, PAYLOAD_SLOTS>,
-};
-
-@group(0) @binding(0) var<uniform> u: DrawUniforms;
-
-struct VsOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) local: vec2<f32>,
-};
-
-@vertex
-fn vs_quad(@builtin(vertex_index) vi: u32) -> VsOut {
-    // Two CCW triangles over the unit square.
-    var corners = array<vec2<f32>, 6>(
-        vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
-        vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    );
-    let corner = corners[vi];
-    let rect = u.payload[PAYLOAD_RECT];
-    var out: VsOut;
-    out.pos = u.mvp * vec4<f32>(corner, 0.0, 1.0);
-    out.local = rect.xy + corner * rect.zw;
-    return out;
-}
-
-@vertex
-fn vs_mesh(@location(0) p: vec2<f32>) -> VsOut {
-    var out: VsOut;
-    out.pos = u.mvp * vec4<f32>(p, 0.0, 1.0);
-    out.local = p;
-    return out;
-}
+// holds; this module begins with them, then the shared draw record and vertex stages
+// (`draw.wgsl`). Colors are premultiplied everywhere; depth (the draw's slot) rides in mvp.
 
 @fragment
 fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
-    return u.color;
+    return valo_draw.color;
 }
 
 // ── image ───────────────────────────────────────────────────────────────────
@@ -61,7 +25,7 @@ fn fs_solid(in: VsOut) -> @location(0) vec4<f32> {
 /// the border texels outwards forever, which is exactly the difference
 /// between Canvas2D's `no-repeat` and `repeat`.
 fn decal_coverage(uv: vec2<f32>) -> f32 {
-    let decal = u.payload[PAYLOAD_DECAL].xy;
+    let decal = valo_draw.payload[PAYLOAD_DECAL].xy;
     let outside = decal * vec2(f32(uv.x < 0.0 || uv.x > 1.0), f32(uv.y < 0.0 || uv.y > 1.0));
     return 1.0 - min(max(outside.x, outside.y), 1.0);
 }
@@ -70,15 +34,15 @@ fn decal_coverage(uv: vec2<f32>) -> f32 {
 fn fs_image(in: VsOut) -> @location(0) vec4<f32> {
     // uv = local × scale + offset (src→dst mapping precomputed CPU-side);
     // tiling comes from the sampler's address modes on out-of-range uv.
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
-    return textureSample(t_tex, t_samp, uv) * u.color * decal_coverage(uv);
+    return textureSample(t_tex, t_samp, uv) * valo_draw.color * decal_coverage(uv);
 }
 
 // ── gradients (uniform stops, ≤8) ───────────────────────────────────────────
 
 fn stop_offset(i: u32) -> f32 {
-    let v = u.payload[PAYLOAD_OFFSETS + (i >> 2u)];
+    let v = valo_draw.payload[PAYLOAD_OFFSETS + (i >> 2u)];
     let lane = i & 3u;
     if lane == 0u { return v.x; }
     if lane == 1u { return v.y; }
@@ -89,23 +53,23 @@ fn stop_offset(i: u32) -> f32 {
 /// Piecewise-linear ramp over straight stop colors. Skia's default and
 /// Impeller both interpolate first, then premultiply the resulting color.
 fn ramp(t: f32) -> vec4<f32> {
-    let count = u32(u.payload[PAYLOAD_MISC].x);
+    let count = u32(valo_draw.payload[PAYLOAD_MISC].x);
     // Preserve both endpoint colors, as Impeller's CreateGradientBuffer does.
     // Test these before stop intervals: coincident stops can match either interval.
     if t <= 0.0 {
-        return u.payload[PAYLOAD_COLORS];
+        return valo_draw.payload[PAYLOAD_COLORS];
     }
     if t >= 1.0 {
-        return u.payload[PAYLOAD_COLORS + count - 1u];
+        return valo_draw.payload[PAYLOAD_COLORS + count - 1u];
     }
     var prev_off = stop_offset(0u);
-    var prev_col = u.payload[PAYLOAD_COLORS];
+    var prev_col = valo_draw.payload[PAYLOAD_COLORS];
     if t <= prev_off {
         return prev_col;
     }
     for (var i = 1u; i < count; i = i + 1u) {
         let off = stop_offset(i);
-        let col = u.payload[PAYLOAD_COLORS + i];
+        let col = valo_draw.payload[PAYLOAD_COLORS + i];
         if t <= off {
             let span = max(off - prev_off, 1e-6);
             return mix(prev_col, col, (t - prev_off) / span);
@@ -124,8 +88,8 @@ fn premultiply(color: vec4<f32>) -> vec4<f32> {
 /// slots carry the inverse mapping draw-local → gradient coords. Identity
 /// for plain gradients — this is a no-op then.
 fn gradient_point(p: vec2<f32>) -> vec2<f32> {
-    let m = u.payload[PAYLOAD_LOCAL];
-    let t = u.payload[PAYLOAD_LOCAL + 1u];
+    let m = valo_draw.payload[PAYLOAD_LOCAL];
+    let t = valo_draw.payload[PAYLOAD_LOCAL + 1u];
     return vec2(m.x * p.x + m.z * p.y + t.x, m.y * p.x + m.w * p.y + t.y);
 }
 
@@ -133,7 +97,7 @@ fn gradient_point(p: vec2<f32>) -> vec2<f32> {
 /// (mirror every other tile). fract() handles negative t for both periodic
 /// modes.
 fn spread(t: f32) -> f32 {
-    let mode = u32(u.payload[PAYLOAD_MISC].z);
+    let mode = u32(valo_draw.payload[PAYLOAD_MISC].z);
     if mode == SPREAD_REPEAT {
         return fract(t);
     }
@@ -145,7 +109,7 @@ fn spread(t: f32) -> f32 {
 }
 
 fn linear_t(local: vec2<f32>) -> f32 {
-    let g = u.payload[PAYLOAD_GEOM]; // (ax, ay, bx, by), gradient space
+    let g = valo_draw.payload[PAYLOAD_GEOM]; // (ax, ay, bx, by), gradient space
     let p = gradient_point(local);
     let d = g.zw - g.xy;
     return spread(dot(p - g.xy, d) / max(dot(d, d), 1e-6));
@@ -153,7 +117,7 @@ fn linear_t(local: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_linear(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(ramp(linear_t(in.local))) * u.color;
+    return premultiply(ramp(linear_t(in.local))) * valo_draw.color;
 }
 
 /// Two-point conical `t`, plus a validity flag: some points of a general
@@ -163,13 +127,13 @@ fn fs_linear(in: VsOut) -> @location(0) vec4<f32> {
 /// both settled on the CPU — the position arriving here is already in focal
 /// space when the general case needs it.
 fn radial_t(local: vec2<f32>) -> vec2<f32> {
-    let setup = u.payload[PAYLOAD_CONICAL];
+    let setup = valo_draw.payload[PAYLOAD_CONICAL];
     let kind = setup.x;
     let p = gradient_point(local);
 
     // Concentric: t is just the fraction of the way between the two radii.
     if kind == CONICAL_CONCENTRIC {
-        let g = u.payload[PAYLOAD_GEOM];
+        let g = valo_draw.payload[PAYLOAD_GEOM];
         let start_radius = setup.y;
         let end_radius = setup.z;
         let distance = length(p - g.xy);
@@ -191,7 +155,7 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
     }
 
     // The general case, continuing Skia's algorithm from step 5.
-    let flags = u.payload[PAYLOAD_CONICAL_FLAGS];
+    let flags = valo_draw.payload[PAYLOAD_CONICAL_FLAGS];
     let is_swapped = flags.x > 0.5;
     let is_focal_on_circle = flags.y > 0.5;
     let is_well_behaved = flags.z > 0.5;
@@ -230,20 +194,20 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
 @fragment
 fn fs_radial(in: VsOut) -> @location(0) vec4<f32> {
     let solved = radial_t(in.local);
-    return premultiply(ramp(solved.x)) * u.color * solved.y;
+    return premultiply(ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 const TAU: f32 = 6.28318530718;
 
 fn sweep_t(local: vec2<f32>) -> f32 {
-    let g = u.payload[PAYLOAD_GEOM]; // (cx, cy, _, _); start angle in misc.y
+    let g = valo_draw.payload[PAYLOAD_GEOM]; // (cx, cy, _, _); start angle in misc.y
     let v = gradient_point(local) - g.xy;
-    return fract((atan2(v.y, v.x) - u.payload[PAYLOAD_MISC].y) / TAU);
+    return fract((atan2(v.y, v.x) - valo_draw.payload[PAYLOAD_MISC].y) / TAU);
 }
 
 @fragment
 fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(ramp(sweep_t(in.local))) * u.color;
+    return premultiply(ramp(sweep_t(in.local))) * valo_draw.color;
 }
 
 // ── ramp gradients (>8 stops): Impeller's texture path ──────────────────────
@@ -252,25 +216,25 @@ fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
 // between baked samples; hard stops can soften within one texel interval).
 
 fn sample_ramp(t: f32) -> vec4<f32> {
-    let n = u.payload[PAYLOAD_MISC].x;
+    let n = valo_draw.payload[PAYLOAD_MISC].x;
     let uv = vec2((t * (n - 1.0) + 0.5) / n, 0.5);
     return textureSample(t_tex, t_samp, uv);
 }
 
 @fragment
 fn fs_linear_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(sample_ramp(linear_t(in.local))) * u.color;
+    return premultiply(sample_ramp(linear_t(in.local))) * valo_draw.color;
 }
 
 @fragment
 fn fs_radial_ramp(in: VsOut) -> @location(0) vec4<f32> {
     let solved = radial_t(in.local);
-    return premultiply(sample_ramp(solved.x)) * u.color * solved.y;
+    return premultiply(sample_ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 @fragment
 fn fs_sweep_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(sample_ramp(sweep_t(in.local))) * u.color;
+    return premultiply(sample_ramp(sweep_t(in.local))) * valo_draw.color;
 }
 
 // ── mask composite ──────────────────────────────────────────────────────────
@@ -282,16 +246,16 @@ fn fs_sweep_ramp(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_mask_composite(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
     let s = textureSample(t_tex, t_samp, clamp(uv, vec2(0.0), vec2(1.0)));
     let inside = f32(all(uv >= vec2(0.0)) && all(uv <= vec2(1.0)));
     var coverage = s.a;
-    if u.payload[PAYLOAD_MISC].x == MASK_LUMINANCE {
+    if valo_draw.payload[PAYLOAD_MISC].x == MASK_LUMINANCE {
         // Premultiplied luma = luma(straight) × alpha in one dot (BT.709).
         coverage = dot(s.rgb, vec3(0.2126, 0.7152, 0.0722));
     }
-    return vec4(0.0, 0.0, 0.0, coverage * inside * u.color.a);
+    return vec4(0.0, 0.0, 0.0, coverage * inside * valo_draw.color.a);
 }
 
 // ── advanced (dst-reading) blends ───────────────────────────────────────────
@@ -392,15 +356,15 @@ fn composite_advanced(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
 }
 
 fn dst_sample(pos: vec4<f32>) -> vec4<f32> {
-    let uv = pos.xy / u.payload[PAYLOAD_MISC].zw; // target size in misc.zw
+    let uv = pos.xy / valo_draw.payload[PAYLOAD_MISC].zw; // target size in misc.zw
     return textureSample(t_tex, t_samp, uv);
 }
 
 /// Solid src × snapshot dst (group1 texture = the dst snapshot).
 @fragment
 fn fs_blend_solid(in: VsOut) -> @location(0) vec4<f32> {
-    let mode = u32(u.payload[PAYLOAD_MISC].x);
-    return composite_advanced(mode, u.color, dst_sample(in.pos));
+    let mode = u32(valo_draw.payload[PAYLOAD_MISC].x);
+    return composite_advanced(mode, valo_draw.color, dst_sample(in.pos));
 }
 
 // Texture src (a layer or desugared draw) × snapshot dst.
@@ -408,10 +372,10 @@ fn fs_blend_solid(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_blend_texture(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let src_uv = in.local * m.xy + m.zw;
-    let src = textureSample(t_src, t_samp, src_uv) * u.color;
-    let mode = u32(u.payload[PAYLOAD_MISC].x);
+    let src = textureSample(t_src, t_samp, src_uv) * valo_draw.color;
+    let mode = u32(valo_draw.payload[PAYLOAD_MISC].x);
     return composite_advanced(mode, src, dst_sample(in.pos));
 }
 
@@ -423,8 +387,8 @@ fn fs_blend_texture(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_pattern(in: VsOut) -> @location(0) vec4<f32> {
-    let uv = gradient_point(in.local) * u.payload[PAYLOAD_GEOM].xy;
-    return textureSample(t_tex, t_samp, uv) * u.color * decal_coverage(uv);
+    let uv = gradient_point(in.local) * valo_draw.payload[PAYLOAD_GEOM].xy;
+    return textureSample(t_tex, t_samp, uv) * valo_draw.color * decal_coverage(uv);
 }
 
 // ── colour filters (filter passes only) ─────────────────────────────────────
@@ -436,9 +400,9 @@ fn fs_pattern(in: VsOut) -> @location(0) vec4<f32> {
 /// The colour-matrix slots hold the 4×5's rows, then its translation column.
 @fragment
 fn fs_color_matrix(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
-    return apply_color_matrix(texel * u.payload[PAYLOAD_MISC].w);
+    return apply_color_matrix(texel * valo_draw.payload[PAYLOAD_MISC].w);
 }
 
 fn apply_color_matrix(texel: vec4<f32>) -> vec4<f32> {
@@ -446,11 +410,11 @@ fn apply_color_matrix(texel: vec4<f32>) -> vec4<f32> {
     let color = vec4(unpremul(texel), texel.a);
     let filtered = clamp(
         vec4(
-            dot(u.payload[PAYLOAD_COLOR_MATRIX], color),
-            dot(u.payload[PAYLOAD_COLOR_MATRIX + 1u], color),
-            dot(u.payload[PAYLOAD_COLOR_MATRIX + 2u], color),
-            dot(u.payload[PAYLOAD_COLOR_MATRIX + 3u], color),
-        ) + u.payload[PAYLOAD_COLOR_MATRIX + 4u],
+            dot(valo_draw.payload[PAYLOAD_COLOR_MATRIX], color),
+            dot(valo_draw.payload[PAYLOAD_COLOR_MATRIX + 1u], color),
+            dot(valo_draw.payload[PAYLOAD_COLOR_MATRIX + 2u], color),
+            dot(valo_draw.payload[PAYLOAD_COLOR_MATRIX + 3u], color),
+        ) + valo_draw.payload[PAYLOAD_COLOR_MATRIX + 4u],
         vec4(0.0),
         vec4(1.0),
     );
@@ -488,14 +452,14 @@ fn composite_porter_duff(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32>
 /// past `ADVANCED_FILTER_BASE`.
 @fragment
 fn fs_color_blend(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let dst = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
-    return apply_color_blend(dst * u.payload[PAYLOAD_MISC].w);
+    return apply_color_blend(dst * valo_draw.payload[PAYLOAD_MISC].w);
 }
 
 fn apply_color_blend(dst: vec4<f32>) -> vec4<f32> {
-    let src = u.payload[PAYLOAD_COLOR_MATRIX];
-    let mode = u32(u.payload[PAYLOAD_MISC].x);
+    let src = valo_draw.payload[PAYLOAD_COLOR_MATRIX];
+    let mode = u32(valo_draw.payload[PAYLOAD_MISC].x);
     if mode >= ADVANCED_FILTER_BASE {
         return composite_advanced(mode - ADVANCED_FILTER_BASE, src, dst);
     }
@@ -506,9 +470,9 @@ fn apply_color_blend(dst: vec4<f32>) -> vec4<f32> {
 /// `ColorFilter.linearToSrgbGamma` and `ColorFilter.srgbToLinearGamma`.
 @fragment
 fn fs_color_gamma(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let texel = textureSample(t_tex, t_samp, in.local * m.xy + m.zw);
-    return apply_gamma(texel * u.payload[PAYLOAD_MISC].w);
+    return apply_gamma(texel * valo_draw.payload[PAYLOAD_MISC].w);
 }
 
 /// Impeller's linear_to_srgb_filter.frag and srgb_to_linear_filter.frag: the
@@ -517,7 +481,7 @@ fn fs_color_gamma(in: VsOut) -> @location(0) vec4<f32> {
 fn apply_gamma(texel: vec4<f32>) -> vec4<f32> {
     let color = unpremul(texel);
     var curved: vec3<f32>;
-    if u.payload[PAYLOAD_MISC].x == GAMMA_LINEAR_TO_SRGB {
+    if valo_draw.payload[PAYLOAD_MISC].x == GAMMA_LINEAR_TO_SRGB {
         curved = vec3(linear_to_srgb(color.r), linear_to_srgb(color.g), linear_to_srgb(color.b));
     } else {
         curved = vec3(srgb_to_linear(color.r), srgb_to_linear(color.g), srgb_to_linear(color.b));
@@ -544,31 +508,31 @@ fn srgb_to_linear(channel: f32) -> f32 {
 // crop/tile/filter/mipmap sampling like Impeller's ColorFilterAtlasContents,
 // or a filtered layer's composite, Impeller's colour filter drawing its input
 // snapshot. misc.w is the alpha the texel is taken in at before the
-// filter and u.color the alpha after it (Impeller's `input_alpha` and
+// filter and valo_draw.color the alpha after it (Impeller's `input_alpha` and
 // `output_alpha`): an image keeps its paint alpha last, a layer's composite
 // takes its alpha in first.
 @fragment
 fn fs_image_matrix(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
     let texel = textureSample(t_tex, t_samp, uv);
-    return apply_color_matrix(texel * u.payload[PAYLOAD_MISC].w) * u.color * decal_coverage(uv);
+    return apply_color_matrix(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color * decal_coverage(uv);
 }
 
 @fragment
 fn fs_image_blend(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
     let texel = textureSample(t_tex, t_samp, uv);
-    return apply_color_blend(texel * u.payload[PAYLOAD_MISC].w) * u.color * decal_coverage(uv);
+    return apply_color_blend(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color * decal_coverage(uv);
 }
 
 @fragment
 fn fs_image_gamma(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
     let texel = textureSample(t_tex, t_samp, uv);
-    return apply_gamma(texel * u.payload[PAYLOAD_MISC].w) * u.color * decal_coverage(uv);
+    return apply_gamma(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color * decal_coverage(uv);
 }
 
 // ── gaussian blur, one direction ────────────────────────────────────────────
@@ -588,15 +552,15 @@ struct KernelSamples {
 
 @fragment
 fn fs_blur(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
-    let sample_count = i32(u.payload[PAYLOAD_MISC].x);
+    let sample_count = i32(valo_draw.payload[PAYLOAD_MISC].x);
     var total = vec4(0.0);
     for (var i = 0; i < sample_count; i = i + 1) {
         let sample = kernel_samples.sample_data[i];
         total += sample.z * textureSample(t_tex, t_samp, uv + sample.xy);
     }
-    if u.payload[PAYLOAD_MISC].y > 0.5 {
+    if valo_draw.payload[PAYLOAD_MISC].y > 0.5 {
         return unpremultiply_opaque(total);
     }
     return total;
@@ -627,11 +591,11 @@ fn unpremultiply_opaque(color: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_downsample(in: VsOut) -> @location(0) vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = in.local * m.xy + m.zw;
-    let edge = u.payload[PAYLOAD_MISC].x;
-    let ratio = u.payload[PAYLOAD_MISC].y;
-    let pixel_size = u.payload[PAYLOAD_MISC].zw;
+    let edge = valo_draw.payload[PAYLOAD_MISC].x;
+    let ratio = valo_draw.payload[PAYLOAD_MISC].y;
+    let pixel_size = valo_draw.payload[PAYLOAD_MISC].zw;
     var total = vec4(0.0);
     for (var i = -edge; i <= edge; i = i + 2.0) {
         for (var j = -edge; j <= edge; j = j + 2.0) {
@@ -656,7 +620,7 @@ fn downsample_tap(uv: vec2<f32>) -> vec4<f32> {
 /// downsample whose taps land on both edges would move its blur by half a
 /// texel.
 fn decal_border(uv: vec2<f32>) -> f32 {
-    let modes = u.payload[PAYLOAD_DOWNSAMPLE_MODES];
+    let modes = valo_draw.payload[PAYLOAD_DOWNSAMPLE_MODES];
     if modes.y < 0.5 {
         return 1.0;
     }
@@ -667,17 +631,46 @@ fn decal_border(uv: vec2<f32>) -> f32 {
 }
 
 fn bounds_inside(uv: vec2<f32>) -> f32 {
-    if u.payload[PAYLOAD_DOWNSAMPLE_MODES].x < 0.5 {
+    if valo_draw.payload[PAYLOAD_DOWNSAMPLE_MODES].x < 0.5 {
         return 1.0;
     }
     let point = vec4(uv, 1.0, 0.0);
     let distances = vec4(
-        dot(point, u.payload[PAYLOAD_DOWNSAMPLE_EDGES]),
-        dot(point, u.payload[PAYLOAD_DOWNSAMPLE_EDGES + 1u]),
-        dot(point, u.payload[PAYLOAD_DOWNSAMPLE_EDGES + 2u]),
-        dot(point, u.payload[PAYLOAD_DOWNSAMPLE_EDGES + 3u]),
+        dot(point, valo_draw.payload[PAYLOAD_DOWNSAMPLE_EDGES]),
+        dot(point, valo_draw.payload[PAYLOAD_DOWNSAMPLE_EDGES + 1u]),
+        dot(point, valo_draw.payload[PAYLOAD_DOWNSAMPLE_EDGES + 2u]),
+        dot(point, valo_draw.payload[PAYLOAD_DOWNSAMPLE_EDGES + 3u]),
     );
     return f32(all(distances >= vec4(0.0)));
+}
+
+// ── a runtime filter's blur pyramid (Core Animation variable_blur_downsample) ─
+// One level of the pyramid from the level above, bound alone: thirteen
+// bilinear taps, the centre, four on the axes at ±1.96 and four at ±3.92
+// texels, and four on the diagonals at (±1.96, ±1.96), a sparse Gaussian of
+// σ ≈ 3.5 of the level's texels. Taps and weights are QuartzCore's
+// (`variable_blur_downsample_frag`); the sampler clamps at the edge as its
+// clamping variant does. geom = (1 / this level's size, _, _); misc = (one
+// texel of the level above, in uv, _, _).
+
+@fragment
+fn fs_pyramid_downsample(in: VsOut) -> @location(0) vec4<f32> {
+    let uv = in.local * valo_draw.payload[PAYLOAD_GEOM].xy;
+    let texel = valo_draw.payload[PAYLOAD_MISC].xy;
+    let near = texel * 1.9600850343704224;
+    let far = texel * 3.9206759929656982;
+    let near_axis = pyramid_tap(uv + vec2(-near.x, 0.0)) + pyramid_tap(uv + vec2(near.x, 0.0))
+        + pyramid_tap(uv + vec2(0.0, -near.y)) + pyramid_tap(uv + vec2(0.0, near.y));
+    let diagonal = pyramid_tap(uv + vec2(-near.x, -near.y)) + pyramid_tap(uv + vec2(-near.x, near.y))
+        + pyramid_tap(uv + vec2(near.x, -near.y)) + pyramid_tap(uv + vec2(near.x, near.y));
+    let far_axis = pyramid_tap(uv + vec2(-far.x, 0.0)) + pyramid_tap(uv + vec2(far.x, 0.0))
+        + pyramid_tap(uv + vec2(0.0, -far.y)) + pyramid_tap(uv + vec2(0.0, far.y));
+    return pyramid_tap(uv) * 0.10549700260162354 + near_axis * 0.09018599987030029
+        + diagonal * 0.07709799706935883 + far_axis * 0.05634099990129471;
+}
+
+fn pyramid_tap(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(t_tex, t_samp, uv, 0.0);
 }
 
 // ── closed-form blurred rounded rect (Impeller rrect_blur) ──────────────────
@@ -757,36 +750,36 @@ fn styled_coverage(style: u32, blurred: f32, sharp: f32) -> f32 {
 
 @fragment
 fn fs_rrect_blur(in: VsOut) -> @location(0) vec4<f32> {
-    let r = u.payload[PAYLOAD_GEOM];
-    let sigma = max(u.payload[PAYLOAD_MISC].x, 0.05);
-    let style = u32(u.payload[PAYLOAD_MISC].y);
-    let radii = u.payload[PAYLOAD_RADII];
+    let r = valo_draw.payload[PAYLOAD_GEOM];
+    let sigma = max(valo_draw.payload[PAYLOAD_MISC].x, 0.05);
+    let style = u32(valo_draw.payload[PAYLOAD_MISC].y);
+    let radii = valo_draw.payload[PAYLOAD_RADII];
     let half_size = (r.zw - r.xy) * 0.5;
     let p = in.local - (r.xy + r.zw) * 0.5;
     let blurred = rrect_blur_coverage(p, half_size, sigma, radii);
     // Screen-space AA on the sharp edge (fwidth = local units per pixel).
     let d = rrect_sdf(p, half_size, radii);
     let sharp = clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
-    return u.color * styled_coverage(style, blurred, sharp);
+    return valo_draw.color * styled_coverage(style, blurred, sharp);
 }
 
 // ── two-input merges: blur styles and drop shadows ─────────────────────────
 // A quad over the union of what two snapshots cover, each sampled through its
 // own transform: the geom slot maps the quad's local space to the first's
 // uv (t_tex), the second uv slot to the second's (t_src); misc.x is the
-// fragment's switch, u.color the alpha the result is drawn at. A filter's last node
+// fragment's switch, valo_draw.color the alpha the result is drawn at. A filter's last node
 // draws it straight into the destination; a pass makes it a texture when
 // something reads it next. Outside a snapshot its sample reads transparent,
 // so a clamping sampler never smears its edge texels across the quad.
 
 fn sample_first(local: vec2<f32>) -> vec4<f32> {
-    let m = u.payload[PAYLOAD_GEOM];
+    let m = valo_draw.payload[PAYLOAD_GEOM];
     let uv = local * m.xy + m.zw;
     return textureSample(t_tex, t_samp, uv) * inside_unit(uv);
 }
 
 fn sample_second(local: vec2<f32>) -> vec4<f32> {
-    let m = u.payload[PAYLOAD_SECOND_UV];
+    let m = valo_draw.payload[PAYLOAD_SECOND_UV];
     let uv = local * m.xy + m.zw;
     return textureSample(t_src, t_samp, uv) * inside_unit(uv);
 }
@@ -802,11 +795,11 @@ fn inside_unit(uv: vec2<f32>) -> f32 {
 fn fs_mask_combine(in: VsOut) -> @location(0) vec4<f32> {
     let b = sample_first(in.local);
     let m = sample_second(in.local);
-    let style = u32(u.payload[PAYLOAD_MISC].x);
+    let style = u32(valo_draw.payload[PAYLOAD_MISC].x);
     switch style {
-        case STYLE_SOLID: { return (m + b * (1.0 - m.a)) * u.color; }
-        case STYLE_INNER: { return b * m.a * u.color; }
-        default: { return b * (1.0 - m.a) * u.color; }
+        case STYLE_SOLID: { return (m + b * (1.0 - m.a)) * valo_draw.color; }
+        case STYLE_INNER: { return b * m.a * valo_draw.color; }
+        default: { return b * (1.0 - m.a) * valo_draw.color; }
     }
 }
 
@@ -816,7 +809,7 @@ fn fs_mask_combine(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_drop_shadow(in: VsOut) -> @location(0) vec4<f32> {
     let b = sample_first(in.local);
     let s = sample_second(in.local);
-    return (s + b * (1.0 - s.a)) * u.color;
+    return (s + b * (1.0 - s.a)) * valo_draw.color;
 }
 
 // ── text: atlas-masked glyph quads ──────────────────────────────────────────
@@ -832,46 +825,46 @@ struct TextOut {
 @vertex
 fn vs_text(@location(0) p: vec2<f32>, @location(1) uv: vec2<f32>) -> TextOut {
     var out: TextOut;
-    out.pos = u.mvp * vec4<f32>(p, 0.0, 1.0);
+    out.pos = valo_draw.mvp * vec4<f32>(p, 0.0, 1.0);
     out.uv = uv;
     return out;
 }
 
 @fragment
 fn fs_text(in: TextOut) -> @location(0) vec4<f32> {
-    return u.color * textureSample(t_tex, t_samp, in.uv).r;
+    return valo_draw.color * textureSample(t_tex, t_samp, in.uv).r;
 }
 
 @fragment
 fn fs_text_sdf(in: TextOut) -> @location(0) vec4<f32> {
     let d = textureSample(t_tex, t_samp, in.uv).r;
     let w = max(fwidth(d), 1e-4);
-    return u.color * smoothstep(0.5 - w, 0.5 + w, d);
+    return valo_draw.color * smoothstep(0.5 - w, 0.5 + w, d);
 }
 
 @fragment
 fn fs_text_color(in: TextOut) -> @location(0) vec4<f32> {
     // Emoji keep their own colors — the tint carries alpha only.
-    return textureSample(t_tex, t_samp, in.uv) * u.color;
+    return textureSample(t_tex, t_samp, in.uv) * valo_draw.color;
 }
 
 // Colour glyphs through the run's colour filter, as Skia's colour-bitmap
 // text runs it on the glyph's pixel at the paint's alpha: misc.w is that
-// alpha, taken in before the filter, and u.color the group alpha after it.
+// alpha, taken in before the filter, and valo_draw.color the group alpha after it.
 @fragment
 fn fs_text_color_matrix(in: TextOut) -> @location(0) vec4<f32> {
     let texel = textureSample(t_tex, t_samp, in.uv);
-    return apply_color_matrix(texel * u.payload[PAYLOAD_MISC].w) * u.color;
+    return apply_color_matrix(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color;
 }
 
 @fragment
 fn fs_text_color_blend(in: TextOut) -> @location(0) vec4<f32> {
     let texel = textureSample(t_tex, t_samp, in.uv);
-    return apply_color_blend(texel * u.payload[PAYLOAD_MISC].w) * u.color;
+    return apply_color_blend(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color;
 }
 
 @fragment
 fn fs_text_color_gamma(in: TextOut) -> @location(0) vec4<f32> {
     let texel = textureSample(t_tex, t_samp, in.uv);
-    return apply_gamma(texel * u.payload[PAYLOAD_MISC].w) * u.color;
+    return apply_gamma(texel * valo_draw.payload[PAYLOAD_MISC].w) * valo_draw.color;
 }

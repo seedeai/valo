@@ -223,6 +223,12 @@ pub enum ImageFilter {
         /// `inner` receives the original input.
         inner: Arc<ImageFilter>,
     },
+    /// `Runtime` shades what the input covers with a runtime filter's `shade`,
+    /// its `source` the input prepared as the effect's
+    /// [`FilterInputs`](crate::FilterInputs) ask. The effect is made by
+    /// [`RuntimeEffect::filter`](crate::RuntimeEffect::filter); see
+    /// [`ImageFilter::runtime`].
+    Runtime(crate::RuntimeShader),
 }
 
 impl ImageFilter {
@@ -284,6 +290,17 @@ impl ImageFilter {
         }
     }
 
+    /// `runtime` creates a filter from a runtime filter effect with one
+    /// draw's inputs; a paint shader's effect is refused.
+    pub fn runtime(shader: crate::RuntimeShader) -> Result<Self, crate::EffectError> {
+        match shader.effect.kind() {
+            crate::EffectKind::Filter(_) => Ok(Self::Runtime(shader)),
+            crate::EffectKind::Shader => Err(crate::EffectError::Contract(
+                "an image filter's effect is made by `RuntimeEffect::filter`".to_owned(),
+            )),
+        }
+    }
+
     /// `drop_shadow` creates a shadow that retains the original input.
     pub fn drop_shadow(offset: Point, sigma_x: f32, sigma_y: f32, color: Color) -> Self {
         Self::DropShadow {
@@ -304,6 +321,7 @@ impl ImageFilter {
             // An invisible shadow leaves the input exactly as it found it.
             Self::DropShadow { color, .. } => color.a <= 0.0,
             Self::Compose { outer, inner } => outer.is_nop() && inner.is_nop(),
+            Self::Runtime(_) => false,
         }
     }
 
@@ -331,6 +349,8 @@ impl ImageFilter {
                 let inner = inner.padding();
                 [outer[0] + inner[0], outer[1] + inner[1]]
             }
+            // It shades what its input covers; its margin is what it reads.
+            Self::Runtime(_) => [0.0; 2],
         }
     }
 
@@ -346,6 +366,9 @@ impl ImageFilter {
             Self::Compose { outer, inner } => {
                 outer.modifies_transparent_black() || inner.modifies_transparent_black()
             }
+            // Flutter's `DlRuntimeEffectImageFilter`: it shades only what its
+            // input covers.
+            Self::Runtime(_) => false,
         }
     }
 }

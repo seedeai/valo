@@ -169,7 +169,8 @@ impl ImageStore {
         bind
     }
 
-    fn sampler(&mut self, sampling: Sampling) -> &wgpu::Sampler {
+    /// `sampler` is the sampler that reads as `sampling` says, created once.
+    pub(crate) fn sampler(&mut self, sampling: Sampling) -> &wgpu::Sampler {
         self.samplers.entry(sampling).or_insert_with(|| {
             let filter = match sampling.filter {
                 Filter::Linear => wgpu::FilterMode::Linear,

@@ -40,4 +40,5 @@ tracing = { workspace = true, optional = true }
 js-sys = "0.3"
 
 [dev-dependencies]
+naga = { workspace = true }
 pollster = { workspace = true }

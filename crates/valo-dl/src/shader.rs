@@ -62,6 +62,11 @@ pub enum Shader {
         /// `local` transforms the image pattern independently of the geometry.
         local: Matrix,
     },
+    /// `Runtime` colours each pixel with a runtime effect's `shade` function.
+    /// The effect is made by
+    /// [`RuntimeEffect::shader`](crate::RuntimeEffect::shader); see
+    /// [`Shader::runtime`].
+    Runtime(crate::RuntimeShader),
 }
 
 /// `SpreadMode` controls a gradient outside its zero-to-one span.
@@ -123,7 +128,7 @@ impl Shader {
             Shader::Linear { stops, .. }
             | Shader::Radial { stops, .. }
             | Shader::Sweep { stops, .. } => stops,
-            Shader::Image { .. } => &[],
+            Shader::Image { .. } | Shader::Runtime(_) => &[],
         }
     }
 
@@ -138,12 +143,23 @@ impl Shader {
             | Shader::Sweep { stops, .. } => stops,
             // A pattern's colours live in texels; the image fragment applies
             // the filter as it samples.
-            Shader::Image { .. } => return false,
+            Shader::Image { .. } | Shader::Runtime(_) => return false,
         };
         for stop in stops.iter_mut() {
             stop.color = filter.folded_into(stop.color);
         }
         true
+    }
+
+    /// `runtime` creates a shader from a runtime paint shader effect with one
+    /// draw's inputs; a filter's effect is refused.
+    pub fn runtime(shader: crate::RuntimeShader) -> Result<Self, crate::EffectError> {
+        match shader.effect.kind() {
+            crate::EffectKind::Shader => Ok(Shader::Runtime(shader)),
+            crate::EffectKind::Filter(_) => Err(crate::EffectError::Contract(
+                "a paint shader's effect is made by `RuntimeEffect::shader`".to_owned(),
+            )),
+        }
     }
 
     /// `linear` creates a two-color padded linear gradient.

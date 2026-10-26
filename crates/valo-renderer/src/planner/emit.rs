@@ -7,10 +7,10 @@
 //! arrives as an argument. The fragments' encoders, which make an entity's
 //! shading, are in `shading`.
 
-use valo_dl::{GradientStop, Image, Sampling, TileMode};
+use valo_dl::{GradientStop, Image, RuntimeShader, Sampling, TileMode};
 use valo_geometry::{FillRule, Matrix, Rect};
 
-use crate::frame::{Draw, Geometry, Mesh, Stencil};
+use crate::frame::{Bindings, Draw, Geometry, Mesh, Stencil};
 use crate::glyphs::{GlyphStore, PageRef};
 use crate::host_buffer::{HostBuffer, UniformSlot};
 use crate::images::ImageStore;
@@ -38,13 +38,16 @@ pub(crate) struct EmitterServices {
 
 /// `LinearSamplers` are the linear samplers every filter and composite bind
 /// group shares — created once (a per-frame create is a JS hop on wasm): one
-/// clamping to the edge, which every draw of a texture reads with, and the
-/// ones a blur's tile mode reads past its input's edge with, as Impeller sets
-/// a blur's tile mode on its downsample's sampler.
+/// clamping to the edge, which every draw of a texture reads with, the ones
+/// a blur's tile mode reads past its input's edge with, as Impeller sets a
+/// blur's tile mode on its downsample's sampler, and one clamping and
+/// blending between mip levels, which a runtime filter reads its source
+/// with.
 pub(crate) struct LinearSamplers {
     clamp: wgpu::Sampler,
     repeat: wgpu::Sampler,
     mirror: wgpu::Sampler,
+    levels: wgpu::Sampler,
 }
 
 impl LinearSamplers {
@@ -63,6 +66,15 @@ impl LinearSamplers {
             clamp: linear("valo.linear", wgpu::AddressMode::ClampToEdge),
             repeat: linear("valo.linear.repeat", wgpu::AddressMode::Repeat),
             mirror: linear("valo.linear.mirror", wgpu::AddressMode::MirrorRepeat),
+            levels: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("valo.linear.levels"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            }),
         }
     }
 
@@ -158,7 +170,7 @@ impl Role {
 pub(super) struct StepEmitter<'a> {
     host: &'a mut HostBuffer,
     device: &'a wgpu::Device,
-    pipelines: &'a PipelineCache,
+    pipelines: &'a mut PipelineCache,
     images: &'a mut ImageStore,
     ramps: &'a mut RampCache,
     samplers: &'a LinearSamplers,
@@ -393,6 +405,47 @@ impl<'a> StepEmitter<'a> {
     pub fn ramp(&mut self, stops: &[GradientStop]) -> (wgpu::BindGroup, u32) {
         let (view, texels) = self.ramps.ensure(self.device, stops);
         (self.texture_bind(&view), texels)
+    }
+
+    /// `runtime` is the fragment of a paint shader's variant and the bind
+    /// of what it reads.
+    pub fn runtime(&mut self, shader: &RuntimeShader) -> (Frag, Bindings) {
+        let frag = self.pipelines.runtime(self.device, shader);
+        (frag, self.runtime_bindings(shader, None))
+    }
+
+    /// `runtime_filter` is the fragment of a filter's variant and the bind of
+    /// what it reads, `source` among it, every level of it.
+    pub fn runtime_filter(
+        &mut self,
+        shader: &RuntimeShader,
+        source: &wgpu::TextureView,
+    ) -> (Frag, Bindings) {
+        let frag = self.pipelines.runtime(self.device, shader);
+        let source =
+            self.pipelines
+                .runtime_source_bind(self.device, shader, source, &self.samplers.levels);
+        (frag, self.runtime_bindings(shader, Some(source)))
+    }
+
+    /// `runtime_bindings` binds what `shader`, its variant registered, reads:
+    /// its images, its uniforms beside the draw records, and a filter's
+    /// `source`.
+    fn runtime_bindings(
+        &mut self,
+        shader: &RuntimeShader,
+        source: Option<wgpu::BindGroup>,
+    ) -> Bindings {
+        let images = self
+            .pipelines
+            .runtime_image_bind(self.device, self.images, shader);
+        let uniforms = (!shader.uniforms.is_empty())
+            .then(|| self.host.alloc_effect_uniforms(&shader.uniforms));
+        Bindings::Runtime {
+            images,
+            uniforms,
+            source,
+        }
     }
 
     /// `atlas_bind` is a group-1 bind of one glyph atlas page. The store

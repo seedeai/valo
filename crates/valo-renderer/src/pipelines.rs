@@ -3,7 +3,9 @@
 
 use rustc_hash::FxHashMap;
 
-use valo_dl::BlendMode;
+use valo_dl::{BlendMode, RuntimeShader};
+
+use crate::runtime::{RuntimeKey, RuntimePrograms};
 
 /// `SAMPLE_COUNT` is the MSAA sample count used by content pipelines.
 ///
@@ -49,6 +51,9 @@ pub enum Frag {
     /// 64-tap kernel, a gutter read as transparent, a bounded blur's taps
     /// tested against its bounds (filter passes only).
     Downsample,
+    /// One level of a runtime filter's blur pyramid from the level above:
+    /// Core Animation's 13-tap downsample (filter passes only).
+    PyramidDownsample,
     /// Blur style combine: blurred layer × sharp layer → one texture
     /// (filter passes only; blend layout: 0 = blurred, 2 = sharp).
     MaskCombine,
@@ -85,6 +90,9 @@ pub enum Frag {
     GlyphColorMatrix,
     GlyphColorBlend,
     GlyphColorGamma,
+    /// A runtime effect's `shade`, one variant of its overrides, in the
+    /// effect's own module.
+    Runtime(RuntimeKey),
 }
 
 /// `BindLayout` is which bind groups a fragment reads beside its uniforms.
@@ -98,6 +106,9 @@ enum BindLayout {
     Blend,
     /// A texture at group 1, a blur kernel at group 2.
     Blur,
+    /// A runtime effect's own, in its own module: its images at group 1, its
+    /// uniforms at 2, a filter's source at 3.
+    Runtime(RuntimeKey),
 }
 
 impl Frag {
@@ -109,12 +120,14 @@ impl Frag {
             }
             Frag::BlendTexture | Frag::MaskCombine | Frag::DropShadow => BindLayout::Blend,
             Frag::Blur => BindLayout::Blur,
+            Frag::Runtime(key) => BindLayout::Runtime(key),
             Frag::Image
             | Frag::ImageMatrix
             | Frag::ImageBlend
             | Frag::ImageGamma
             | Frag::BlendSolid
             | Frag::Downsample
+            | Frag::PyramidDownsample
             | Frag::MaskComposite
             | Frag::LinearRamp
             | Frag::RadialRamp
@@ -147,6 +160,7 @@ impl Frag {
             Frag::RRectBlur => "fs_rrect_blur",
             Frag::Blur => "fs_blur",
             Frag::Downsample => "fs_downsample",
+            Frag::PyramidDownsample => "fs_pyramid_downsample",
             Frag::MaskCombine => "fs_mask_combine",
             Frag::DropShadow => "fs_drop_shadow",
             Frag::MaskComposite => "fs_mask_composite",
@@ -163,6 +177,7 @@ impl Frag {
             Frag::GlyphColorMatrix => "fs_text_color_matrix",
             Frag::GlyphColorBlend => "fs_text_color_blend",
             Frag::GlyphColorGamma => "fs_text_color_gamma",
+            Frag::Runtime(_) => crate::runtime::FRAGMENT_ENTRY,
         }
     }
 }
@@ -561,6 +576,8 @@ pub struct PipelineCache {
     blur_layout: wgpu::PipelineLayout,
     texture_bind_layout: wgpu::BindGroupLayout,
     blend_bind_layout: wgpu::BindGroupLayout,
+    /// Every runtime effect drawn with: its module and layouts.
+    runtime: RuntimePrograms,
     map: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
 }
 
@@ -568,14 +585,18 @@ impl PipelineCache {
     /// `new` compiles the shader module, its ABI's prelude first, and the
     /// pipeline layouts for `device`.
     ///
-    /// `uniforms_layout` and `kernel_layout` are the host buffer's group-0
-    /// and group-2 layouts.
+    /// `uniforms_layout` is the host buffer's group-0 layout, and
+    /// `kernel_layout` and `effect_layout` its group-2 layouts for a blur's
+    /// kernel and a runtime effect's uniforms.
     pub fn new(
         device: &wgpu::Device,
         uniforms_layout: &wgpu::BindGroupLayout,
         kernel_layout: &wgpu::BindGroupLayout,
+        effect_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let source = crate::shader_abi::wgsl_prelude() + include_str!("shaders/solid.wgsl");
+        let source = crate::shader_abi::wgsl_prelude()
+            + include_str!("shaders/draw.wgsl")
+            + include_str!("shaders/solid.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("valo.solid"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -614,6 +635,7 @@ impl PipelineCache {
             blur_layout,
             texture_bind_layout,
             blend_bind_layout,
+            runtime: RuntimePrograms::new(uniforms_layout, effect_layout),
             map: FxHashMap::default(),
         }
     }
@@ -630,6 +652,38 @@ impl PipelineCache {
     /// Bindings are texture and sampler.
     pub fn texture_bind_layout(&self) -> &wgpu::BindGroupLayout {
         &self.texture_bind_layout
+    }
+
+    /// `runtime` is the fragment of `shader`'s variant, compiling its
+    /// effect's module the first time the effect is drawn.
+    pub(crate) fn runtime(&mut self, device: &wgpu::Device, shader: &RuntimeShader) -> Frag {
+        Frag::Runtime(self.runtime.register(device, shader))
+    }
+
+    /// `runtime_image_bind` is the group-1 bind of `shader`'s images, or
+    /// `None` when its effect samples none. `shader` was drawn through
+    /// [`PipelineCache::runtime`] first.
+    pub(crate) fn runtime_image_bind(
+        &self,
+        device: &wgpu::Device,
+        images: &mut crate::images::ImageStore,
+        shader: &RuntimeShader,
+    ) -> Option<wgpu::BindGroup> {
+        self.runtime.image_bind(device, images, shader)
+    }
+
+    /// `runtime_source_bind` is the group-3 bind of a filter's `source`,
+    /// read through `sampler`, for `shader` drawn through
+    /// [`PipelineCache::runtime`] first.
+    pub(crate) fn runtime_source_bind(
+        &self,
+        device: &wgpu::Device,
+        shader: &RuntimeShader,
+        source: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        self.runtime
+            .source_bind(device, shader.effect.id(), source, sampler)
     }
 
     /// `compile` compiles the pipelines for `keys` that are not cached yet
@@ -652,25 +706,41 @@ impl PipelineCache {
     }
 
     fn create(&self, device: &wgpu::Device, key: PipelineKey) -> wgpu::RenderPipeline {
-        let layout = match key.kind.bind_layout() {
-            BindLayout::Plain => &self.plain_layout,
-            BindLayout::Textured => &self.textured_layout,
-            BindLayout::Blend => &self.blend_layout,
-            BindLayout::Blur => &self.blur_layout,
+        let (module, layout, constants) = match key.kind.bind_layout() {
+            BindLayout::Plain => (&self.shader, &self.plain_layout, &[][..]),
+            BindLayout::Textured => (&self.shader, &self.textured_layout, &[][..]),
+            BindLayout::Blend => (&self.shader, &self.blend_layout, &[][..]),
+            BindLayout::Blur => (&self.shader, &self.blur_layout, &[][..]),
+            BindLayout::Runtime(runtime) => {
+                let program = self.runtime.program(runtime.effect);
+                (
+                    &program.module,
+                    &program.layout,
+                    self.runtime.constants(runtime),
+                )
+            }
+        };
+        let constants: Vec<(&str, f64)> = constants
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect();
+        let compilation_options = wgpu::PipelineCompilationOptions {
+            constants: &constants,
+            ..Default::default()
         };
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("valo.solid"),
             layout: Some(layout),
             vertex: wgpu::VertexState {
-                module: &self.shader,
+                module,
                 entry_point: Some(key.kind.vertex_entry()),
-                compilation_options: Default::default(),
+                compilation_options: compilation_options.clone(),
                 buffers: vertex_buffers(key.kind),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &self.shader,
+                module,
                 entry_point: Some(key.kind.fragment_entry()),
-                compilation_options: Default::default(),
+                compilation_options,
                 targets: &[Some(color_target(key))],
             }),
             primitive: wgpu::PrimitiveState {

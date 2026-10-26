@@ -10,7 +10,7 @@
 //! that draw. A texture is made of an output only when a next node or an
 //! advanced blend has to read one ([`Planner::snapshot_output`]).
 
-use valo_dl::{BlurStyle, ClipOp, ColorFilter};
+use valo_dl::{BlurStyle, ClipOp, ColorFilter, RuntimeShader};
 use valo_geometry::{Matrix, Rect};
 
 use crate::pipelines::{AdvancedBlend, Blend, PipelineBlend};
@@ -47,6 +47,34 @@ pub(super) enum FilterOutput<'a> {
     /// The sharp draw with its blur drawn over it: a solid mask blur
     /// (Impeller's `ApplyBlurStyle`).
     Solid { sharp: Snapshot, blur: Snapshot },
+    /// A runtime filter drawn straight into the destination.
+    Runtime(RuntimeOutput),
+}
+
+/// `RuntimeOutput` is what a runtime filter draws: its effect's `shade`
+/// over `region` of the tree's space, reading `source`, `effect_transform`
+/// taking the effect's local space into the tree's.
+pub(super) struct RuntimeOutput {
+    pub shader: RuntimeShader,
+    pub source: Snapshot,
+    pub region: Rect,
+    pub effect_transform: Matrix,
+}
+
+impl RuntimeOutput {
+    /// `tree_to_local` maps the tree's space into the effect's local space;
+    /// a degenerate effect transform maps everything to its origin.
+    pub fn tree_to_local(&self) -> Matrix {
+        self.effect_transform
+            .invert()
+            .unwrap_or(Matrix::from_affine(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    }
+
+    /// `local_bounds` is what the filter shades, in the effect's local
+    /// space: the bounds of its region taken there.
+    pub fn local_bounds(&self) -> Rect {
+        self.tree_to_local().map_rect(&self.region)
+    }
 }
 
 /// `StyleClip` is what a [`FilterOutput::Clipped`] blur is clipped to: the
@@ -83,6 +111,7 @@ impl FilterOutput<'_> {
             FilterOutput::Solid { sharp, blur } => {
                 sharp.placement.coverage().union(&blur.placement.coverage())
             }
+            FilterOutput::Runtime(output) => output.region,
         }
     }
 }
@@ -131,6 +160,7 @@ impl Planner<'_> {
                 second,
                 merge,
             } => self.filter_passes().push_merge(&first, &second, merge),
+            FilterOutput::Runtime(output) => self.filter_passes().push_runtime(&output),
             output @ (FilterOutput::Clipped { .. } | FilterOutput::Solid { .. }) => self
                 .render_to_snapshot(&output.coverage(), |drawing, depths| {
                     let at = DrawState::in_layer(Matrix::IDENTITY, depths.first);
@@ -192,6 +222,17 @@ impl Drawing<'_, '_> {
             FilterOutput::Solid { sharp, blur } => {
                 self.draw_snapshot(sharp, blend, at);
                 self.draw_snapshot(blur, blend, at);
+            }
+            FilterOutput::Runtime(output) => {
+                let shading = self.emit.runtime_filter_shading(
+                    &output.shader,
+                    &output.source,
+                    &output.local_bounds(),
+                    &output.tree_to_local(),
+                    &output.effect_transform,
+                    at.alpha,
+                );
+                self.draw_output_quad(&output.region, shading, blend, at);
             }
         }
     }

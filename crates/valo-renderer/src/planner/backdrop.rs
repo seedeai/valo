@@ -80,13 +80,14 @@ impl SharedBackdrop {
     /// `matches` reports whether this snapshot is what `filter` would make of
     /// the same target under `local_to_target`. σ depends only on the
     /// mapping's basis, so tiles that differ by a translation share; a
-    /// bounded blur's bounds move with the translation too, so a bounded
-    /// filter needs the whole mapping to agree.
+    /// bounded blur's bounds move with the translation too, and a runtime
+    /// filter shades by local position, so those need the whole mapping to
+    /// agree.
     pub fn matches(&self, filter: &ImageFilter, local_to_target: &Matrix) -> bool {
         if self.filter != *filter {
             return false;
         }
-        if reads_within_bounds(filter) {
+        if depends_on_position(filter) {
             self.local_to_target == *local_to_target
         } else {
             basis_of(&self.local_to_target) == basis_of(local_to_target)
@@ -182,6 +183,11 @@ impl Planner<'_> {
                 let blurred = self.filter_passes().push_blur(&blur, &parent.view);
                 Some(FilterOutput::Snapshot(blurred))
             }
+            // So does one runtime filter: it samples through its own uv map,
+            // clamped at the parent's edge, so nothing is cut out first.
+            None if is_one_runtime_filter(&tree) => {
+                Some(self.render_filter_tree(&tree, &parent, local_to_target, Some(*hint)))
+            }
             None => self.render_parent_filters(&parent, hint, &tree, local_to_target),
         }
     }
@@ -248,13 +254,26 @@ fn backdrop_blur(
     )
 }
 
-/// `reads_within_bounds` reports whether any blur in `filter` is bounded.
-fn reads_within_bounds(filter: &ImageFilter) -> bool {
+/// `is_one_runtime_filter` reports whether a backdrop tree is one runtime
+/// filter over the parent.
+fn is_one_runtime_filter(tree: &FilterInput<'_>) -> bool {
+    matches!(
+        tree,
+        FilterInput::Filter(node)
+            if matches!((&node.filter, &node.input), (Filter::Runtime(_), FilterInput::Source))
+    )
+}
+
+/// `depends_on_position` reports whether `filter` makes something different
+/// of a tile moved by a translation: a bounded blur, whose bounds move, or a
+/// runtime filter, which shades by local position.
+fn depends_on_position(filter: &ImageFilter) -> bool {
     match filter {
         ImageFilter::Blur { bounds, .. } => bounds.is_some(),
         ImageFilter::Color(_) | ImageFilter::DropShadow { .. } => false,
+        ImageFilter::Runtime(_) => true,
         ImageFilter::Compose { outer, inner } => {
-            reads_within_bounds(outer) || reads_within_bounds(inner)
+            depends_on_position(outer) || depends_on_position(inner)
         }
     }
 }

@@ -253,6 +253,7 @@ impl WebShader {
             | Shader::Radial { local, .. }
             | Shader::Sweep { local, .. }
             | Shader::Image { local, .. } => *local = matrix,
+            Shader::Runtime(_) => {}
         }
         Ok(())
     }

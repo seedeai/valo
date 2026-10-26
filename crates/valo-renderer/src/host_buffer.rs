@@ -11,6 +11,10 @@ pub(crate) const UNIFORM_SIZE: u64 = 512;
 /// at group 2 with a dynamic offset of its own.
 pub(crate) const KERNEL_SIZE: u64 =
     (crate::planner::gaussian::MAX_KERNEL_SAMPLES * std::mem::size_of::<[f32; 4]>()) as u64;
+/// Bytes of one runtime effect's uniforms: the largest struct an effect may declare, so one
+/// layout binds every effect's. They ride the same arena, bound at group 2 like a kernel.
+pub(crate) const EFFECT_UNIFORM_SIZE: u64 = valo_dl::MAX_UNIFORM_BYTES as u64;
+
 /// Frames in flight the arena ring covers.
 const FRAMES: usize = 3;
 /// Ring passes a trailing block sits unused before draining (×3 frames each).
@@ -47,6 +51,8 @@ pub struct HostBuffer {
     /// The arena footprint of one kernel: [`KERNEL_SIZE`] rounded up to the
     /// stride, so every allocation keeps the offset alignment.
     kernel_stride: u64,
+    /// The arena footprint of one effect's uniforms, likewise rounded up.
+    effect_stride: u64,
     uniform_block_size: u64,
     /// Blocks created this frame (stats: should go quiet after warm-up).
     blocks_created: u32,
@@ -57,6 +63,7 @@ struct BlockFactory {
     device: wgpu::Device,
     record_layout: wgpu::BindGroupLayout,
     kernel_layout: wgpu::BindGroupLayout,
+    effect_layout: wgpu::BindGroupLayout,
     writer: BlockWriter,
 }
 
@@ -107,11 +114,12 @@ struct Block<Views> {
     writable: Arc<AtomicBool>,
 }
 
-/// `UniformBindGroups` are one uniform block's two views: a draw record at
-/// group 0 and a blur kernel at group 2, each bound at a dynamic offset.
+/// `UniformBindGroups` are one uniform block's views: a draw record at group 0, and a blur
+/// kernel or a runtime effect's uniforms at group 2, each bound at a dynamic offset.
 struct UniformBindGroups {
     record: wgpu::BindGroup,
     kernel: wgpu::BindGroup,
+    effect: wgpu::BindGroup,
 }
 
 /// `UniformSlot` is where one allocation of the uniform blocks lives this
@@ -169,18 +177,26 @@ impl HostBuffer {
             wgpu::ShaderStages::FRAGMENT,
             KERNEL_SIZE,
         );
+        let effect_layout = dynamic_uniform_layout(
+            device,
+            "valo.host_buffer.effect",
+            wgpu::ShaderStages::FRAGMENT,
+            EFFECT_UNIFORM_SIZE,
+        );
         let stride = (device.limits().min_uniform_buffer_offset_alignment as u64).max(UNIFORM_SIZE);
         Self {
             factory: BlockFactory {
                 device: device.clone(),
                 record_layout,
                 kernel_layout,
+                effect_layout,
                 writer: BlockWriter::for_device(device),
             },
             frames: Default::default(),
             frame: 0,
             stride,
             kernel_stride: KERNEL_SIZE.next_multiple_of(stride),
+            effect_stride: EFFECT_UNIFORM_SIZE.next_multiple_of(stride),
             uniform_block_size: stride * SLOTS_PER_BLOCK,
             blocks_created: 0,
         }
@@ -201,6 +217,14 @@ impl HostBuffer {
     /// read from the same blocks as the draw records.
     pub fn kernel_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.factory.kernel_layout
+    }
+
+    /// `effect_bind_group_layout` returns the group-2 layout for a runtime effect's uniforms.
+    ///
+    /// Binding 0 is a dynamic-offset uniform buffer [`EFFECT_UNIFORM_SIZE`] long, read from the
+    /// same blocks as the draw records.
+    pub fn effect_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.factory.effect_layout
     }
 
     /// `begin_frame` rotates to the next arena and resets its cursors.
@@ -233,6 +257,13 @@ impl HostBuffer {
     pub(crate) fn alloc_kernel(&mut self, bytes: &[u8]) -> UniformSlot {
         debug_assert!(bytes.len() as u64 == KERNEL_SIZE);
         self.alloc_uniform_footprint(bytes, self.kernel_stride)
+    }
+
+    /// `alloc_effect_uniforms` bump-allocates one runtime effect's uniforms, padded to
+    /// [`EFFECT_UNIFORM_SIZE`]; the slot binds at group 2.
+    pub(crate) fn alloc_effect_uniforms(&mut self, bytes: &[u8]) -> UniformSlot {
+        debug_assert!(bytes.len() as u64 <= EFFECT_UNIFORM_SIZE);
+        self.alloc_uniform_footprint(bytes, self.effect_stride)
     }
 
     /// `alloc_uniform_footprint` takes `footprint` bytes of the uniform arena,
@@ -337,6 +368,11 @@ impl HostBuffer {
         &self.frames[self.frame].uniforms[block].views.kernel
     }
 
+    /// `effect_bind_group` is the group-2 bind of `block`, for an effect's uniform slot.
+    pub(crate) fn effect_bind_group(&self, block: usize) -> &wgpu::BindGroup {
+        &self.frames[self.frame].uniforms[block].views.effect
+    }
+
     pub(crate) fn vertex_buffer(&self, block: usize) -> &wgpu::Buffer {
         &self.frames[self.frame].vertices[block].buffer
     }
@@ -397,8 +433,7 @@ impl BlockWriter {
 }
 
 impl BlockFactory {
-    /// `uniform_block` is a new uniform block of `size` bytes with its two
-    /// bind groups.
+    /// `uniform_block` is a new uniform block of `size` bytes with its bind groups.
     fn uniform_block(&self, size: u64) -> Block<UniformBindGroups> {
         let buffer = self.buffer(
             "valo.host_buffer.uniforms",
@@ -408,6 +443,12 @@ impl BlockFactory {
         let bind_groups = UniformBindGroups {
             record: uniform_view(&self.device, &self.record_layout, &buffer, UNIFORM_SIZE),
             kernel: uniform_view(&self.device, &self.kernel_layout, &buffer, KERNEL_SIZE),
+            effect: uniform_view(
+                &self.device,
+                &self.effect_layout,
+                &buffer,
+                EFFECT_UNIFORM_SIZE,
+            ),
         };
         self.block(buffer, bind_groups, size)
     }

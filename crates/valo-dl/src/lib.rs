@@ -15,6 +15,7 @@
 mod bounds;
 mod builder;
 mod color_filter;
+mod effect;
 mod list;
 mod paint;
 mod resources;
@@ -22,6 +23,10 @@ mod shader;
 
 pub use bounds::Bounds;
 pub use builder::DisplayListBuilder;
+pub use effect::{
+    EffectError, EffectImage, EffectKind, FilterInputs, RuntimeEffect, RuntimeShader, UniformField,
+    UniformLayout, UniformType, IMAGE_GROUP, MAX_UNIFORM_BYTES, SOURCE_GROUP, UNIFORM_GROUP,
+};
 pub use list::{Backdrop, BackdropGroup, ClipOp, DisplayList, GlyphPos, MaskKind, Op};
 pub use paint::{BlendMode, BlurStyle, ColorFilter, ImageFilter, MaskBlur, Paint, PaintStyle};
 pub use resources::{Filter, Image, ImageInner, MipmapMode, Sampling, TileMode};
