@@ -72,6 +72,9 @@ pub struct Line {
     pub ascent: f32,
     /// `descent` is the maximum distance below the baseline in logical pixels.
     pub descent: f32,
+    /// `cap_height` is the largest height of capital letters among the line's text runs, in
+    /// logical pixels; 0 when no font says.
+    pub cap_height: f32,
     /// `left` is the paragraph-local x coordinate after alignment.
     pub left: f32,
     /// `width` is the signed content advance in logical pixels.
@@ -469,6 +472,9 @@ pub struct LineMetrics {
     pub ascent: f32,
     /// `descent` is the logical-pixel distance below the baseline.
     pub descent: f32,
+    /// `cap_height` is the largest height of capital letters among the line's text runs, 0 when
+    /// no font says.
+    pub cap_height: f32,
     /// `left` is the paragraph-local x coordinate after alignment.
     pub left: f32,
     /// `width` is the line's signed content advance in logical pixels.
@@ -505,6 +511,7 @@ impl Paragraph {
                 baseline: line.baseline,
                 ascent: line.ascent,
                 descent: line.descent,
+                cap_height: line.cap_height,
                 left: line.left,
                 width: line.width,
             })

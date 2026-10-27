@@ -689,3 +689,21 @@ fn a_run_renders_with_the_remote_id_its_font_was_made_with() {
     let run = &p.lines()[0].runs[0];
     assert_eq!(p.faces().get(run.font).remote_id(), Some(7));
 }
+
+#[test]
+fn a_line_reports_its_fonts_cap_height() {
+    use skrifa::MetadataProvider;
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
+    let data = std::fs::read(format!("{dir}/fira_sans.ttf")).unwrap();
+    let font = skrifa::FontRef::new(&data).unwrap();
+    let metrics = font.metrics(
+        skrifa::instance::Size::unscaled(),
+        skrifa::instance::LocationRef::default(),
+    );
+    let expected = metrics.cap_height.unwrap() * 20.0 / f32::from(metrics.units_per_em);
+    let mut c = fonts();
+    let p = laid_out(&mut c, "Cap", f32::INFINITY);
+    let line = &p.line_metrics()[0];
+    assert!((line.cap_height - expected).abs() < 1e-4, "{} vs {expected}", line.cap_height);
+    assert!(line.cap_height > 0.0 && line.cap_height < line.ascent);
+}

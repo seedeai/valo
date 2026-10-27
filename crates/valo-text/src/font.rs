@@ -112,6 +112,9 @@ pub struct Font {
     ascent: f32,
     descent: f32,
     line_gap: f32,
+    /// The height of capital letters above the baseline in font units, 0 when the font does not
+    /// say (Skia's `fCapHeight`).
+    cap_height: f32,
     /// Union of all glyph ink, font units y-up — Skia's fXMin/fXMax family.
     bounds: Option<(f32, f32, f32, f32)>,
     /// (offset from baseline, thickness) in font units, when the font says.
@@ -188,6 +191,7 @@ impl Font {
             ascent: metrics.ascent,
             descent: metrics.descent,
             line_gap: metrics.leading,
+            cap_height: metrics.cap_height.unwrap_or(0.0),
             bounds: metrics.bounds.map(|b| (b.x_min, b.y_min, b.x_max, b.y_max)),
             underline: metrics.underline.map(|d| (d.offset, d.thickness)),
             strikeout: metrics.strikeout.map(|d| (d.offset, d.thickness)),
@@ -276,6 +280,12 @@ impl Font {
     /// `ascent_px` returns the positive distance above the baseline at `size`.
     pub fn ascent_px(&self, size: f32) -> f32 {
         self.ascent * size / self.units_per_em
+    }
+
+    /// `cap_height_px` returns the height of capital letters above the baseline at `size`, 0
+    /// when the font does not say.
+    pub fn cap_height_px(&self, size: f32) -> f32 {
+        self.cap_height * size / self.units_per_em
     }
 
     /// `descent_px` returns the positive distance below the baseline at `size`.

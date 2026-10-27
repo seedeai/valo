@@ -236,6 +236,10 @@ pub fn place_lines(
             last_heights = h;
         }
         let text_descent = text_heights.map_or(0.0, |(_, descent, _)| descent);
+        let cap_height = text_runs
+            .iter()
+            .map(|run| collection.get(run.font).cap_height_px(run.size))
+            .fold(0.0, f32::max);
         let (ascent, _descent, height) =
             fit_placeholders(text_heights, &overlapping, text_descent).unwrap_or(last_heights);
         let baseline = y + ascent;
@@ -263,6 +267,7 @@ pub fn place_lines(
             baseline,
             ascent,
             descent: _descent,
+            cap_height,
             left: placed.left,
             width: placed.width,
             range: line.range,
