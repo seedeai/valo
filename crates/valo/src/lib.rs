@@ -57,10 +57,10 @@ pub use valo_renderer::{
 };
 pub use valo_text::{
     match_style, Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData,
-    FontDemand, FontId, FontSource, FontUid, GlyphImage, GlyphRaster, GlyphStroke, Line,
-    LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PlaceholderAlignment,
-    PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Rasterizer, Shadow, TextAlign,
-    TextBaseline, TextDirection, TextStyle, VariantCaps,
+    FontDemand, FontId, FontSource, FontSynthesis, FontUid, GlyphImage, GlyphRaster, GlyphStroke,
+    Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
+    PlaceholderAlignment, PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Rasterizer,
+    Shadow, TextAlign, TextBaseline, TextDirection, TextStyle, VariantCaps,
 };
 
 mod text;

@@ -189,6 +189,9 @@ pub enum Op {
         #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_font_uid"))]
         font: std::sync::Arc<valo_text::Font>,
         size: f32,
+        /// The bold and italic the glyphs fake because the font lacks them.
+        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_synthesis"))]
+        synthesis: valo_text::FontSynthesis,
         /// Blend/alpha/mask-blur apply like any draw; `paint.color` tints
         /// mask glyphs (color glyphs keep their palette, alpha only).
         paint: Paint,
@@ -454,6 +457,18 @@ fn serialize_font_uid<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_u64(font.uid().0)
+}
+
+#[cfg(feature = "serde")]
+fn serialize_synthesis<S: serde::Serializer>(
+    synthesis: &valo_text::FontSynthesis,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut fields = serializer.serialize_struct("FontSynthesis", 2)?;
+    fields.serialize_field("embolden", &synthesis.embolden)?;
+    fields.serialize_field("skew", &synthesis.skew)?;
+    fields.end()
 }
 
 #[cfg(test)]

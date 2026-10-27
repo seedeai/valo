@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use valo_text::{FaceSet, Font, Rasterizer};
+use valo_text::{FaceSet, Font, FontSynthesis, Rasterizer};
 
 fn emoji_collection() -> (FaceSet, valo_text::FontId, u32) {
     let path = concat!(
@@ -76,7 +76,7 @@ fn colrv1_scales_with_px() {
 fn colr_glyphs_report_no_outline() {
     let (fonts, id, glyph) = emoji_collection();
     assert!(
-        valo_text::glyph_path(fonts.get(id), glyph, 200.0).is_none(),
+        valo_text::glyph_path(fonts.get(id), glyph, 200.0, FontSynthesis::NONE).is_none(),
         "empty COLR outline must be None, not Some(empty)"
     );
 }

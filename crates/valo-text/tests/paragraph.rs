@@ -3,8 +3,8 @@
 
 use valo_geometry::Color;
 use valo_text::{
-    FaceSet, Font, FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, Rasterizer,
-    TextAlign, TextStyle,
+    FaceSet, Font, FontCollection, FontSynthesis, Paragraph, ParagraphBuilder, ParagraphStyle,
+    Rasterizer, TextAlign, TextStyle,
 };
 mod valo {
     pub use valo_geometry::Point;
@@ -255,17 +255,21 @@ fn rasterizes_alpha_sdf_and_path() {
     let glyph = c.get(font).glyph_for('g').unwrap();
     let mut r = Rasterizer::new();
 
-    let alpha = r.alpha(c.get(font), glyph, 32.0, 0.0).unwrap();
+    let alpha = r
+        .alpha(c.get(font), glyph, 32.0, FontSynthesis::NONE, 0.0)
+        .unwrap();
     assert!(alpha.width > 5 && alpha.height > 5);
     assert!(alpha.data.iter().any(|&v| v > 200));
 
-    let sdf = r.sdf(c.get(font), glyph, 32.0).unwrap();
+    let sdf = r
+        .sdf(c.get(font), glyph, 32.0, FontSynthesis::NONE)
+        .unwrap();
     // 2×-supersampled + padded, then halved: within a px of alpha + 2·pad.
     assert!(sdf.width.abs_diff(alpha.width + 2 * valo_text::SDF_PAD) <= 1);
     assert!(sdf.data.iter().any(|&v| v > 140), "inside rises above 0.5");
     assert!(sdf.data.iter().any(|&v| v < 50), "far outside < 0.5");
 
-    let path = valo_text::glyph_path(c.get(font), glyph, 64.0).unwrap();
+    let path = valo_text::glyph_path(c.get(font), glyph, 64.0, FontSynthesis::NONE).unwrap();
     let bounds = path.bounds();
     assert!(bounds.width > 20.0 && bounds.height > 20.0);
     assert!(
@@ -704,6 +708,10 @@ fn a_line_reports_its_fonts_cap_height() {
     let mut c = fonts();
     let p = laid_out(&mut c, "Cap", f32::INFINITY);
     let line = &p.line_metrics()[0];
-    assert!((line.cap_height - expected).abs() < 1e-4, "{} vs {expected}", line.cap_height);
+    assert!(
+        (line.cap_height - expected).abs() < 1e-4,
+        "{} vs {expected}",
+        line.cap_height
+    );
     assert!(line.cap_height > 0.0 && line.cap_height < line.ascent);
 }

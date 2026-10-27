@@ -12,6 +12,7 @@ mod raster;
 mod sdf;
 mod shape;
 mod style;
+mod synthesis;
 #[cfg(feature = "woff2")]
 mod woff2;
 mod wrap;
@@ -35,3 +36,4 @@ pub use style::{
     Decoration, DecorationKind, ParagraphStyle, PlaceholderAlignment, PlaceholderStyle, Shadow,
     TextAlign, TextBaseline, TextDirection, TextStyle, VariantCaps,
 };
+pub use synthesis::FontSynthesis;

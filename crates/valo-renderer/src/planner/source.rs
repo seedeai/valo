@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use valo_dl::{ColorFilter, GlyphPos, Image, MaskBlur, Paint, PaintStyle, Sampling, TileMode};
 use valo_geometry::{Color, FillRule, Matrix, Path, Rect, Stroke};
-use valo_text::Font;
+use valo_text::{Font, FontSynthesis};
 
 use super::filter_tree::{DrawMaskBlur, Fill, MaskedDraw};
 
@@ -69,13 +69,15 @@ pub(super) enum DrawSource<'a> {
 }
 
 /// `GlyphRun` is one placed run of glyphs: the font instance, the size it
-/// was laid out at, the positioned glyphs, and its recorded bounds. Those
+/// was laid out at and the styles it fakes, the positioned glyphs, and its
+/// recorded bounds. Those
 /// ride along because glyph extents are not derivable at plan time — a
 /// layer that has to enclose the run sizes itself from them.
 #[derive(Clone, Copy)]
 pub(super) struct GlyphRun<'a> {
     pub font: &'a Arc<Font>,
     pub size: f32,
+    pub synthesis: FontSynthesis,
     pub glyphs: &'a Arc<Vec<GlyphPos>>,
     /// The run's ink in local coordinates, stroke included, before effects.
     pub content_bounds: Rect,

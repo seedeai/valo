@@ -560,13 +560,14 @@ fn place_slice(
     Some(PlacedRun {
         font: run.font,
         size: run.size,
+        synthesis: run.synthesis,
         color: run.color,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
         rtl: slice.rtl,
         bounds,
-        ink: ink_bounds(font, run.size, start_x, last_origin, *x, slice.baseline),
+        ink: ink_bounds(font, run, start_x, last_origin, *x, slice.baseline),
         placeholder: None,
     })
 }
@@ -594,6 +595,7 @@ fn place_placeholder(
     Some(PlacedRun {
         font: run.font,
         size: run.size,
+        synthesis: run.synthesis,
         color: run.color,
         decoration: None,
         shadows: Vec::new(),
@@ -612,29 +614,30 @@ fn place_placeholder(
 }
 
 /// The run's INK box, not its advance box: the font-wide extremes bound
-/// bearings, italic overhang, and mark excursions (Skia's font bounds).
-/// Under-reporting here mis-culls and lets the opacity-elision proof call
-/// overlapping runs "disjoint" (double-blend).
+/// bearings, italic overhang, and mark excursions (Skia's font bounds), grown
+/// by what the run's synthesis adds to every glyph. A font without bounds
+/// takes its ascent and descent over the advances. Under-reporting here
+/// mis-culls and lets the opacity-elision proof call overlapping runs
+/// "disjoint" (double-blend).
 fn ink_bounds(
     font: &crate::font::Font,
-    size: f32,
+    run: &ShapedRun,
     start_x: f32,
     last_origin: f32,
     end_x: f32,
     baseline: f32,
 ) -> valo_geometry::Rect {
-    let (ascent, descent) = (font.ascent_px(size), font.descent_px(size));
-    match font.ink_box_px(size) {
-        Some((x_min, y_min, x_max, y_max)) => valo_geometry::Rect::from_ltrb(
-            start_x + x_min.min(0.0),
-            baseline - ascent.max(y_max),
-            end_x.max(last_origin + x_max),
-            baseline + descent.max(-y_min),
-        ),
-        None => {
-            valo_geometry::Rect::from_ltrb(start_x, baseline - ascent, end_x, baseline + descent)
-        }
-    }
+    let (ascent, descent) = (font.ascent_px(run.size), font.descent_px(run.size));
+    let glyph_box = font
+        .ink_box_px(run.size)
+        .unwrap_or((0.0, -descent, 0.0, ascent));
+    let (x_min, y_min, x_max, y_max) = run.synthesis.ink_box(glyph_box, run.size);
+    valo_geometry::Rect::from_ltrb(
+        start_x + x_min.min(0.0),
+        baseline - ascent.max(y_max),
+        end_x.max(last_origin + x_max),
+        baseline + descent.max(-y_min),
+    )
 }
 
 /// An isolated pre-shaped run (the ellipsis) dropped at the cursor.
@@ -669,6 +672,7 @@ fn place_isolated(
     placed.push(PlacedRun {
         font: run.font,
         size: run.size,
+        synthesis: run.synthesis,
         color: run.color,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
@@ -680,7 +684,7 @@ fn place_isolated(
             *x,
             baseline + font.descent_px(run.size),
         ),
-        ink: ink_bounds(font, run.size, start_x, last_origin, *x, baseline),
+        ink: ink_bounds(font, run, start_x, last_origin, *x, baseline),
         placeholder: None,
     });
 }

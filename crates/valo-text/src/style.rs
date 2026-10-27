@@ -9,8 +9,12 @@ pub struct TextStyle {
     /// `families` lists preferred font families in fallback order.
     pub families: Vec<String>,
     /// `weight` selects a CSS font weight, conventionally from 100 to 900.
+    ///
+    /// A family without a face this heavy fakes bold on its nearest one, as
+    /// [`crate::FontSynthesis::needed`] decides.
     pub weight: u16,
-    /// `italic` selects an italic face when available.
+    /// `italic` selects an italic face when available, and slants an upright
+    /// one when not.
     pub italic: bool,
     /// `stretch` selects CSS font width as a percentage, where 100 is normal.
     ///

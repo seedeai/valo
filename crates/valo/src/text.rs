@@ -120,6 +120,7 @@ fn draw_run(
     b.draw_glyph_run(
         fonts.get_arc(run.font),
         run.size,
+        run.synthesis,
         paint,
         Arc::new(glyphs),
         bounds,

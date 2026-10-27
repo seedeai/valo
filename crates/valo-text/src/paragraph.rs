@@ -31,6 +31,9 @@ pub struct PlacedRun {
     pub font: FontId,
     /// `size` is the font size in logical pixels.
     pub size: f32,
+    /// `synthesis` is the bold and italic the run fakes because its font lacks them; its
+    /// glyphs are drawn with it.
+    pub synthesis: crate::synthesis::FontSynthesis,
     /// `color` is the glyph fill color.
     pub color: Color,
     /// `decoration` optionally adds a line relative to the run.
@@ -286,7 +289,8 @@ impl Paragraph {
                     .or_insert_with(|| rasterizer.color_bounds(font, glyph.id, run.size));
                 let bounds = if let Some(bounds) = color {
                     bounds
-                } else if let Some(path) = crate::raster::glyph_path(font, glyph.id, run.size) {
+                } else if let Some(path) = rasterizer.path(font, glyph.id, run.size, run.synthesis)
+                {
                     path.tight_bounds()
                 } else {
                     continue;

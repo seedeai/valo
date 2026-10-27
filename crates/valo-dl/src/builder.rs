@@ -565,12 +565,16 @@ impl DisplayListBuilder {
 
     /// `draw_glyph_run` records positioned glyphs from one font and size.
     ///
-    /// `local_bounds` must enclose the glyph ink in local coordinates. Valo
-    /// retains the supplied font and glyph positions in the display list.
+    /// `synthesis` is the bold and italic the glyphs fake because the font
+    /// lacks them, as a placed run carries it; [`valo_text::FontSynthesis::NONE`]
+    /// draws the font as it is. `local_bounds` must enclose the glyph ink in
+    /// local coordinates, synthesis included. Valo retains the supplied font
+    /// and glyph positions in the display list.
     pub fn draw_glyph_run(
         &mut self,
         font: std::sync::Arc<valo_text::Font>,
         size: f32,
+        synthesis: valo_text::FontSynthesis,
         paint: &Paint,
         glyphs: Arc<Vec<crate::GlyphPos>>,
         local_bounds: Rect,
@@ -591,6 +595,7 @@ impl DisplayListBuilder {
             |bounds, slot| Op::GlyphRun {
                 font,
                 size,
+                synthesis,
                 paint: paint.clone(),
                 glyphs,
                 content_bounds,

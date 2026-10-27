@@ -369,6 +369,7 @@ impl<'a> RecordedDraw<'a> {
             Op::GlyphRun {
                 font,
                 size,
+                synthesis,
                 paint,
                 glyphs,
                 content_bounds,
@@ -379,6 +380,7 @@ impl<'a> RecordedDraw<'a> {
                 let source = DrawSource::Glyphs(GlyphRun {
                     font,
                     size: *size,
+                    synthesis: *synthesis,
                     glyphs,
                     content_bounds: *content_bounds,
                     device_bounds,

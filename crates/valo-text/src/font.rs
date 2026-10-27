@@ -460,11 +460,18 @@ impl FaceSet {
         Self::default()
     }
 
-    /// `register` adds font bytes under a family using default attributes.
+    /// `register` adds font bytes under a family, with the weight, slant and width the file
+    /// declares.
     ///
-    /// It returns `None` when face zero cannot be parsed.
+    /// The face answers only to `family`, not to the names inside the file, as Flutter
+    /// registers a font under the family a host gives it, so the four static faces of one
+    /// family registered under its name select by weight like one family. It returns `None`
+    /// when face zero cannot be parsed.
     pub fn register(&mut self, family: &str, bytes: Vec<u8>) -> Option<FontId> {
-        self.register_with(family, FontAttrs::default(), bytes)
+        let (data, face_index) = unwrapped(Arc::new(bytes), 0)?;
+        let attrs = embedded_attrs((*data).as_ref(), face_index);
+        let font = Font::parse(family, attrs, data, face_index, Vec::new())?;
+        Some(self.add(font))
     }
 
     /// `register_with` adds font bytes under a family with explicit attributes.
@@ -1052,9 +1059,11 @@ impl FontCollection {
         &self.faces
     }
 
-    /// `register` adds font bytes under a family using default attributes.
+    /// `register` adds font bytes under a family, with the weight, slant and width the file
+    /// declares.
     ///
-    /// It returns `None` when face zero cannot be parsed.
+    /// The face answers only to `family`, as [`FaceSet::register`] describes. It returns
+    /// `None` when face zero cannot be parsed.
     pub fn register(&mut self, family: &str, bytes: Vec<u8>) -> Option<FontId> {
         self.faces.register(family, bytes)
     }

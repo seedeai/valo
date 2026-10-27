@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use valo::{
-    Color, Context, DisplayListBuilder, DrawParagraphExt, FontCollection, Offscreen, Paint,
-    ParagraphBuilder, Rect, TextStyle,
+    Color, Context, DisplayListBuilder, DrawParagraphExt, FontCollection, FontSynthesis, Offscreen,
+    Paint, ParagraphBuilder, Rect, TextStyle,
 };
 use valo_dl::GlyphPos;
 
@@ -71,7 +71,14 @@ fn overlapping_glyphs_under_a_group_alpha_blend_once() {
     let run = |b: &mut DisplayListBuilder, xs: &[f32], paint: &Paint| {
         let glyphs = xs.iter().map(|&x| GlyphPos { id: h, x, y: 72.0 }).collect();
         let bounds = Rect::new(0.0, 0.0, SIZE[0] as f32, SIZE[1] as f32);
-        b.draw_glyph_run(Arc::clone(&font), 64.0, paint, Arc::new(glyphs), bounds);
+        b.draw_glyph_run(
+            Arc::clone(&font),
+            64.0,
+            FontSynthesis::NONE,
+            paint,
+            Arc::new(glyphs),
+            bounds,
+        );
     };
     let alone = |context: &mut Context, x: f32| {
         let mut b = DisplayListBuilder::new();

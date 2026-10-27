@@ -7,6 +7,7 @@ use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::style::{
     Decoration, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline, TextStyle,
 };
+use crate::synthesis::FontSynthesis;
 
 /// One shaped glyph, unpositioned: advances/offsets in px, `cluster` a byte
 /// index into the paragraph text (the wrap slicer's key).
@@ -27,6 +28,8 @@ pub struct ShapedRun {
     pub range: Range<usize>,
     pub font: FontId,
     pub size: f32,
+    /// The bold and italic the run fakes because its font lacks them.
+    pub synthesis: FontSynthesis,
     pub color: Color,
     /// Line-height multiplier from the style (`None` = font metrics).
     pub height: Option<f32>,
@@ -217,6 +220,7 @@ fn shape_segment(
         range: segment.range,
         font: segment.font,
         size: style.size,
+        synthesis: FontSynthesis::needed(style.font_attrs(), font.attrs(), style.size),
         color: style.color,
         height: style.height,
         decoration: style.decoration,
@@ -253,6 +257,7 @@ fn placeholder_run(
         range,
         font,
         size: style.size,
+        synthesis: FontSynthesis::NONE,
         color: style.color,
         height: None,
         decoration: None,
@@ -288,7 +293,8 @@ fn apply_spacing(glyphs: &mut [ShapedGlyph], text: &str, style: &TextStyle) {
 }
 
 /// Shape a short standalone string (the ellipsis) in one font/size — no
-/// segmentation, LTR, clusters zeroed (it's placed as an opaque unit).
+/// segmentation, LTR, clusters zeroed (it's placed as an opaque unit). It fakes
+/// no styles: Skia shapes the ellipsis in a fresh font of the run's typeface.
 pub(crate) fn shape_isolated(
     collection: &FaceSet,
     font_id: FontId,
@@ -312,6 +318,7 @@ pub(crate) fn shape_isolated(
         range: 0..0,
         font: font_id,
         size,
+        synthesis: FontSynthesis::NONE,
         color,
         height: None,
         decoration: None,

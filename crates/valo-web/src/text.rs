@@ -108,7 +108,9 @@ impl WebFontCollection {
     /// `registerFont` adds font bytes under a family name.
     ///
     /// `bytes` is copied into the collection. Face zero of the file is parsed;
-    /// a TrueType collection uses that first face. Returns `false` when the
+    /// a TrueType collection uses that first face. Its weight, slant and width
+    /// come from the file, so a family's static faces register one by one
+    /// under the family's name. Returns `false` when the
     /// bytes cannot be parsed, and does not record a fallback. When `fallback`
     /// is true and registration succeeds, the face is also appended to the
     /// global fallback order used after requested families.

@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use valo_dl::{GlyphPos, Paint, PaintStyle};
 use valo_geometry::{Color, FillRule, Matrix, MatrixKind, Point, Stroke};
-use valo_text::{Font, GlyphStroke};
+use valo_text::{Font, FontSynthesis, GlyphStroke};
 
 use crate::glyphs::{AtlasGlyph, Coverage, PageRef, TextTiers, SDF_BUCKETS};
 use crate::pipelines::{Frag, PipelineBlend};
@@ -64,11 +64,13 @@ impl GlyphTier {
     }
 }
 
-/// `Strike` is one font rastered at one size and coverage: what a glyph's
-/// atlas entry is keyed on, besides the glyph and its subpixel phase
-/// (Skia's strike).
+/// `Strike` is one font rastered at one size and coverage, with the styles
+/// it fakes: what a glyph's atlas entry is keyed on, besides the glyph and
+/// its subpixel phase (Skia's strike, whose font carries its embolden and
+/// skew).
 struct Strike<'f> {
     font: &'f Arc<Font>,
+    synthesis: FontSynthesis,
     px: f32,
     coverage: Coverage,
 }
@@ -83,7 +85,8 @@ impl Drawing<'_, '_> {
         at: &DrawState,
         blend: PipelineBlend,
     ) {
-        let (font, size, glyphs) = (run.font, run.size, run.glyphs.as_slice());
+        let (font, synthesis, size) = (run.font, run.synthesis, run.size);
+        let glyphs = run.glyphs.as_slice();
         // The tiers colour each glyph through the run's colour filter, which
         // rides the paint from here on.
         let paint = &Paint {
@@ -95,10 +98,19 @@ impl Drawing<'_, '_> {
         let tier = glyph_tier(self.caches.glyphs.tiers, paint, scale, device_px);
         self.stats.text_tiers[tier.stats_index()] += 1;
         match tier {
-            GlyphTier::Outline => self.draw_glyph_outlines(font, size, paint, glyphs, at, blend),
+            GlyphTier::Outline => {
+                let strike = Strike {
+                    font,
+                    synthesis,
+                    px: size,
+                    coverage: Coverage::Fill,
+                };
+                self.draw_glyph_outlines(&strike, paint, glyphs, at, blend)
+            }
             GlyphTier::Sdf => {
                 let strike = Strike {
                     font,
+                    synthesis,
                     px: sdf_bucket(device_px),
                     coverage: Coverage::Sdf,
                 };
@@ -111,6 +123,7 @@ impl Drawing<'_, '_> {
                 };
                 let strike = Strike {
                     font,
+                    synthesis,
                     px: size * scale,
                     coverage,
                 };
@@ -213,9 +226,13 @@ impl Drawing<'_, '_> {
     /// `ensure_strike` packs the glyphs `keys` name (glyph id, subpixel
     /// phase) of `strike` into the atlas.
     fn ensure_strike(&mut self, strike: &Strike, keys: &[(u32, u8)]) {
-        self.caches
-            .glyphs
-            .ensure_run(strike.font, strike.px, strike.coverage, keys);
+        self.caches.glyphs.ensure_run(
+            strike.font,
+            strike.synthesis,
+            strike.px,
+            strike.coverage,
+            keys,
+        );
     }
 
     /// `atlas_glyph` is glyph `id` of `strike` at subpixel `phase` in the
@@ -228,11 +245,11 @@ impl Drawing<'_, '_> {
         id: u32,
         phase: u8,
     ) -> Option<(f32, PageRef, AtlasGlyph)> {
-        let font = strike.font.uid().0;
+        let (font, synthesis) = (strike.font.uid().0, strike.synthesis);
         let glyphs = &mut self.caches.glyphs;
-        match glyphs.entry(font, id, strike.px, strike.coverage, phase) {
+        match glyphs.entry(font, synthesis, id, strike.px, strike.coverage, phase) {
             Some((page, entry)) => Some((strike.px, page, entry)),
-            None => glyphs.resident_stand_in(font, id, strike.coverage, strike.px),
+            None => glyphs.resident_stand_in(font, synthesis, id, strike.coverage, strike.px),
         }
     }
 
@@ -262,12 +279,12 @@ impl Drawing<'_, '_> {
         }
     }
 
-    /// `draw_glyph_outlines` is the outline tier: each glyph is a real path,
-    /// filled stencil-then-cover like any shape.
+    /// `draw_glyph_outlines` is the outline tier: each glyph of `strike` is a
+    /// real path at the run's own size, `strike.px`, filled stencil-then-cover
+    /// like any shape.
     fn draw_glyph_outlines(
         &mut self,
-        font: &Arc<Font>,
-        size: f32,
+        strike: &Strike,
         paint: &Paint,
         glyphs: &[GlyphPos],
         at: &DrawState,
@@ -281,10 +298,11 @@ impl Drawing<'_, '_> {
             style: paint.style.clone(),
             ..Default::default()
         };
+        let (font, size) = (strike.font, strike.px);
         let hide_notdef = self.caches.glyphs.hides_missing_glyphs();
         let mut no_outline: Vec<GlyphPos> = Vec::new();
         for g in shown_glyphs(glyphs, hide_notdef) {
-            let Some(path) = self.caches.glyphs.path(font, g.id, size) else {
+            let Some(path) = self.caches.glyphs.path(font, strike.synthesis, g.id, size) else {
                 no_outline.push(*g);
                 continue;
             };
@@ -300,11 +318,7 @@ impl Drawing<'_, '_> {
                 style: PaintStyle::Fill,
                 ..paint.clone()
             };
-            let strike = Strike {
-                font,
-                px,
-                coverage: Coverage::Fill,
-            };
+            let strike = Strike { px, ..*strike };
             self.draw_glyph_quads(&strike, size, &bitmap_paint, &no_outline, at, blend);
         }
     }

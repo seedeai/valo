@@ -34,7 +34,10 @@ Change size, weight, align, or layout width.
 
 <Demo demo="docs-paragraph" caption="live" />
 
-`TextStyle` defaults to opaque black, weight 400, and no italic. `align` is `0`
+`TextStyle` defaults to opaque black, weight 400, and no italic. A family with
+no face that heavy or that slanted fakes it on its nearest face: bold from weight
+600 when the face is at least 200 lighter, italic on an upright face, with the
+face's own advances. `align` is `0`
 left, `1` center, `2` right, `3` justify. The one-span `Paragraph` constructor
 still exists for the Canvas2D adapter; prefer the builder in new code.
 
