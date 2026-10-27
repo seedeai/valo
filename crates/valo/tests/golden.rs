@@ -3520,6 +3520,7 @@ fn blend_filter_cpu_and_image_gpu_paths_agree() {
         BlendMode::Saturation,
         BlendMode::Color,
         BlendMode::Luminosity,
+        BlendMode::PlusDarker,
     ];
     let mut builder = DisplayListBuilder::new();
     for (index, mode) in modes.into_iter().enumerate() {
@@ -3552,12 +3553,12 @@ fn blend_filter_cpu_and_image_gpu_paths_agree() {
         );
     }
     let list = builder.build();
-    let offscreen = Offscreen::new(&device, [58, 3]);
+    let offscreen = Offscreen::new(&device, [60, 3]);
     let first_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
-    let first = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [58, 3]);
-    assert_eq!(first_stats.filter_passes, 29, "one cached image per filter");
+    let first = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [60, 3]);
+    assert_eq!(first_stats.filter_passes, 30, "one cached image per filter");
     let second_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
-    let second = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [58, 3]);
+    let second = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), [60, 3]);
     assert_eq!(
         second_stats.filter_passes, 0,
         "filtered images are retained"
@@ -3567,14 +3568,14 @@ fn blend_filter_cpu_and_image_gpu_paths_agree() {
     context.render(&empty, &offscreen.target(Some(Color::TRANSPARENT)));
     let resumed_stats = context.render(&list, &offscreen.target(Some(Color::TRANSPARENT)));
     assert_eq!(
-        resumed_stats.filter_passes, 29,
+        resumed_stats.filter_passes, 30,
         "an idle frame releases filtered snapshots"
     );
-    for index in 0..29usize {
+    for index in 0..30usize {
         let gpu = &first[index * 8..index * 8 + 4];
-        let cpu_offset = (58 + index * 2) * 4;
+        let cpu_offset = (60 + index * 2) * 4;
         let cpu = &first[cpu_offset..cpu_offset + 4];
-        let pattern_offset = (58 * 2 + index * 2) * 4;
+        let pattern_offset = (60 * 2 + index * 2) * 4;
         let pattern = &first[pattern_offset..pattern_offset + 4];
         assert!(
             gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(*b) <= 2),
@@ -4365,7 +4366,7 @@ fn cpu_and_shader_color_filters_agree() {
         eprintln!("SKIP cpu_and_shader_color_filters_agree");
         return;
     };
-    const MODES: [BlendMode; 29] = [
+    const MODES: [BlendMode; 30] = [
         BlendMode::Clear,
         BlendMode::Src,
         BlendMode::Dst,
@@ -4395,6 +4396,7 @@ fn cpu_and_shader_color_filters_agree() {
         BlendMode::Saturation,
         BlendMode::Color,
         BlendMode::Luminosity,
+        BlendMode::PlusDarker,
     ];
     // Asymmetric channels: a grey pair would agree under Hue and Saturation
     // whatever the code did.

@@ -92,13 +92,13 @@ typedef struct ValoCornerRadii {
  * filter. Unknown integer enums take the valo default (fill, srcOver, butt,
  * miter, normal blur) rather than trapping.
  *
- * blend_mode — the 29 Skia modes, in this order:
+ * blend_mode — the 29 Skia modes, then Apple's plus-darker, in this order:
  *  0 clear · 1 src · 2 dst · 3 srcOver · 4 dstOver · 5 srcIn · 6 dstIn ·
  *  7 srcOut · 8 dstOut · 9 srcAtop · 10 dstAtop · 11 xor · 12 plus ·
  *  13 modulate · 14 screen · 15 overlay · 16 darken · 17 lighten ·
  *  18 colorDodge · 19 colorBurn · 20 hardLight · 21 softLight ·
  *  22 difference · 23 exclusion · 24 multiply · 25 hue · 26 saturation ·
- *  27 color · 28 luminosity
+ *  27 color · 28 luminosity · 29 plusDarker
  * style: 0 fill · 1 stroke. stroke_width 0 is a hairline (one device pixel);
  * only a negative width draws nothing. stroke_cap: 0 butt · 1 round ·
  * 2 square. stroke_join: 0 miter · 1 round · 2 bevel. stroke_miter_limit

@@ -86,8 +86,26 @@ fn blend(destination: Color, source: Color, mode: BlendMode) -> Color {
         BlendMode::Modulate => {
             unpremultiply(multiply(source_premultiplied, destination_premultiplied))
         }
+        BlendMode::PlusDarker => {
+            unpremultiply(plus_darker(source_premultiplied, destination_premultiplied))
+        }
         mode => blend_advanced(destination, source, mode),
     }
+}
+
+/// `plus_darker` is Core Image's `_plusDarker` kernel over premultiplied
+/// colour: the sum's distance from its own alpha, clamped, taken back off
+/// that alpha.
+fn plus_darker(source: [f32; 4], destination: [f32; 4]) -> [f32; 4] {
+    let sum = add(source, destination);
+    let alpha = sum[3].clamp(0.0, 1.0);
+    let darkness = |channel: f32| (sum[3] - channel).clamp(0.0, 1.0);
+    [
+        alpha - darkness(sum[0]),
+        alpha - darkness(sum[1]),
+        alpha - darkness(sum[2]),
+        alpha,
+    ]
 }
 
 fn blend_advanced(destination: Color, source: Color, mode: BlendMode) -> Color {
@@ -250,7 +268,7 @@ fn unpremultiply(color: [f32; 4]) -> Color {
 mod tests {
     use super::*;
 
-    const ALL_MODES: [BlendMode; 29] = [
+    const ALL_MODES: [BlendMode; 30] = [
         BlendMode::Clear,
         BlendMode::Src,
         BlendMode::Dst,
@@ -280,6 +298,7 @@ mod tests {
         BlendMode::Saturation,
         BlendMode::Color,
         BlendMode::Luminosity,
+        BlendMode::PlusDarker,
     ];
 
     #[test]
@@ -292,6 +311,42 @@ mod tests {
                 assert!(channel.is_finite(), "{mode:?} produced {color:?}");
                 assert!((-1e-5..=1.00001).contains(&channel), "{mode:?}: {color:?}");
             }
+        }
+    }
+
+    /// Grey 0.749 over white, mid grey, a saturated colour and transparent,
+    /// then at half alpha over white and over a half-transparent colour:
+    /// the values of Core Image's `_plusDarker` kernel, which Core Graphics'
+    /// `kCGBlendModePlusDarker` draws too, within its 8-bit rounding.
+    #[test]
+    fn plus_darker_follows_core_images_kernel() {
+        let grey = Color::rgb(0.749, 0.749, 0.749);
+        let half_grey = Color::rgba(0.749, 0.749, 0.749, 0.5);
+        let cases = [
+            (grey, Color::WHITE, [0.749, 0.749, 0.749, 1.0]),
+            (grey, Color::rgb(0.5, 0.5, 0.5), [0.249, 0.249, 0.249, 1.0]),
+            (grey, Color::rgb(1.0, 0.6, 0.2), [0.749, 0.349, 0.0, 1.0]),
+            (grey, Color::TRANSPARENT, [0.749, 0.749, 0.749, 1.0]),
+            (half_grey, Color::WHITE, [0.8745, 0.8745, 0.8745, 1.0]),
+            (
+                half_grey,
+                Color::rgba(0.2, 0.4, 0.8, 0.5),
+                [0.4745, 0.5745, 0.7745, 1.0],
+            ),
+        ];
+        for (source, destination, expected) in cases {
+            let color = apply(
+                ColorFilter::Blend(source, BlendMode::PlusDarker),
+                destination,
+            );
+            let channels = [color.r, color.g, color.b, color.a];
+            assert!(
+                channels
+                    .iter()
+                    .zip(expected)
+                    .all(|(channel, expected)| (channel - expected).abs() < 1e-5),
+                "{source:?} over {destination:?} gave {color:?}, expected {expected:?}"
+            );
         }
     }
 

@@ -90,9 +90,19 @@ impl Pixels {
 }
 
 fn render(context: &mut Context, paragraph: &Paragraph, paint: &Paint) -> Pixels {
+    render_over(context, paragraph, paint, Color::TRANSPARENT)
+}
+
+/// `render_over` renders `paragraph` over a target filled with `backdrop`.
+fn render_over(
+    context: &mut Context,
+    paragraph: &Paragraph,
+    paint: &Paint,
+    backdrop: Color,
+) -> Pixels {
     let mut builder = DisplayListBuilder::new();
     builder.draw_paragraph_with(paragraph, ORIGIN, paint);
-    Pixels(context.render_to_rgba(&builder.build(), SIZE, Some(Color::TRANSPARENT)))
+    Pixels(context.render_to_rgba(&builder.build(), SIZE, Some(backdrop)))
 }
 
 fn context(test: &str) -> Option<Context> {
@@ -205,6 +215,78 @@ fn reaches_its_colour_glyphs(context: &mut Context, rocket: &Paragraph, tier: &s
                 "{tier}: grey at {at:?}: {after:?}"
             );
         }
+    }
+}
+
+/// A run whose paint blends plus-darker composites its glyphs with it, in
+/// every tier, as Core Animation composites a macOS sidebar header's grey
+/// text with `plusD`: inside a stem the backdrop darkens by the grey's
+/// distance from white (Core Image's `_plusDarker` kernel), and between the
+/// stems it stays as it was.
+#[test]
+fn plus_darker_text_composites_its_glyphs_with_plus_darker() {
+    let Some(mut context) = context("plus_darker_text_composites_its_glyphs_with_plus_darker")
+    else {
+        return;
+    };
+    let mut fonts = fonts();
+    let word = paragraph(&mut fonts, "H");
+    for (tier, tiers) in TIERS {
+        context.set_text_tiers(tiers);
+        composites_with_plus_darker(&mut context, &word, tier);
+    }
+}
+
+fn composites_with_plus_darker(context: &mut Context, word: &Paragraph, tier: &str) {
+    let plain = render(context, word, &Paint::from_color(Color::WHITE));
+    let [left, top, right, bottom] = plain.ink_box();
+    let between_stems = plain
+        .all()
+        .find(|((x, y), pixel)| {
+            (left..=right).contains(x) && (top..=bottom).contains(y) && pixel[3] == 0
+        })
+        .map(|(at, _)| at)
+        .expect("a pixel inside the H's box but outside its glyph");
+    let stem = plain
+        .all()
+        .find(|(_, pixel)| pixel[3] == 255)
+        .map(|(at, _)| at)
+        .expect("a pixel the H covers whole");
+
+    let grey = Paint {
+        color: Color::rgb(0.749, 0.749, 0.749),
+        blend_mode: valo::BlendMode::PlusDarker,
+        ..Default::default()
+    };
+    // Backdrop, its pixel, then what the kernel makes of it under the grey.
+    let cases = [
+        (Color::WHITE, [255, 255, 255, 255], [191, 191, 191, 255]),
+        (
+            Color::rgb(0.5, 0.5, 0.5),
+            [128, 128, 128, 255],
+            [64, 64, 64, 255],
+        ),
+        (
+            Color::rgb(1.0, 0.6, 0.2),
+            [255, 153, 51, 255],
+            [191, 89, 0, 255],
+        ),
+    ];
+    let near = |actual: [u8; 4], expected: [u8; 4]| {
+        actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 1)
+    };
+    for (backdrop, untouched, darkened) in cases {
+        let pixels = render_over(context, word, &grey, backdrop);
+        assert!(
+            near(pixels.at(stem), darkened),
+            "{tier}: in a stem over {backdrop:?}: {:?}, expected {darkened:?}",
+            pixels.at(stem)
+        );
+        assert!(
+            near(pixels.at(between_stems), untouched),
+            "{tier}: between the stems over {backdrop:?}: {:?}, expected {untouched:?}",
+            pixels.at(between_stems)
+        );
     }
 }
 

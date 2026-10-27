@@ -29,7 +29,7 @@ pub(crate) fn blend_mode(value: u32) -> BlendMode {
     [
         Clear, Src, Dst, SrcOver, DstOver, SrcIn, DstIn, SrcOut, DstOut, SrcAtop, DstAtop, Xor,
         Plus, Modulate, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight,
-        SoftLight, Difference, Exclusion, Multiply, Hue, Saturation, Color, Luminosity,
+        SoftLight, Difference, Exclusion, Multiply, Hue, Saturation, Color, Luminosity, PlusDarker,
     ]
     .get(value as usize)
     .copied()

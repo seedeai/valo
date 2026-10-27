@@ -42,6 +42,7 @@ export const BlendMode = {
   Saturation: 26,
   Color: 27,
   Luminosity: 28,
+  PlusDarker: 29,
 } as const;
 
 /**

@@ -262,8 +262,9 @@ fn fs_mask_composite(in: VsOut) -> @location(0) vec4<f32> {
 // The pass broke before these draws: `t_dst` holds a snapshot of the target,
 // sampled at framebuffer coords (uv = position / misc.zw). The shader
 // computes blend + composite in one (PDF/W3C compositing formulas over
-// UNpremultiplied color); pipeline blending is OFF — output replaces dst.
-// The mode in misc.x is one of the `ADVANCED_*` ids.
+// UNpremultiplied color, or Apple's plus-darker over premultiplied color);
+// pipeline blending is OFF — output replaces dst. The mode in misc.x is one
+// of the `ADVANCED_*` ids.
 
 fn unpremul(c: vec4<f32>) -> vec3<f32> {
     // max() instead of select(): select evaluates BOTH branches, and /0 on
@@ -344,8 +345,27 @@ fn blend_advanced(mode: u32, s: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
     }
 }
 
-/// blend + composite (PDF §7.2.: co = αs(1−αd)·Cs + αd(1−αs)·Cd + αsαd·B).
+/// A destination-reading composite of premultiplied colours: plus-darker
+/// works on them directly, every other mode blends and composites them.
 fn composite_advanced(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
+    if mode == ADVANCED_PLUS_DARKER {
+        return plus_darker(src, dst);
+    }
+    return composite_blended(mode, src, dst);
+}
+
+/// Core Image's `_plusDarker` kernel, as CoreImage ships it: the sum's
+/// distance from its own alpha, clamped, taken back off that alpha
+/// (`kCGBlendModePlusDarker`, Core Animation's `plusD`).
+fn plus_darker(src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
+    var r = src + dst;
+    r = vec4(r.a - r.rgb, r.a);
+    r = clamp(r, vec4(0.0), vec4(1.0));
+    return vec4(r.a - r.rgb, r.a);
+}
+
+/// blend + composite (PDF §7.2.: co = αs(1−αd)·Cs + αd(1−αs)·Cd + αsαd·B).
+fn composite_blended(mode: u32, src: vec4<f32>, dst: vec4<f32>) -> vec4<f32> {
     let s = unpremul(src);
     let d = unpremul(dst);
     let b = blend_advanced(mode, s, d);

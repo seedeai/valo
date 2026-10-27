@@ -36,7 +36,7 @@ impl WebColorFilter {
     /// `blend` composites a constant source color over each produced pixel.
     ///
     /// Color components are straight-alpha sRGB. `mode` is `0` Clear through
-    /// `28` Luminosity (`3` is SrcOver). Values outside `0..=28` use SrcOver.
+    /// `29` PlusDarker (`3` is SrcOver). Values outside `0..=29` use SrcOver.
     #[wasm_bindgen(js_name = blend)]
     pub fn blend(red: f32, green: f32, blue: f32, alpha: f32, mode: u32) -> WebColorFilter {
         WebColorFilter {
@@ -290,8 +290,8 @@ impl WebPaint {
 
     /// `setBlendMode` controls compositing with destination pixels.
     ///
-    /// `mode` is `0` Clear through `28` Luminosity (`3` is SrcOver). Values
-    /// outside `0..=28` use SrcOver. Advanced modes that read destination
+    /// `mode` is `0` Clear through `29` PlusDarker (`3` is SrcOver). Values
+    /// outside `0..=29` use SrcOver. Advanced modes that read destination
     /// pixels may require an additional render-pass break.
     #[wasm_bindgen(js_name = setBlendMode)]
     pub fn set_blend_mode(&mut self, mode: u32) {

@@ -350,6 +350,7 @@ impl Blend {
             BlendMode::Saturation => Blend::ReadsDestination(A::Saturation),
             BlendMode::Color => Blend::ReadsDestination(A::Color),
             BlendMode::Luminosity => Blend::ReadsDestination(A::Luminosity),
+            BlendMode::PlusDarker => Blend::ReadsDestination(A::PlusDarker),
         }
     }
 
@@ -464,7 +465,13 @@ impl PipelineBlend {
 }
 
 /// `AdvancedBlend` is a blend a fragment runs against a copy of the
-/// destination (PDF/W3C compositing over unpremultiplied colour).
+/// destination: the PDF/W3C blend modes, composited over unpremultiplied
+/// colour, and Apple's plus-darker, which works on premultiplied colour.
+///
+/// Plus-darker clamps the sum between its two subtractions, which the blend
+/// unit cannot do in one pass: a reverse subtract would be right only over an
+/// opaque destination on a normalized target, and a float target does not
+/// clamp at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AdvancedBlend {
     Multiply,
@@ -481,11 +488,12 @@ pub enum AdvancedBlend {
     Saturation,
     Color,
     Luminosity,
+    PlusDarker,
 }
 
 impl AdvancedBlend {
     /// `ALL` are the advanced blends, in id order.
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::Multiply,
         Self::Overlay,
         Self::Darken,
@@ -500,6 +508,7 @@ impl AdvancedBlend {
         Self::Saturation,
         Self::Color,
         Self::Luminosity,
+        Self::PlusDarker,
     ];
 
     /// `id` is the switch the blending fragments take for this blend.
@@ -524,6 +533,7 @@ impl AdvancedBlend {
             Self::Saturation => "SATURATION",
             Self::Color => "COLOR",
             Self::Luminosity => "LUMINOSITY",
+            Self::PlusDarker => "PLUS_DARKER",
         }
     }
 }
@@ -988,6 +998,10 @@ mod tests {
         assert_eq!(
             Blend::of(BlendMode::Luminosity),
             Blend::ReadsDestination(AdvancedBlend::Luminosity)
+        );
+        assert_eq!(
+            Blend::of(BlendMode::PlusDarker),
+            Blend::ReadsDestination(AdvancedBlend::PlusDarker)
         );
         for (id, blend) in PipelineBlend::ALL.into_iter().enumerate() {
             assert_eq!(blend.id(), id as u32);

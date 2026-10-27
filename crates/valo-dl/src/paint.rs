@@ -24,6 +24,13 @@ pub enum BlendMode {
     SrcAtop,
     DstAtop,
     Xor,
+    /// `Plus` adds source and destination, clamped at one: Core Graphics'
+    /// `kCGBlendModePlusLighter` and Core Animation's `plusL` filter.
+    ///
+    /// Over premultiplied colour it is `R = min(1, S + D)`, alpha included
+    /// (`CGContext.h`); Core Image's `_plusLighter` kernel is `src + dst`, so
+    /// the clamp is the target's own and a float target keeps the sum, as
+    /// the blend unit does here.
     Plus,
     Modulate,
     Screen,
@@ -42,6 +49,20 @@ pub enum BlendMode {
     Saturation,
     Color,
     Luminosity,
+    /// `PlusDarker` adds source and destination toward black: Core
+    /// Graphics' `kCGBlendModePlusDarker`, Core Animation's `plusD` filter
+    /// and Core Image's `CIPlusDarkerCompositing`. It is not one of
+    /// Flutter's modes.
+    ///
+    /// Over premultiplied colour it is Core Image's `_plusDarker` kernel, as
+    /// CoreImage ships it in macOS 27: `Ra = min(1, Sa + Da)` and
+    /// `Rc = Ra − min(1, (Sa − Sc) + (Da − Dc))`, which for opaque colours
+    /// is `R = max(0, 1 − ((1 − D) + (1 − S)))` (the comment in
+    /// `CGContext.h` drops the outer `1 −`; Core Graphics draws the kernel's
+    /// values). A transparent source leaves the destination as it is, and
+    /// over a transparent destination the source shows unchanged. It reads
+    /// the destination, so like `Overlay` it breaks the render pass.
+    PlusDarker,
 }
 
 impl BlendMode {

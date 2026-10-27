@@ -14,6 +14,9 @@
 //! - a GRADIENT square with Multiply: gradient sources desugar into an
 //!   implicit one-draw layer + texture blend (watch `layers` in stats)
 //! - a save_layer composited with Overlay: group blends work the same way
+//! - a grey square with PlusDarker (Apple's `plusD`) along the bottom: the
+//!   backdrop darkened by the grey's distance from white, black where that
+//!   reaches it
 //! - `snapshots N` in the stats = pass breaks this frame
 
 use valo::{BlendMode, Color, DisplayListBuilder, Paint, Point, Rect, Shader};
@@ -112,6 +115,16 @@ fn scene() -> valo::DisplayList {
         &Paint::from_color(Color::rgb(0.3, 0.3, 0.3)),
     );
     b.restore();
+
+    // PlusDarker in the grey macOS draws sidebar headers with.
+    b.draw_rect(
+        Rect::new(30.0, 392.0, 480.0, 60.0),
+        &Paint {
+            color: Color::rgb(0.749, 0.749, 0.749),
+            blend_mode: BlendMode::PlusDarker,
+            ..Default::default()
+        },
+    );
 
     // Difference over the busy corner: the classic invert-ish look.
     b.draw_circle(

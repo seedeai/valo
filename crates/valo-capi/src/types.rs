@@ -97,7 +97,7 @@ pub struct ValoCornerRadii {
 /// There is no retained paint object and no shader field — C paints are
 /// solid color, stroke, blend, mask blur, and an optional borrowed color
 /// filter. Unknown integer enums take the valo default (fill, srcOver,
-/// butt, miter, normal blur) rather than trapping. The 29 blend modes
+/// butt, miter, normal blur) rather than trapping. The 30 blend modes
 /// are numbered in `include/valo.h`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -106,7 +106,8 @@ pub struct ValoPaint {
     ///
     /// Shader and image draws use only its alpha and ignore its RGB channels.
     pub color: ValoColor,
-    /// `blend_mode` indexes the 29 Skia modes: 0 clear … 3 srcOver (default) … 28 luminosity.
+    /// `blend_mode` indexes the 29 Skia modes, 0 clear … 3 srcOver (default) … 28 luminosity,
+    /// then 29 plusDarker.
     pub blend_mode: i32,
     /// `style` is 0 fill (default) or 1 stroke.
     pub style: i32,
@@ -262,7 +263,7 @@ fn mask_blur(style: i32, sigma: f32) -> Option<MaskBlur> {
     Some(blur)
 }
 
-/// The 29 modes in valo-dl's declaration order — the header's enum table.
+/// The 30 modes in valo-dl's declaration order — the header's enum table.
 pub(crate) fn blend_mode(value: i32) -> BlendMode {
     use BlendMode::*;
     match value {
@@ -295,6 +296,7 @@ pub(crate) fn blend_mode(value: i32) -> BlendMode {
         26 => Saturation,
         27 => Color,
         28 => Luminosity,
+        29 => PlusDarker,
         _ => SrcOver,
     }
 }
