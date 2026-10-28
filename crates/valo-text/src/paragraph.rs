@@ -541,9 +541,13 @@ impl Paragraph {
 
     /// `glyph_position_at` maps a paragraph-local point to an editable text position.
     ///
-    /// Use it to place a caret from a pointer press. It chooses the nearest line
-    /// and glyph-cluster edge. An unlaid-out or empty paragraph returns offset
-    /// zero with downstream affinity.
+    /// Use it to place a caret from a pointer press. It follows Skia's
+    /// `TextLine::getGlyphPositionAtCoordinate` on the nearest line: a point in
+    /// a cluster's left half takes the cluster's visual left edge and one in its
+    /// right half the right edge; a point before or between clusters takes the
+    /// next cluster's left edge, and one past the line its last cluster's right
+    /// edge. An unlaid-out or empty paragraph returns offset zero with downstream
+    /// affinity.
     pub fn glyph_position_at(&self, p: valo_geometry::Point) -> PositionWithAffinity {
         let Some(line) = self.line_at_y(p.y) else {
             return PositionWithAffinity {
@@ -551,38 +555,36 @@ impl Paragraph {
                 downstream: true,
             };
         };
-        let mut best = PositionWithAffinity {
-            offset: line.range.start,
-            downstream: true,
+        let clusters = visual_clusters(line);
+        let Some(last) = clusters.last() else {
+            return PositionWithAffinity {
+                offset: line.range.start,
+                downstream: true,
+            };
         };
-        let mut best_dx = f32::MAX;
-        for run in &line.runs {
-            for g in &run.glyphs {
-                // An RTL cluster's LOGICAL start is its visual right edge.
-                let (lead_x, trail_x) = if run.rtl {
-                    (g.x + g.advance, g.x)
-                } else {
-                    (g.x, g.x + g.advance)
-                };
-                let leading = (p.x - lead_x).abs();
-                if leading < best_dx {
-                    best_dx = leading;
-                    best = PositionWithAffinity {
-                        offset: g.cluster,
-                        downstream: true,
-                    };
-                }
-                let trailing = (p.x - trail_x).abs();
-                if trailing < best_dx {
-                    best_dx = trailing;
-                    best = PositionWithAffinity {
-                        offset: self.cluster_end(g.cluster),
-                        downstream: false,
-                    };
-                }
+        match clusters.iter().find(|c| p.x < c.right) {
+            Some(c) if p.x < c.left => self.cluster_edge(c, false),
+            Some(c) => self.cluster_edge(c, p.x >= (c.left + c.right) / 2.0),
+            None => self.cluster_edge(last, true),
+        }
+    }
+
+    /// `cluster_edge` returns the text position at a cluster's visual left or
+    /// right edge: its start, downstream, where its text begins, and its end,
+    /// upstream, where its text ends.
+    fn cluster_edge(&self, cluster: &VisualCluster, right: bool) -> PositionWithAffinity {
+        // A cluster's text begins at its left in LTR text and at its right in RTL.
+        if right == cluster.rtl {
+            PositionWithAffinity {
+                offset: cluster.start,
+                downstream: true,
+            }
+        } else {
+            PositionWithAffinity {
+                offset: self.cluster_end(cluster.start),
+                downstream: false,
             }
         }
-        best
     }
 
     /// `rects_for_range` returns boxes for painting a selected UTF-8 byte range.
@@ -699,6 +701,40 @@ fn caret_x(line: &Line, offset: usize) -> f32 {
         }
     }
     before.map_or(line.left, |(_, x)| x)
+}
+
+/// `VisualCluster` is one text cluster's horizontal extent on a line.
+struct VisualCluster {
+    left: f32,
+    right: f32,
+    /// `start` is the cluster's UTF-8 offset.
+    start: usize,
+    rtl: bool,
+}
+
+/// `visual_clusters` returns a line's clusters from left to right.
+fn visual_clusters(line: &Line) -> Vec<VisualCluster> {
+    let mut clusters: Vec<VisualCluster> = Vec::new();
+    for run in &line.runs {
+        for g in &run.glyphs {
+            let (left, right) = (g.x.min(g.x + g.advance), g.x.max(g.x + g.advance));
+            match clusters.last_mut() {
+                // Combining marks shape into further glyphs of the same cluster.
+                Some(c) if c.start == g.cluster && c.rtl == run.rtl => {
+                    c.left = c.left.min(left);
+                    c.right = c.right.max(right);
+                }
+                _ => clusters.push(VisualCluster {
+                    left,
+                    right,
+                    start: g.cluster,
+                    rtl: run.rtl,
+                }),
+            }
+        }
+    }
+    clusters.sort_by(|a, b| a.left.total_cmp(&b.left));
+    clusters
 }
 
 /// `base_level` returns an explicit bidi level or leaves content to choose it.

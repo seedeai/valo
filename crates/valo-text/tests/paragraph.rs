@@ -527,6 +527,58 @@ fn caret_and_position_round_trip() {
     assert!(!end.downstream);
 }
 
+/// Skia's rule: a point in a cluster's left half is the cluster's start,
+/// downstream, and one in its right half its end, upstream.
+#[test]
+fn position_takes_the_edge_of_the_half_under_the_point() {
+    let p = simple("ab", 32.0, f32::INFINITY);
+    let line = &p.lines()[0];
+    let b = &line.runs[0].glyphs[1];
+    let left = p.glyph_position_at(valo::Point::new(b.x + b.advance * 0.25, line.baseline));
+    assert_eq!((left.offset, left.downstream), (1, true));
+    let right = p.glyph_position_at(valo::Point::new(b.x + b.advance * 0.75, line.baseline));
+    assert_eq!((right.offset, right.downstream), (2, false));
+}
+
+#[test]
+fn position_past_a_hard_break_stays_before_it() {
+    let p = simple("ab\ncd", 32.0, f32::INFINITY);
+    let line = &p.lines()[0];
+    let hit = p.glyph_position_at(valo::Point::new(10_000.0, line.baseline));
+    assert_eq!(hit.offset, 2);
+}
+
+/// In RTL text a cluster's text ends at its left, so its left half is its end.
+#[test]
+fn rtl_position_left_half_is_the_cluster_end() {
+    let mut fonts = fonts();
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    let text = "سلام";
+    b.add_text(
+        text,
+        &TextStyle::new("Noto Sans Arabic", 24.0, Color::WHITE),
+    );
+    let mut p = b.build();
+    p.layout(f32::INFINITY);
+    let line = &p.lines()[0];
+    let leftmost = line.runs[0]
+        .glyphs
+        .iter()
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    let end = leftmost.cluster + text[leftmost.cluster..].chars().next().unwrap().len_utf8();
+    let left = p.glyph_position_at(valo::Point::new(
+        leftmost.x + leftmost.advance * 0.25,
+        line.baseline,
+    ));
+    assert_eq!((left.offset, left.downstream), (end, false));
+    let right = p.glyph_position_at(valo::Point::new(
+        leftmost.x + leftmost.advance * 0.75,
+        line.baseline,
+    ));
+    assert_eq!((right.offset, right.downstream), (leftmost.cluster, true));
+}
+
 #[test]
 fn rects_for_range_cover_selection() {
     let mut c = fonts();
