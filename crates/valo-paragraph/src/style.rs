@@ -1,4 +1,5 @@
 use valo_geometry::{Color, Point};
+use valo_text::FontAttrs;
 
 /// `TextStyle` controls font selection and painting for a span of text.
 ///
@@ -11,7 +12,7 @@ pub struct TextStyle {
     /// `weight` selects a CSS font weight, conventionally from 100 to 900.
     ///
     /// A family without a face this heavy fakes bold on its nearest one, as
-    /// [`crate::FontSynthesis::needed`] decides.
+    /// [`valo_text::FontSynthesis::needed`] decides.
     pub weight: u16,
     /// `italic` selects an italic face when available, and slants an upright
     /// one when not.
@@ -48,7 +49,7 @@ impl Default for TextStyle {
             families: Vec::new(),
             weight: 400,
             italic: false,
-            stretch: crate::font::NORMAL_STRETCH,
+            stretch: FontAttrs::default().stretch,
             kerning: true,
             variant_caps: VariantCaps::Normal,
             size: 14.0,
@@ -74,8 +75,8 @@ impl TextStyle {
     }
 
     /// `font_attrs` returns the attributes used to select a face within a family.
-    pub fn font_attrs(&self) -> crate::font::FontAttrs {
-        crate::font::FontAttrs {
+    pub fn font_attrs(&self) -> FontAttrs {
+        FontAttrs {
             weight: self.weight,
             italic: self.italic,
             stretch: self.stretch,

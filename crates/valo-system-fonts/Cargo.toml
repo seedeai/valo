@@ -16,3 +16,5 @@ valo-text = { workspace = true }
 
 [dev-dependencies]
 valo-geometry = { workspace = true }
+# The tests and the example watch fallback through the paragraphs that ask for it.
+valo-paragraph = { workspace = true }

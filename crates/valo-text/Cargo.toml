@@ -1,6 +1,6 @@
 [package]
 name = "valo-text"
-description = "Typographer and paragraph layout for valo: shaping, bidi, wrapping, glyph raster, SDF"
+description = "Fonts, shaping and glyph raster for valo: font collections and fallback, harfrust shaping, glyph masks, SDF, COLR"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,9 +15,6 @@ valo-geometry = { workspace = true }
 harfrust = { workspace = true }
 skrifa = { workspace = true }
 swash = { workspace = true }
-unicode-bidi = { workspace = true }
-unicode-linebreak = { workspace = true }
-unicode-segmentation = { workspace = true }
 
 # COLRv1 rasterization backend: pure-Rust CPU compositor for
 # the paint-graph callbacks — measured at +343 KB raw / +112 KB gzip wasm.

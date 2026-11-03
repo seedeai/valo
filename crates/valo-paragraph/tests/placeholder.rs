@@ -1,10 +1,11 @@
 //! Placeholders: boxes laid out inline with text, as Skia's `addPlaceholder`.
 
 use valo_geometry::Color;
-use valo_text::{
-    FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, PlaceholderAlignment,
-    PlaceholderStyle, TextBaseline, TextDirection, TextStyle,
+use valo_paragraph::{
+    Paragraph, ParagraphBuilder, ParagraphStyle, PlaceholderAlignment, PlaceholderStyle,
+    TextBaseline, TextDirection, TextStyle,
 };
+use valo_text::FontCollection;
 
 fn fonts() -> FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");

@@ -1,0 +1,23 @@
+[package]
+name = "valo-paragraph"
+description = "Styled paragraphs for valo: spans, font fallback, bidi, wrapping, and recording into a display list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+valo-geometry = { workspace = true }
+valo-text = { workspace = true }
+valo-dl = { workspace = true }
+unicode-bidi = { workspace = true }
+unicode-linebreak = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+# Reads a font's own metrics to check what a line reports.
+skrifa = { workspace = true }

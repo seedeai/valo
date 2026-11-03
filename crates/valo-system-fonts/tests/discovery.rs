@@ -2,10 +2,9 @@
 //! pattern) when this machine lacks the faces it needs, and asserts
 //! strictly when they exist.
 
+use valo_paragraph::{Paragraph, ParagraphBuilder, TextStyle};
 use valo_system_fonts::SystemFonts;
-use valo_text::{
-    Font, FontAttrs, FontCollection, FontSource, Paragraph, ParagraphBuilder, TextStyle,
-};
+use valo_text::{Font, FontAttrs, FontCollection, FontSource};
 
 /// Sans families a stock install of this system carries with a bold face,
 /// most common first.

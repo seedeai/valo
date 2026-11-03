@@ -41,7 +41,7 @@ jobs:
       # and run in the `goldens` job instead. The system-font tests skip
       # themselves when the host lacks the faces they ask for.
       - run: |
-          cargo test -p valo-geometry -p valo-dl -p valo-text \
+          cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-paragraph \
                      -p valo-svg -p valo-system-fonts
 
   wasm:
@@ -104,7 +104,7 @@ jobs:
       # Direct3D 12 is wgpu's backend on Windows, so building the workspace
       # here is what keeps that path compiling.
       - run: cargo check --workspace --all-targets
-      - run: cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-svg -p valo-system-fonts
+      - run: cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-paragraph -p valo-svg -p valo-system-fonts
       # WARP is Windows' software Direct3D 12 adapter, so this exercises the
       # real renderer on the real backend without a GPU. Same probation as the
       # macOS goldens job: report until it proves stable, then require it.

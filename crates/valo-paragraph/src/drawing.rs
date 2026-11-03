@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use valo_dl::{DisplayListBuilder, GlyphPos, Paint};
 use valo_geometry::{Point, Rect};
-use valo_text::{DecorationKind, FaceSet, Line, Paragraph, PlacedRun};
+use valo_text::FaceSet;
+
+use crate::paragraph::{Line, Paragraph, PlacedRun};
+use crate::style::DecorationKind;
 
 /// `DrawParagraphExt` adds paragraph recording to [`DisplayListBuilder`].
 pub trait DrawParagraphExt {

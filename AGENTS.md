@@ -17,7 +17,8 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 |---|---|
 | `valo-geometry` | pure math: points, rects, paths, 4×4 matrices, strokes, color. No GPU, no unicode, no deps beyond glam |
 | `valo-dl` | recording: `DisplayListBuilder`, ops, paints, shaders. GPU-free and `Send + Sync` |
-| `valo-text` | typographer: shaping, bidi, wrapping, glyph raster, SDF, COLR. GPU-free |
+| `valo-text` | fonts and their collections, fallback, the shaper, glyph raster, SDF, COLR: Skia's core and `skshaper`. GPU-free |
+| `valo-paragraph` | styled paragraphs: spans, bidi, wrapping, and recording them into a display list. Above `valo-dl`, so a style can hold a paint, as `skparagraph` sits above Skia's core |
 | `valo-renderer` | the wgpu core: planner, encoder, pipelines, atlases, pools, caches |
 | `valo` | the facade hosts use, plus `Hud` |
 | `valo-svg` | SVG → display list translation |

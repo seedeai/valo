@@ -283,10 +283,13 @@ impl Rasterizer {
         })
     }
 
-    /// Tight non-transparent pixel bounds for a bitmap/color glyph, relative
-    /// to its baseline origin in Valo's y-down coordinates. Metrics query this
-    /// before a monochrome outline because rendering also prefers COLR/CBDT.
-    pub(crate) fn color_bounds(&mut self, font: &Font, glyph: u32, px: f32) -> Option<Rect> {
+    /// `color_bounds` returns tight non-transparent pixel bounds for a
+    /// bitmap or color glyph, relative to its baseline origin in Valo's
+    /// y-down coordinates, and `None` for a glyph without a color raster.
+    ///
+    /// Metrics query this before a monochrome outline because rendering
+    /// also prefers COLR/CBDT.
+    pub fn color_bounds(&mut self, font: &Font, glyph: u32, px: f32) -> Option<Rect> {
         let image = self.color(font, glyph, px)?;
         let mut left = image.width;
         let mut top = image.height;

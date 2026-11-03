@@ -2,10 +2,9 @@
 //! machine's installed fonts:
 //! `cargo run -p valo-system-fonts --example selection_demo`
 
+use valo_paragraph::{ParagraphBuilder, TextStyle};
 use valo_system_fonts::SystemFonts;
-use valo_text::{
-    FaceSet, Font, FontAttrs, FontCollection, FontId, FontSource, ParagraphBuilder, TextStyle,
-};
+use valo_text::{FaceSet, Font, FontAttrs, FontCollection, FontId, FontSource};
 
 fn attrs(weight: u16) -> FontAttrs {
     FontAttrs {

@@ -51,18 +51,19 @@ pub use valo_geometry::{
     Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathSample, Point,
     Rect, Size, Stroke, Winding,
 };
+pub use valo_paragraph::{
+    Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, Line, LineMetrics, Paragraph,
+    ParagraphBuilder, ParagraphStyle, PlacedRun, PlaceholderAlignment, PlaceholderBox,
+    PlaceholderStyle, PositionWithAffinity, Shadow, TextAlign, TextBaseline, TextDirection,
+    TextStyle, VariantCaps,
+};
 pub use valo_renderer::{
     request_device, AtlasReport, FeatureLevel, ImageDesc, MemoryReport, NoDevice, PoolReport,
     Refusal, RefusedAdapter, RenderStats, RenderTarget, TextTiers, WgpuCounters,
 };
 pub use valo_text::{
-    match_style, Decoration, DecorationKind, FaceSet, Font, FontAttrs, FontCollection, FontData,
-    FontDemand, FontId, FontSource, FontSynthesis, FontUid, GlyphImage, GlyphRaster, GlyphStroke,
-    Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
-    PlaceholderAlignment, PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Rasterizer,
-    Shadow, TextAlign, TextBaseline, TextDirection, TextStyle, VariantCaps,
+    match_style, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId,
+    FontSource, FontSynthesis, FontUid, GlyphImage, GlyphRaster, GlyphStroke, Rasterizer,
 };
 
-mod text;
 pub use hud::Hud;
-pub use text::{DrawGlyphRunExt, DrawParagraphExt};

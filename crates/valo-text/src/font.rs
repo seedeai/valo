@@ -378,13 +378,15 @@ impl FontDemand {
         self.families.is_empty() && self.codepoints.is_empty()
     }
 
-    pub(crate) fn add_family(&mut self, name: &str) {
+    /// `add_family` records a family name no face answered, once.
+    pub fn add_family(&mut self, name: &str) {
         if !self.families.iter().any(|f| f == name) {
             self.families.push(name.to_owned());
         }
     }
 
-    pub(crate) fn add_codepoint(&mut self, ch: char, attrs: FontAttrs) {
+    /// `add_codepoint` records a character no face covered at `attrs`, once.
+    pub fn add_codepoint(&mut self, ch: char, attrs: FontAttrs) {
         if !self.codepoints.contains(&(ch, attrs)) {
             self.codepoints.push((ch, attrs));
         }
@@ -1129,10 +1131,14 @@ impl FontCollection {
         std::mem::take(&mut self.unanswered)
     }
 
-    /// Resolution with growth: look up, else ask the sources in order,
-    /// registering what they answer (Skia's `findTypefaces` walking its
-    /// managers). `false` = nobody had it; the miss is recorded.
-    pub(crate) fn require_family(&mut self, name: &str) -> bool {
+    /// `require_family` makes sure the family `name` has a face, asking the
+    /// sources when none is registered.
+    ///
+    /// The sources are asked in order and what they answer is registered
+    /// (Skia's `findTypefaces` walking its managers). It returns `false` when
+    /// nobody had the family, and records the miss for
+    /// [`Self::take_unanswered`].
+    pub fn require_family(&mut self, name: &str) -> bool {
         if self.faces.family(name).is_some() {
             return true;
         }
@@ -1146,8 +1152,14 @@ impl FontCollection {
         false
     }
 
-    /// The per-codepoint half (Skia's `defaultFallback(unicode, ..)`).
-    pub(crate) fn require_codepoint(
+    /// `require_codepoint` makes sure a face that `families` and `attrs`
+    /// resolve to covers `codepoint`, asking the sources for a fallback face
+    /// when none does.
+    ///
+    /// It is the per-character half of [`Self::require_family`] (Skia's
+    /// `defaultFallback(unicode, ..)`): `false` means no source covered the
+    /// character, and the miss is recorded for [`Self::take_unanswered`].
+    pub fn require_codepoint(
         &mut self,
         families: &[String],
         codepoint: char,

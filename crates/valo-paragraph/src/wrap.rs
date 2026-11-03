@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
+use valo_text::{FaceSet, Font};
 
-use crate::font::FaceSet;
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
 use crate::shape::{shape_isolated, ShapedPlaceholder, ShapedRun};
 use crate::style::{ParagraphStyle, TextAlign};
@@ -620,7 +620,7 @@ fn place_placeholder(
 /// mis-culls and lets the opacity-elision proof call overlapping runs
 /// "disjoint" (double-blend).
 fn ink_bounds(
-    font: &crate::font::Font,
+    font: &Font,
     run: &ShapedRun,
     start_x: f32,
     last_origin: f32,
@@ -739,11 +739,7 @@ fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<(f32, f32, 
 /// One style's (ascent, descent, height) at `size`. A `height` multiplier
 /// rescales to `height × size`, ascent/descent proportional (skparagraph's
 /// heightOverride). Also seeds empty-line metrics from the paragraph style.
-pub(crate) fn style_heights(
-    font: &crate::font::Font,
-    size: f32,
-    height: Option<f32>,
-) -> (f32, f32, f32) {
+pub(crate) fn style_heights(font: &Font, size: f32, height: Option<f32>) -> (f32, f32, f32) {
     let mut candidate = (
         font.ascent_px(size),
         font.descent_px(size),

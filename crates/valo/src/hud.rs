@@ -5,10 +5,9 @@
 
 use valo_dl::{Backdrop, DisplayListBuilder, Paint};
 use valo_geometry::{Color, Rect};
+use valo_paragraph::{DrawParagraphExt, ParagraphBuilder, TextStyle};
 use valo_renderer::{MemoryReport, RenderStats};
-use valo_text::{FontCollection, ParagraphBuilder, TextStyle};
-
-use crate::text::DrawParagraphExt;
+use valo_text::FontCollection;
 
 /// `Hud` records renderer statistics as an in-frame overlay.
 ///

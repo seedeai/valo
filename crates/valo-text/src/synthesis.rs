@@ -77,9 +77,10 @@ impl FontSynthesis {
         self.embolden * size / 2.0
     }
 
-    /// A glyph ink box `(x_min, y_min, x_max, y_max)`, y-up at `size`, grown to hold the same
-    /// glyphs synthesized: outset by the furthest fake bold can move a corner, then sheared.
-    pub(crate) fn ink_box(
+    /// `ink_box` grows a glyph ink box `(x_min, y_min, x_max, y_max)`, y-up at `size`, to
+    /// hold the same glyphs synthesized: outset by the furthest fake bold can move a corner,
+    /// then sheared.
+    pub fn ink_box(
         &self,
         (x_min, y_min, x_max, y_max): (f32, f32, f32, f32),
         size: f32,

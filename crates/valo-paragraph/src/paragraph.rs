@@ -3,8 +3,8 @@ use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
 use valo_geometry::{Color, Rect};
+use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis, Rasterizer};
 
-use crate::font::{FaceSet, FontCollection, FontDemand, FontId};
 use crate::shape::{shape_runs, ShapedRun};
 use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
 use crate::wrap::{place_lines, wrap_lines, Wrapped};
@@ -33,7 +33,7 @@ pub struct PlacedRun {
     pub size: f32,
     /// `synthesis` is the bold and italic the run fakes because its font lacks them; its
     /// glyphs are drawn with it.
-    pub synthesis: crate::synthesis::FontSynthesis,
+    pub synthesis: FontSynthesis,
     /// `color` is the glyph fill color.
     pub color: Color,
     /// `decoration` optionally adds a line relative to the run.
@@ -278,7 +278,7 @@ impl Paragraph {
     /// glyphs. This query may rasterize color glyphs.
     pub fn ink_bounds(&self) -> Option<Rect> {
         let mut result: Option<Rect> = None;
-        let mut rasterizer = crate::raster::Rasterizer::new();
+        let mut rasterizer = Rasterizer::new();
         let mut color_bounds = HashMap::<(FontId, u32, u32), Option<Rect>>::new();
         for run in self.lines().iter().flat_map(|line| &line.runs) {
             let font = self.faces.get(run.font);
@@ -311,7 +311,7 @@ impl Paragraph {
     ///
     /// For glyphless text it resolves the first styled span instead. It returns
     /// `None` when no span or font is available.
-    pub fn primary_font(&self) -> Option<(&crate::font::Font, f32)> {
+    pub fn primary_font(&self) -> Option<(&Font, f32)> {
         if let Some(run) = self.lines().first().and_then(|line| line.runs.first()) {
             return Some((self.faces.get(run.font), run.size));
         }
