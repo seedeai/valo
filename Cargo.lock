@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "valo"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "criterion",
  "objc2 0.6.4",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "valo-capi"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "pollster",
  "valo",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "pollster",
  "valo",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec-apple"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "valo-codec-software"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "gif",
  "image",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "valo-dl"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "naga",
  "serde",
@@ -2844,7 +2844,7 @@ dependencies = [
 
 [[package]]
 name = "valo-fontmgr"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "valo-geometry"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "glam",
  "serde",
@@ -2864,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "valo-harness"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "png 0.17.16",
  "pollster",
@@ -2875,7 +2875,7 @@ dependencies = [
 
 [[package]]
 name = "valo-paragraph"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "skrifa 0.35.0",
  "unicode-bidi",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "valo-renderer"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bytemuck",
  "etagere",
@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "valo-svg"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "flate2",
  "image",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "valo-system-fonts"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "valo-fontmgr",
  "valo-geometry",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "valo-text"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "allsorts",
  "harfrust",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "valo-web"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "console_error_panic_hook",
  "valo",
@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "valo-web-demo"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "console_error_panic_hook",
  "valo",

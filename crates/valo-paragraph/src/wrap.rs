@@ -4,7 +4,7 @@ use unicode_bidi::BidiInfo;
 use valo_text::{FaceSet, Font};
 
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
-use crate::shape::{shape_isolated, ShapedPlaceholder, ShapedRun};
+use crate::shape::{shape_ellipsis, ShapedPlaceholder, ShapedRun};
 use crate::style::{ParagraphStyle, TextAlign};
 
 /// The wrap tier's output: chosen line ranges, truncation, and the
@@ -319,9 +319,7 @@ fn ellipsis_for(
         .iter()
         .rev()
         .find(|run| run.placeholder.is_none())?;
-    Some(shape_isolated(
-        collection, tail.font, tail.size, tail.color, text,
-    ))
+    Some(shape_ellipsis(collection, tail, text))
 }
 
 fn place_line(
@@ -562,6 +560,9 @@ fn place_slice(
         size: run.size,
         synthesis: run.synthesis,
         color: run.color,
+        foreground: run.foreground.clone(),
+        background: run.background.clone(),
+        height: run.height,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
@@ -597,6 +598,9 @@ fn place_placeholder(
         size: run.size,
         synthesis: run.synthesis,
         color: run.color,
+        foreground: run.foreground.clone(),
+        background: run.background.clone(),
+        height: run.height,
         decoration: None,
         shadows: Vec::new(),
         glyphs: vec![PlacedGlyph {
@@ -674,6 +678,9 @@ fn place_isolated(
         size: run.size,
         synthesis: run.synthesis,
         color: run.color,
+        foreground: run.foreground.clone(),
+        background: run.background.clone(),
+        height: run.height,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,

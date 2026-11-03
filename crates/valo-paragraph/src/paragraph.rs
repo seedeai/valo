@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
+use valo_dl::Paint;
 use valo_geometry::{Color, Rect};
 use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis, Rasterizer};
 
@@ -34,8 +35,15 @@ pub struct PlacedRun {
     /// `synthesis` is the bold and italic the run fakes because its font lacks them; its
     /// glyphs are drawn with it.
     pub synthesis: FontSynthesis,
-    /// `color` is the glyph fill color.
+    /// `color` is the glyph fill color, used when `foreground` is `None`.
     pub color: Color,
+    /// `foreground` is the span's glyph paint, in place of `color` when set.
+    pub foreground: Option<Paint>,
+    /// `background` is the span's background paint, filling the run's box when set.
+    pub background: Option<Paint>,
+    /// `height` is the span's line-height multiplier, which scales the box a
+    /// background fills; `None` uses the font's metrics.
+    pub height: Option<f32>,
     /// `decoration` optionally adds a line relative to the run.
     pub decoration: Option<crate::style::Decoration>,
     /// `shadows` are painted back-to-front beneath the glyphs.

@@ -1,3 +1,4 @@
+use valo_dl::Paint;
 use valo_geometry::{Color, Point};
 use valo_text::FontAttrs;
 
@@ -27,8 +28,24 @@ pub struct TextStyle {
     pub variant_caps: VariantCaps,
     /// `size` is the font size in logical pixels.
     pub size: f32,
-    /// `color` is the text fill color.
+    /// `color` is the text fill color, used when `foreground` is `None`.
+    ///
+    /// A decoration without a color of its own takes this color even when
+    /// `foreground` is set, as Skia's does.
     pub color: Color,
+    /// `foreground` paints the glyphs in place of `color` when set.
+    ///
+    /// A stroke style outlines the glyphs, and a shader fills them with a
+    /// gradient or an image. Shadows keep their own colors.
+    pub foreground: Option<Paint>,
+    /// `background` fills a box behind the span's characters when set.
+    ///
+    /// The box spans the characters' advances across, and the font's ascent
+    /// and descent down, scaled by `height` when it is set: Skia's run box.
+    /// Each line's backgrounds are painted before its shadows and glyphs, as
+    /// Skia's are (`TextLine::paint`), so a background lies beneath every
+    /// glyph of its line.
+    pub background: Option<Paint>,
     /// `letter_spacing` adds logical pixels after each grapheme cluster.
     pub letter_spacing: f32,
     /// `word_spacing` adds logical pixels after each space, in addition to letter spacing.
@@ -54,6 +71,8 @@ impl Default for TextStyle {
             variant_caps: VariantCaps::Normal,
             size: 14.0,
             color: Color::BLACK,
+            foreground: None,
+            background: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
             height: None,

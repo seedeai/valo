@@ -1,10 +1,11 @@
 //! What a glyph run's paint does to its glyphs, following Skia: a colour
 //! filter acts on each glyph's own colour before its coverage, so it never
 //! reaches past the glyphs, and a colour glyph's pixels pass through it too.
+//! A span's background lies beneath its glyphs.
 
 use valo::{
-    Color, ColorFilter, Context, DisplayListBuilder, DrawGlyphRunExt, FontCollection, Paint,
-    Paragraph, ParagraphBuilder, TextStyle, TextTiers,
+    Color, ColorFilter, Context, DisplayListBuilder, DrawGlyphRunExt, DrawParagraphExt,
+    FontCollection, Paint, Paragraph, ParagraphBuilder, TextStyle, TextTiers,
 };
 
 const SIZE: [u32; 2] = [128, 96];
@@ -356,4 +357,63 @@ fn shader_painted_text_keeps_its_shader_under_an_effect() {
             [r, g, b, a]
         );
     }
+}
+
+/// A span's background fills its box beneath its glyphs, in every tier: a
+/// stem keeps the glyph's white, the space between the stems shows the
+/// background's red, and nothing is drawn outside the box.
+#[test]
+fn a_background_lies_beneath_its_glyphs() {
+    let Some(mut context) = context("a_background_lies_beneath_its_glyphs") else {
+        return;
+    };
+    let mut fonts = fonts();
+    let plain = paragraph(&mut fonts, "H");
+    let mut builder = ParagraphBuilder::new(&mut fonts);
+    builder.add_text(
+        "H",
+        &TextStyle {
+            background: Some(Paint::from_color(Color::rgb(1.0, 0.0, 0.0))),
+            ..TextStyle::new("Fira Sans", 64.0, Color::WHITE)
+        },
+    );
+    let mut backed = builder.build();
+    backed.layout(f32::INFINITY);
+    for (tier, tiers) in TIERS {
+        context.set_text_tiers(tiers);
+        lies_beneath_its_glyphs(&mut context, &plain, &backed, tier);
+    }
+}
+
+fn lies_beneath_its_glyphs(
+    context: &mut Context,
+    plain: &Paragraph,
+    backed: &Paragraph,
+    tier: &str,
+) {
+    let glyph = render(context, plain, &Paint::from_color(Color::WHITE));
+    let [left, top, right, bottom] = glyph.ink_box();
+    let between_stems = glyph
+        .all()
+        .find(|((x, y), pixel)| {
+            (left..=right).contains(x) && (top..=bottom).contains(y) && pixel[3] == 0
+        })
+        .map(|(at, _)| at)
+        .expect("a pixel inside the H's box but outside its glyph");
+    let stem = glyph
+        .all()
+        .find(|(_, pixel)| pixel[3] == 255)
+        .map(|(at, _)| at)
+        .expect("a pixel the H covers whole");
+
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_paragraph(backed, ORIGIN);
+    let drawn = Pixels(context.render_to_rgba(&builder.build(), SIZE, Some(Color::TRANSPARENT)));
+    assert_eq!(drawn.at(stem), [255, 255, 255, 255], "{tier}: in a stem");
+    assert_eq!(
+        drawn.at(between_stems),
+        [255, 0, 0, 255],
+        "{tier}: between the stems"
+    );
+    assert_eq!(drawn.at((0, 0)), [0, 0, 0, 0], "{tier}: outside the box");
 }

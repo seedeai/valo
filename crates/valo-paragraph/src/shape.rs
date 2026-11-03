@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use unicode_bidi::BidiInfo;
+use valo_dl::Paint;
 use valo_geometry::Color;
-
 use valo_text::{
     shape, FaceSet, FontCollection, FontDemand, FontFeature, FontId, FontSynthesis, ShapedGlyph,
 };
@@ -22,6 +22,10 @@ pub struct ShapedRun {
     /// The bold and italic the run fakes because its font lacks them.
     pub synthesis: FontSynthesis,
     pub color: Color,
+    /// The style's glyph paint, in place of `color` when set.
+    pub foreground: Option<Paint>,
+    /// The style's background paint, filling the run's box when set.
+    pub background: Option<Paint>,
     /// Line-height multiplier from the style (`None` = font metrics).
     pub height: Option<f32>,
     pub decoration: Option<Decoration>,
@@ -213,6 +217,8 @@ fn shape_segment(
         size: style.size,
         synthesis: FontSynthesis::needed(style.font_attrs(), font.attrs(), style.size),
         color: style.color,
+        foreground: style.foreground.clone(),
+        background: style.background.clone(),
         height: style.height,
         decoration: style.decoration,
         shadows: style.shadows.clone(),
@@ -223,6 +229,8 @@ fn shape_segment(
 
 /// A placeholder's run: one cluster as wide as the box, with the metrics of the font its
 /// text style resolves to. Without any faces the font is never read, so its id is a stand-in.
+/// It keeps its style's background, which fills the box, as Skia's placeholder style keeps it
+/// (`TextStyle::cloneForPlaceholder`).
 fn placeholder_run(
     faces: &FaceSet,
     range: Range<usize>,
@@ -250,6 +258,8 @@ fn placeholder_run(
         size: style.size,
         synthesis: FontSynthesis::NONE,
         color: style.color,
+        foreground: None,
+        background: style.background.clone(),
         height: None,
         decoration: None,
         shadows: Vec::new(),
@@ -283,18 +293,13 @@ fn apply_spacing(glyphs: &mut [ShapedGlyph], text: &str, style: &TextStyle) {
     }
 }
 
-/// Shape a short standalone string (the ellipsis) in one font/size — no
-/// segmentation, LTR, clusters zeroed (it's placed as an opaque unit). It fakes
-/// no styles: Skia shapes the ellipsis in a fresh font of the run's typeface.
-pub(crate) fn shape_isolated(
-    collection: &FaceSet,
-    font_id: FontId,
-    size: f32,
-    color: Color,
-    text: &str,
-) -> ShapedRun {
-    let font = collection.get(font_id);
-    let glyphs = shape(font, size, text, false, &[])
+/// Shape the ellipsis in the font, size and paints of `tail`, the run it ends —
+/// no segmentation, LTR, clusters zeroed (it's placed as an opaque unit). It fakes
+/// no styles: Skia shapes the ellipsis in a fresh font of the run's typeface, in the
+/// style of the text it ends and at that run's height multiplier (`shapeEllipsis`).
+pub(crate) fn shape_ellipsis(collection: &FaceSet, tail: &ShapedRun, text: &str) -> ShapedRun {
+    let font = collection.get(tail.font);
+    let glyphs = shape(font, tail.size, text, false, &[])
         .into_iter()
         .map(|glyph| ShapedGlyph {
             cluster: 0,
@@ -303,11 +308,13 @@ pub(crate) fn shape_isolated(
         .collect();
     ShapedRun {
         range: 0..0,
-        font: font_id,
-        size,
+        font: tail.font,
+        size: tail.size,
         synthesis: FontSynthesis::NONE,
-        color,
-        height: None,
+        color: tail.color,
+        foreground: tail.foreground.clone(),
+        background: tail.background.clone(),
+        height: tail.height,
         decoration: None,
         shadows: Vec::new(),
         glyphs,
