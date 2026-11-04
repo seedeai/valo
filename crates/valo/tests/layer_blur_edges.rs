@@ -55,8 +55,8 @@ fn layered(filter: ImageFilter, hint: Option<Rect>, square: Rect) -> valo::Displ
 }
 
 /// `alphas` is the alpha of each pixel of the centre row.
-fn alphas(context: &mut Context, list: &valo::DisplayList) -> Vec<u8> {
-    let pixels = context.render_to_rgba(list, SIZE, Some(Color::TRANSPARENT));
+fn alphas(context: &mut Context, list: valo::DisplayList) -> Vec<u8> {
+    let pixels = valo_harness::render_to_rgba(context, list, SIZE, Some(Color::TRANSPARENT));
     (0..SIZE[0])
         .map(|x| pixels[((ROW * SIZE[0] + x) * 4 + 3) as usize])
         .collect()
@@ -80,8 +80,8 @@ fn a_composed_blur_on_a_layer_fades_softly() {
         swap_red_and_green(),
         ImageFilter::blur(10.0, 10.0).with_tile_mode(TileMode::Decal),
     );
-    let clamped = alphas(&mut context, &layered(clamped, None, square()));
-    let decal = alphas(&mut context, &layered(decal, None, square()));
+    let clamped = alphas(&mut context, layered(clamped, None, square()));
+    let decal = alphas(&mut context, layered(decal, None, square()));
     assert!(
         (55..60).any(|x| (1..=254).contains(&clamped[x])),
         "a soft edge, not a hard one: {:?}",
@@ -112,7 +112,7 @@ fn a_clamping_blur_on_a_hinted_layer_clamps_at_the_hint() {
     let hint = Rect::new(40.0, 40.0, 80.0, 80.0);
     let to_the_hint = Rect::new(60.0, 60.0, 60.0, 40.0);
     let clamp = ImageFilter::blur(4.0, 4.0).with_tile_mode(TileMode::Clamp);
-    let row = alphas(&mut context, &layered(clamp, Some(hint), to_the_hint));
+    let row = alphas(&mut context, layered(clamp, Some(hint), to_the_hint));
     assert!(
         (50..60).any(|x| (1..=254).contains(&row[x])),
         "soft inside the hint: {:?}",
@@ -150,7 +150,7 @@ fn a_filtered_draws_composed_blur_is_unchanged() {
                 ..white()
             },
         );
-        alphas(context, &b.build())
+        alphas(context, b.build())
     };
     let clamped = drawn(&mut context, ImageFilter::blur(10.0, 10.0));
     let decal = drawn(

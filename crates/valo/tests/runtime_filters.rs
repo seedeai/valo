@@ -209,8 +209,8 @@ fn an_identity_filter_leaves_the_picture_as_it_was() {
     let mut ctx = Context::new(device, queue);
     let size = [240, 160];
     let clear = Some(Color::BLACK);
-    let plain = ctx.render_to_rgba(&scene(false), size, clear);
-    let filtered = ctx.render_to_rgba(&scene(true), size, clear);
+    let plain = valo_harness::render_to_rgba(&mut ctx, scene(false), size, clear);
+    let filtered = valo_harness::render_to_rgba(&mut ctx, scene(true), size, clear);
     let mut worst = 0;
     for (a, b) in plain.iter().zip(&filtered) {
         worst = worst.max((*a as i32 - *b as i32).abs());
@@ -330,7 +330,7 @@ fn a_filter_knows_the_area_it_shades() {
     b.restore();
     let mut ctx = Context::new(device, queue);
     let size = [120, 120];
-    let rgba = ctx.render_to_rgba(&b.build(), size, Some(Color::TRANSPARENT));
+    let rgba = valo_harness::render_to_rgba(&mut ctx, b.build(), size, Some(Color::TRANSPARENT));
     let at = ((80 * size[0] + 60) * 4) as usize;
     assert_eq!(&rgba[at..at + 4], [30, 40, 110, 255]);
 }

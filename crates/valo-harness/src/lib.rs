@@ -95,6 +95,24 @@ async fn open_within_default_limits(
         })
 }
 
+/// `render_to_rgba` draws `list` into `size` pixels over `clear` and waits for them: the request,
+/// the device waited on, its answer. The rows are packed RGBA8 with straight alpha.
+pub fn render_to_rgba(
+    context: &mut valo::Context,
+    list: impl Into<std::sync::Arc<valo::DisplayList>>,
+    size: [u32; 2],
+    clear: Option<valo::Color>,
+) -> Vec<u8> {
+    let request = context.request_pixels(&list.into(), size, clear);
+    context
+        .device()
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the device answers");
+    pollster::block_on(request)
+        .expect("the pixels read back")
+        .into_bytes()
+}
+
 /// Read an RGBA8 texture back to tightly-packed bytes (row padding stripped).
 pub fn read_texture_rgba(
     device: &wgpu::Device,

@@ -26,8 +26,8 @@ fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
 }
 
-fn render(context: &mut Context, list: &DisplayList) -> Vec<u8> {
-    context.render_to_rgba(list, [WIDTH, HEIGHT], Some(Color::TRANSPARENT))
+fn render(context: &mut Context, list: DisplayList) -> Vec<u8> {
+    valo_harness::render_to_rgba(context, list, [WIDTH, HEIGHT], Some(Color::TRANSPARENT))
 }
 
 fn is_background(pixel: [u8; 4]) -> bool {
@@ -111,7 +111,7 @@ struct TriangleFacts {
 }
 
 fn triangle_facts(context: &mut Context, paint: Paint) -> TriangleFacts {
-    let pixels = render(context, &triangle_scene(paint));
+    let pixels = render(context, triangle_scene(paint));
     assert!(
         is_red(pixel(&pixels, 100, 100)) && is_red(pixel(&pixels, 196, 196)),
         "the red square after the blur is whole"
@@ -283,7 +283,7 @@ struct StrokeFacts {
 }
 
 fn stroke_facts(context: &mut Context, style: BlurStyle) -> StrokeFacts {
-    let pixels = render(context, &stroked_oval(style));
+    let pixels = render(context, stroked_oval(style));
     StrokeFacts {
         on_stroke: pixel(&pixels, 200, 100),
         above: pixel(&pixels, 200, 78),
@@ -380,7 +380,7 @@ fn mask_blur_texture() {
             ..Paint::from_color(Color::rgb(0.0, 1.0, 0.0))
         },
     );
-    let pixels = render(&mut context, &builder.build());
+    let pixels = render(&mut context, builder.build());
     // Texel (56, 56), the middle of a red square.
     assert_eq!(pixel(&pixels, 192, 192), [255, 0, 0, 255]);
     let edge = pixel(&pixels, 136, 144);
@@ -426,7 +426,7 @@ fn a_mask_blurred_gradient_keeps_its_colours() {
             ..Paint::from_color(Color::WHITE)
         },
     );
-    let pixels = render(&mut context, &builder.build());
+    let pixels = render(&mut context, builder.build());
     assert_eq!(pixel(&pixels, 196, 200), [255, 0, 0, 255]);
     assert_eq!(pixel(&pixels, 204, 200), [0, 0, 255, 255]);
 }
@@ -451,7 +451,7 @@ fn a_mask_blur_and_an_image_filter_both_blur_a_draw() {
                 ..Paint::from_color(Color::WHITE)
             },
         );
-        pixel(&render(&mut context, &builder.build()), 206, 150)[3]
+        pixel(&render(&mut context, builder.build()), 206, 150)[3]
     };
     let mask_blur_alone = alpha_beside(None);
     let both = alpha_beside(Some(ImageFilter::blur(4.0, 4.0)));
@@ -489,7 +489,7 @@ fn an_image_drawn_at_twice_its_size_blurs_as_far() {
                 ..Paint::from_color(Color::WHITE)
             },
         );
-        let pixels = render(&mut context, &builder.build());
+        let pixels = render(&mut context, builder.build());
         [160, 166, 170].map(|x| pixel(&pixels, x, 132)[3])
     };
     let own_size = halo(64);

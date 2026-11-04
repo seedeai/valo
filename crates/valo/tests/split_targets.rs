@@ -52,7 +52,8 @@ fn a_split_layer_keeps_off_a_split_main_target() {
     let (rect, paint) = multiply(Rect::new(40.0, 20.0, 8.0, 8.0));
     builder.draw_rect(rect, &paint);
     split_layer_the_size_of_the_target(&mut builder);
-    let pixels = context.render_to_rgba(&builder.build(), SIZE, Some(Color::WHITE));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, builder.build(), SIZE, Some(Color::WHITE));
     assert_eq!(pixel(&pixels, 16, 16), [255, 0, 0, 255]);
 }
 
@@ -122,7 +123,8 @@ fn a_path_reading_the_destination_keeps_its_stencil_with_its_cover() {
         valo::FillRule::NonZero,
         &Paint::from_color(RED),
     );
-    let pixels = context.render_to_rgba(&builder.build(), SIZE, Some(Color::WHITE));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, builder.build(), SIZE, Some(Color::WHITE));
     assert_eq!(pixel(&pixels, 4, 4), [128, 128, 128, 255], "the grey path");
     assert_eq!(pixel(&pixels, 28, 28), [255, 0, 0, 255], "the red path");
 }
@@ -145,7 +147,8 @@ fn a_clip_holds_past_a_split() {
     builder.draw_rect(rect, &paint);
     builder.draw_rect(Rect::new(0.0, 16.0, 64.0, 16.0), &Paint::from_color(BLUE));
     builder.restore();
-    let pixels = context.render_to_rgba(&builder.build(), SIZE, Some(Color::WHITE));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, builder.build(), SIZE, Some(Color::WHITE));
     assert_eq!(pixel(&pixels, 8, 24), [0, 0, 255, 255], "inside the clip");
     assert_eq!(pixel(&pixels, 48, 24), [255, 0, 0, 255], "outside it");
     assert_eq!(

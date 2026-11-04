@@ -83,6 +83,16 @@ impl PixelBuffer {
         self.layout
     }
 
+    /// `bytes` returns the samples, rows `layout().row_bytes` apart.
+    pub fn bytes(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// `into_bytes` returns the samples' allocation, rows `layout().row_bytes` apart.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.pixels
+    }
+
     /// `into_premultiplied_rgba` compacts rows and converts channels and alpha in place.
     pub(crate) fn into_premultiplied_rgba(self) -> Vec<u8> {
         let Self { layout, mut pixels } = self;

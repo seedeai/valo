@@ -96,8 +96,8 @@ impl TwoColours {
     }
 }
 
-fn render(context: &mut Context, list: &DisplayList) -> Vec<u8> {
-    context.render_to_rgba(list, [SIDE, SIDE], Some(Color::TRANSPARENT))
+fn render(context: &mut Context, list: DisplayList) -> Vec<u8> {
+    valo_harness::render_to_rgba(context, list, [SIDE, SIDE], Some(Color::TRANSPARENT))
 }
 
 /// The pixels nearest the panel's edge are where an unbounded blur mixes in
@@ -120,9 +120,9 @@ fn assert_no_bleed(
     for sigma in [3.0, 12.0] {
         let bounded = render(
             context,
-            &list_of(scene, ImageFilter::bounded_blur(sigma, sigma, PANEL)),
+            list_of(scene, ImageFilter::bounded_blur(sigma, sigma, PANEL)),
         );
-        let unbounded = render(context, &list_of(scene, ImageFilter::blur(sigma, sigma)));
+        let unbounded = render(context, list_of(scene, ImageFilter::blur(sigma, sigma)));
         let transform = scene.transform;
         let bounded_worst = scene.worst_blue_inside(&bounded);
         let unbounded_worst = scene.worst_blue_inside(&unbounded);
@@ -215,7 +215,7 @@ fn a_bounded_backdrop_blur_leaves_children_outside_its_bounds_drawn() {
     builder.draw_rect(Rect::new(4.0, 4.0, 16.0, 16.0), &Paint::from_color(GREEN));
     builder.restore();
     let mut context = Context::new(device, queue);
-    let pixels = render(&mut context, &builder.build());
+    let pixels = render(&mut context, builder.build());
     let at = ((12 * SIDE + 12) * 4) as usize;
     assert_eq!(&pixels[at..at + 4], &[0, 255, 0, 255]);
 }
@@ -300,7 +300,7 @@ fn keyed_bounded_backdrops_at_different_places_read_their_own_bounds() {
         bounded.shared_backdrops, 0,
         "bounded tiles at different places do not"
     );
-    let pixels = render(&mut context, &bounded_list);
+    let pixels = render(&mut context, bounded_list);
     for origin in origins {
         for (x, y) in [
             (origin.x + 0.5, origin.y + 0.5),
@@ -359,6 +359,11 @@ fn bounded_backdrop_blur_golden() {
         builder.restore();
     }
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(&builder.build(), size, Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
+        size,
+        Some(Color::TRANSPARENT),
+    );
     valo_harness::assert_golden(goldens_dir(), "bounded_backdrop_blur", size, &pixels);
 }

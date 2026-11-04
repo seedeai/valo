@@ -25,7 +25,7 @@ fn render(context: &mut Context, image: &valo::Image) -> Vec<u8> {
         Rect::new(0.0, 0.0, size[0] as f32, size[1] as f32),
         &Paint::from_color(Color::WHITE),
     );
-    context.render_to_rgba(&scene.build(), size, Some(Color::TRANSPARENT))
+    valo_harness::render_to_rgba(context, scene.build(), size, Some(Color::TRANSPARENT))
 }
 
 const PIXELS_3X2: [u8; 24] = [

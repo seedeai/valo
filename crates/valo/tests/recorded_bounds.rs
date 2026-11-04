@@ -28,7 +28,7 @@ fn painted_outside_bounds(
         .bounds()
         .rect()
         .expect("the draw shows within a rectangle");
-    let pixels = context.render_to_rgba(&list, SIZE, Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(context, list, SIZE, Some(Color::TRANSPARENT));
     let inside = |x: u32, y: u32| {
         let (x, y) = (x as f32, y as f32);
         x + 1.0 > bounds.x && x < bounds.right() && y + 1.0 > bounds.y && y < bounds.bottom()

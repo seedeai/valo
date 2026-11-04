@@ -101,9 +101,9 @@ fn behind_glass(side: f32, sigma: f32) -> DisplayList {
 
 /// The alpha-weighted centroid of what `list` draws, in pixels from the
 /// frame's top-left corner.
-fn centroid(context: &mut Context, list: &DisplayList) -> (f64, f64) {
+fn centroid(context: &mut Context, list: DisplayList) -> (f64, f64) {
     let size = [FRAME as u32; 2];
-    let pixels = context.render_to_rgba(list, size, Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(context, list, size, Some(Color::TRANSPARENT));
     let (mut weight, mut sum_x, mut sum_y) = (0.0f64, 0.0f64, 0.0f64);
     for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         let alpha = f64::from(pixel[3]);
@@ -122,7 +122,7 @@ fn assert_centred(test: &str, route: fn(f32, f32) -> DisplayList) {
     };
     for sigma in SIGMAS {
         for side in SIDES {
-            let (x, y) = centroid(&mut context, &route(side, sigma));
+            let (x, y) = centroid(&mut context, route(side, sigma));
             assert!(
                 (x - CENTRE).abs() <= TOLERANCE && (y - CENTRE).abs() <= TOLERANCE,
                 "σ {sigma}, side {side}: the blur's ink is centred at ({x:.3}, {y:.3}), \
@@ -160,8 +160,9 @@ fn a_decal_blur_reads_half_of_an_edge_texel_its_tap_lands_on() {
         return;
     };
     let side = 48.0;
-    let pixels = context.render_to_rgba(
-        &layered(side, 8.0),
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        layered(side, 8.0),
         [FRAME as u32; 2],
         Some(Color::TRANSPARENT),
     );

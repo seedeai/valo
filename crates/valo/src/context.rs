@@ -92,8 +92,7 @@ impl Context {
         self.renderer.device()
     }
 
-    // Native readback needs the queue; wasm has no blocking readback path.
-    #[cfg(not(target_arch = "wasm32"))]
+    // Reading pixels back submits its own copies.
     pub(crate) fn queue_handle(&self) -> wgpu::Queue {
         self.queue.clone()
     }

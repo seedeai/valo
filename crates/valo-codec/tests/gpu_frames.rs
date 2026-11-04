@@ -85,7 +85,7 @@ fn draw(context: &mut Context, image: &valo::Image) -> Vec<u8> {
         Rect::new(0.0, 0.0, 2.0, 1.0),
         &Paint::from_color(Color::WHITE),
     );
-    context.render_to_rgba(&scene.build(), [2, 1], Some(Color::TRANSPARENT))
+    valo_harness::render_to_rgba(context, scene.build(), [2, 1], Some(Color::TRANSPARENT))
 }
 
 #[test]

@@ -40,7 +40,12 @@ fn uniform_and_texture_gradients_pad_with_the_final_stop_color() {
                 local: Matrix::IDENTITY,
             }),
         );
-        let pixels = context.render_to_rgba(&scene.build(), [64, 16], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            scene.build(),
+            [64, 16],
+            Some(Color::TRANSPARENT),
+        );
         let padded = (8 * 64 + 40) * 4;
         assert_eq!(&pixels[padded..padded + 4], &[0, 0, 0, 64], "{count} stops");
         let first = (8 * 64 + 8) * 4;
@@ -76,7 +81,8 @@ fn assert_tiled_colors(
             local: Matrix::IDENTITY,
         }),
     );
-    let pixels = context.render_to_rgba(&scene.build(), [256, 16], Some(Color::TRANSPARENT));
+    let pixels =
+        valo_harness::render_to_rgba(context, scene.build(), [256, 16], Some(Color::TRANSPARENT));
     for &(t, expected) in samples {
         let x = (origin + length * t) as usize;
         let pixel = (8 * 256 + x) * 4;

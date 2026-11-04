@@ -103,7 +103,12 @@ fn render_over(
 ) -> Pixels {
     let mut builder = DisplayListBuilder::new();
     builder.draw_paragraph_with(paragraph, ORIGIN, paint);
-    Pixels(context.render_to_rgba(&builder.build(), SIZE, Some(backdrop)))
+    Pixels(valo_harness::render_to_rgba(
+        context,
+        builder.build(),
+        SIZE,
+        Some(backdrop),
+    ))
 }
 
 fn context(test: &str) -> Option<Context> {
@@ -408,7 +413,12 @@ fn lies_beneath_its_glyphs(
 
     let mut builder = DisplayListBuilder::new();
     builder.draw_paragraph(backed, ORIGIN);
-    let drawn = Pixels(context.render_to_rgba(&builder.build(), SIZE, Some(Color::TRANSPARENT)));
+    let drawn = Pixels(valo_harness::render_to_rgba(
+        context,
+        builder.build(),
+        SIZE,
+        Some(Color::TRANSPARENT),
+    ));
     assert_eq!(drawn.at(stem), [255, 255, 255, 255], "{tier}: in a stem");
     assert_eq!(
         drawn.at(between_stems),

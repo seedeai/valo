@@ -10,10 +10,15 @@
 #[cfg(animation)]
 mod animation;
 mod color;
+#[cfg(any(feature = "png", feature = "jpeg", feature = "webp"))]
+mod encode;
 mod probe;
 
 #[cfg(animation)]
 use animation::FrameStream;
+#[cfg(any(feature = "png", feature = "jpeg", feature = "webp"))]
+pub use encode::{encode, EncodeError, Encoding};
+
 use color::ColorSpace;
 use image::DynamicImage;
 use probe::Probe;

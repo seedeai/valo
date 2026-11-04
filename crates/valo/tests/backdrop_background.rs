@@ -54,13 +54,15 @@ fn backdrop_base_matches_scene_composited_over_color_before_blur() {
     let mut context = Context::new(device, queue);
     let base = Color::rgb(0.0, 0.0, 1.0);
     for sigma in [0.0, 3.0, 12.0] {
-        let actual = context.render_to_rgba(
-            &scene(Some(base), false, sigma),
+        let actual = valo_harness::render_to_rgba(
+            &mut context,
+            scene(Some(base), false, sigma),
             [96, 64],
             Some(Color::TRANSPARENT),
         );
-        let reference = context.render_to_rgba(
-            &scene(Some(base), true, sigma),
+        let reference = valo_harness::render_to_rgba(
+            &mut context,
+            scene(Some(base), true, sigma),
             [96, 64],
             Some(Color::TRANSPARENT),
         );
@@ -98,7 +100,8 @@ fn shared_backdrop_does_not_reuse_different_background_colors() {
         );
         b.restore();
     }
-    let pixels = context.render_to_rgba(&b.build(), [64, 32], Some(Color::TRANSPARENT));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, b.build(), [64, 32], Some(Color::TRANSPARENT));
     assert_eq!(
         &pixels[(16 * 64 + 16) * 4..(16 * 64 + 16) * 4 + 4],
         &[255, 0, 0, 255]
@@ -153,7 +156,7 @@ fn composed_backdrop_matches_layer_filter_order_and_transform() {
                 );
             }
             b.restore();
-            context.render_to_rgba(&b.build(), [160, 144], Some(Color::TRANSPARENT))
+            valo_harness::render_to_rgba(context, b.build(), [160, 144], Some(Color::TRANSPARENT))
         };
         let actual = render(&mut context, true);
         let expected = render(&mut context, false);
@@ -204,7 +207,8 @@ fn color_only_backdrop_leaves_foreground_unfiltered() {
         &Paint::from_color(Color::rgb(0.0, 1.0, 0.0)),
     );
     b.restore();
-    let pixels = context.render_to_rgba(&b.build(), [64, 64], Some(Color::TRANSPARENT));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, b.build(), [64, 64], Some(Color::TRANSPARENT));
     for (x, expected) in [
         (4, [255, 0, 0, 255]),
         (23, [0, 0, 255, 255]),

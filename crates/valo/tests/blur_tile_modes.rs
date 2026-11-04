@@ -19,8 +19,8 @@ fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
 }
 
-fn render(context: &mut Context, list: &DisplayList) -> Vec<u8> {
-    context.render_to_rgba(list, [SIDE, SIDE], Some(Color::TRANSPARENT))
+fn render(context: &mut Context, list: DisplayList) -> Vec<u8> {
+    valo_harness::render_to_rgba(context, list, [SIDE, SIDE], Some(Color::TRANSPARENT))
 }
 
 /// Two red rows along the target's top edge over blue, and a glass panel
@@ -57,7 +57,7 @@ fn a_backdrop_at_the_frame_edge_mirrors_unless_told_otherwise() {
     let mut context = Context::new(device, queue);
     let blur = || ImageFilter::blur(4.0, 4.0);
     let mut top_left = |filter: ImageFilter| {
-        let pixels = render(&mut context, &glass_at_the_top_edge(filter));
+        let pixels = render(&mut context, glass_at_the_top_edge(filter));
         pixel(&pixels, 32, 0)
     };
     let unspecified = top_left(blur());
@@ -107,7 +107,7 @@ fn a_blurred_image_clamps_its_edge_unless_told_otherwise() {
                 ..Paint::from_color(Color::WHITE)
             },
         );
-        let pixels = render(&mut context, &builder.build());
+        let pixels = render(&mut context, builder.build());
         pixel(&pixels, 42, 32)
     };
     let unspecified = beside_the_edge(ImageFilter::blur(4.0, 4.0));

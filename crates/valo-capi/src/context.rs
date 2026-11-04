@@ -334,8 +334,8 @@ pub unsafe extern "C" fn valo_context_render(
 /// `valo_context_render_to_pixels` renders headless into caller-allocated
 /// straight-alpha RGBA8 pixels (`width * height * 4` bytes).
 ///
-/// This is the export and golden-test route. Returns false on a null handle,
-/// null buffer, or zero size.
+/// This is the export and golden-test route. It blocks until the GPU answers.
+/// Returns false on a null handle, null buffer, zero size, or a failed read.
 ///
 /// # Safety
 /// `context` and `list` must be live handles; `out_pixels` must point to
@@ -355,9 +355,22 @@ pub unsafe extern "C" fn valo_context_render_to_pixels(
     if out_pixels.is_null() || width == 0 || height == 0 {
         return false;
     }
-    let pixels = ctx
+    let request = ctx
         .context
-        .render_to_rgba(&list.list, [width, height], Some(Color::from(clear)));
+        .request_pixels(&list.list, [width, height], Some(Color::from(clear)));
+    // C has no futures, so this waits on the device until the request is answered.
+    if ctx
+        .context
+        .device()
+        .poll(wgpu::PollType::wait_indefinitely())
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(pixels) = pollster::block_on(request) else {
+        return false;
+    };
+    let pixels = pixels.bytes();
     unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), out_pixels, pixels.len()) };
     true
 }

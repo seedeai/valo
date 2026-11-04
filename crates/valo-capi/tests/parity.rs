@@ -366,8 +366,12 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
             ..valo::Paint::default()
         },
     );
-    let rust_pixels =
-        context.render_to_rgba(&b.build(), size, Some(valo::Color::rgb(0.07, 0.07, 0.09)));
+    let rust_pixels = valo_harness::render_to_rgba(
+        &mut context,
+        b.build(),
+        size,
+        Some(valo::Color::rgb(0.07, 0.07, 0.09)),
+    );
 
     assert_eq!(
         c_pixels, rust_pixels,
@@ -520,8 +524,12 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
     let mut b = valo::DisplayListBuilder::new();
     use valo::DrawParagraphExt;
     b.draw_paragraph(&rust_paragraph, (4.0, 4.0));
-    let rust_pixels =
-        context.render_to_rgba(&b.build(), size, Some(valo::Color::rgb(0.07, 0.07, 0.09)));
+    let rust_pixels = valo_harness::render_to_rgba(
+        &mut context,
+        b.build(),
+        size,
+        Some(valo::Color::rgb(0.07, 0.07, 0.09)),
+    );
 
     assert_eq!(
         c_pixels, rust_pixels,
@@ -620,8 +628,12 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
         ..Default::default()
     };
     b.draw_paragraph_with(&rust_paragraph, (4.0, 4.0), &rust_stroke);
-    let rust_pixels =
-        context.render_to_rgba(&b.build(), size, Some(valo::Color::rgb(0.07, 0.07, 0.09)));
+    let rust_pixels = valo_harness::render_to_rgba(
+        &mut context,
+        b.build(),
+        size,
+        Some(valo::Color::rgb(0.07, 0.07, 0.09)),
+    );
 
     assert_eq!(
         c_pixels, rust_pixels,

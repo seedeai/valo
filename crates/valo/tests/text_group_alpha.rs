@@ -83,7 +83,12 @@ fn overlapping_glyphs_under_a_group_alpha_blend_once() {
     let alone = |context: &mut Context, x: f32| {
         let mut b = DisplayListBuilder::new();
         run(&mut b, &[x], &blue);
-        Pixels(context.render_to_rgba(&b.build(), SIZE, Some(Color::TRANSPARENT)))
+        Pixels(valo_harness::render_to_rgba(
+            context,
+            b.build(),
+            SIZE,
+            Some(Color::TRANSPARENT),
+        ))
     };
     let (first, second) = (alone(&mut context, 20.0), alone(&mut context, 45.0));
     let overlap = first
@@ -99,7 +104,12 @@ fn overlapping_glyphs_under_a_group_alpha_blend_once() {
     b.save_layer(None, &half_alpha());
     run(&mut b, &[20.0, 45.0], &blue);
     b.restore();
-    let group = Pixels(context.render_to_rgba(&b.build(), SIZE, Some(BACKGROUND)));
+    let group = Pixels(valo_harness::render_to_rgba(
+        &mut context,
+        b.build(),
+        SIZE,
+        Some(BACKGROUND),
+    ));
     assert_eq!(
         group.at(overlap),
         group.at(first_alone),

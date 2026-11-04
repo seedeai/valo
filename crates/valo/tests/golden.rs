@@ -1383,7 +1383,12 @@ fn pattern_tile_modes_cover_only_their_own_axes() {
                 local: valo::Matrix::IDENTITY,
             }),
         );
-        let pixels = context.render_to_rgba(&b.build(), [96, 96], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            b.build(),
+            [96, 96],
+            Some(Color::TRANSPARENT),
+        );
         // Inside the first tile, one tile to the right, one tile down.
         [(8usize, 8usize), (40, 8), (8, 40)].map(|(x, y)| pixels[(y * 96 + x) * 4 + 3])
     };
@@ -1443,7 +1448,12 @@ fn a_direct_image_draw_honours_decal_tiling() {
             },
             &Paint::default(),
         );
-        let pixels = context.render_to_rgba(&b.build(), [96, 96], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            b.build(),
+            [96, 96],
+            Some(Color::TRANSPARENT),
+        );
         [(48usize, 48usize), (10, 48), (48, 10)].map(|(x, y)| pixels[(y * 96 + x) * 4 + 3])
     };
 
@@ -2554,7 +2564,7 @@ fn m7_export_unpremultiplies() {
     let dl = b.build();
     // Over a TRANSPARENT clear: premultiplied readback would be ~(128,0,0,128);
     // the export path must hand back straight alpha ~(255,0,0,128).
-    let pixels = ctx.render_to_rgba(&dl, [8, 8], Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(&mut ctx, dl, [8, 8], Some(Color::TRANSPARENT));
     let px = &pixels[..4];
     assert!(px[0] >= 250, "straight red, not premultiplied: {px:?}");
     assert!(px[3].abs_diff(128) <= 2, "alpha preserved: {px:?}");
@@ -3056,7 +3066,12 @@ fn a_bare_move_to_paints_nothing_but_a_zero_length_subpath_does() {
         paint.color = Color::rgb(1.0, 1.0, 1.0);
         let mut b = DisplayListBuilder::new();
         b.draw_path(&path.build(), FillRule::NonZero, &paint);
-        let pixels = context.render_to_rgba(&b.build(), [40, 40], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            b.build(),
+            [40, 40],
+            Some(Color::TRANSPARENT),
+        );
         pixels
             .as_chunks::<4>()
             .0
@@ -3424,7 +3439,7 @@ fn m12_perspective_golden() {
     b.restore();
     let dl = b.build();
 
-    let rgba = ctx.render_to_rgba(&dl, size, Some(Color::rgb(0.07, 0.07, 0.09)));
+    let rgba = valo_harness::render_to_rgba(&mut ctx, dl, size, Some(Color::rgb(0.07, 0.07, 0.09)));
 
     // Foreshortening property: the card's top (far) edge spans fewer
     // columns than its bottom (near) edge.
@@ -3699,7 +3714,12 @@ fn color_filter_cpu_and_image_gpu_paths_agree() {
             Rect::new(1.0, 0.0, 1.0, 1.0),
             &Paint::from_color(filter.folded_into(destination)),
         );
-        let pixels = context.render_to_rgba(&builder.build(), [2, 1], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            builder.build(),
+            [2, 1],
+            Some(Color::TRANSPARENT),
+        );
         assert!(
             pixels[..4]
                 .iter()
@@ -3748,7 +3768,12 @@ fn direct_image_filters_after_sampling() {
             ..Default::default()
         },
     );
-    let pixel = context.render_to_rgba(&builder.build(), [1, 1], Some(Color::TRANSPARENT));
+    let pixel = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
+        [1, 1],
+        Some(Color::TRANSPARENT),
+    );
     assert!(
         pixel[0] >= 250,
         "filter must see the sampled color: {pixel:?}"
@@ -3777,7 +3802,12 @@ fn color_filter_that_changes_transparent_black_floods_layer_scope() {
         },
     );
     builder.restore();
-    let pixels = context.render_to_rgba(&builder.build(), [8, 8], Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
+        [8, 8],
+        Some(Color::TRANSPARENT),
+    );
     for pixel in pixels.as_chunks::<4>().0 {
         assert_eq!(pixel, &[64, 128, 191, 128]);
     }
@@ -3804,7 +3834,12 @@ fn image_filter_that_changes_transparent_black_floods_layer_clip() {
             &Paint::from_color(Color::rgb(0.0, 0.0, 1.0)),
         );
         builder.restore();
-        let pixels = context.render_to_rgba(&builder.build(), [32, 32], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            builder.build(),
+            [32, 32],
+            Some(Color::TRANSPARENT),
+        );
         let at = (20 * 32 + 20) * 4;
         pixels[at..at + 4].to_vec()
     };
@@ -3847,7 +3882,12 @@ fn a_draws_image_filter_that_colours_transparent_pixels_fills_its_clip() {
         let mut builder = DisplayListBuilder::new();
         builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
         draw(&mut builder);
-        let pixels = context.render_to_rgba(&builder.build(), [64, 32], Some(Color::WHITE));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            builder.build(),
+            [64, 32],
+            Some(Color::WHITE),
+        );
         let pixel = |x: usize, y: usize| pixels[(y * 64 + x) * 4..][..4].to_vec();
         [pixel(5, 5), pixel(20, 20), pixel(48, 16)]
     };
@@ -3921,7 +3961,12 @@ fn composed_image_filter_runs_inner_before_outer() {
     );
     builder.restore();
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(&builder.build(), [4, 8], Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
+        [4, 8],
+        Some(Color::TRANSPARENT),
+    );
     for pixel in pixels.as_chunks::<4>().0 {
         assert!(pixel[0].abs_diff(153) <= 2, "unexpected pixel {pixel:?}");
         assert_eq!(&pixel[1..], &[0, 0, 255]);
@@ -3961,7 +4006,7 @@ fn a_layer_colour_filter_takes_the_layer_alpha_in_first() {
     let target = Offscreen::new(&device, [4, 4]);
     let stats = context.render(&list, &target.target(Some(Color::TRANSPARENT)));
     assert_eq!(stats.filter_passes, 0, "the composite draws the filter");
-    let pixels = context.render_to_rgba(&list, [4, 4], Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(&mut context, list, [4, 4], Some(Color::TRANSPARENT));
     for pixel in pixels.as_chunks::<4>().0 {
         assert_eq!(pixel, &[255, 0, 0, 255], "unexpected pixel {pixel:?}");
     }
@@ -3999,7 +4044,8 @@ fn an_opacity_group_keeps_its_alpha_off_a_colour_filtered_layer() {
     );
     builder.restore();
     builder.restore();
-    let pixels = context.render_to_rgba(&builder.build(), [32, 32], Some(Color::WHITE));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, builder.build(), [32, 32], Some(Color::WHITE));
     let at = (20 * 32 + 20) * 4;
     let pixel = &pixels[at..at + 4];
     // Red at half alpha over white is 127.5 in green and blue, which a GPU
@@ -4041,7 +4087,12 @@ fn gaussian_blur_rotated_non_uniform_golden() {
         },
     );
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(&builder.build(), size, Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
+        size,
+        Some(Color::TRANSPARENT),
+    );
     let alpha_at = |local: valo::Point| {
         let at = local_to_device.map_point(local);
         pixels[((at.y as u32 * size[0] + at.x as u32) * 4 + 3) as usize]
@@ -4084,7 +4135,12 @@ fn a_downsampled_blur_spreads_symmetrically() {
                 ..Default::default()
             },
         );
-        let pixels = context.render_to_rgba(&b.build(), [240, 240], Some(Color::TRANSPARENT));
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            b.build(),
+            [240, 240],
+            Some(Color::TRANSPARENT),
+        );
         let alpha = |x: usize, y: usize| pixels[(y * 240 + x) * 4 + 3] as i32;
         // The halo is read at σ, not the 1.5σ it was read at before the
         // Gaussian port: Impeller's kernel ends at √3·(σ − ½) (see
@@ -4129,8 +4185,9 @@ fn a_sixteenth_scale_blur_upscales_symmetrically() {
         },
     );
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(
-        &builder.build(),
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        builder.build(),
         [side as u32, side as u32],
         Some(Color::TRANSPARENT),
     );
@@ -4205,8 +4262,9 @@ fn a_recoloured_layer_blur_stays_centred_past_the_downsample_threshold() {
             &Paint::from_color(Color::rgb(1.0, 0.31, 0.47)),
         );
         builder.restore();
-        let pixels = context.render_to_rgba(
-            &builder.build(),
+        let pixels = valo_harness::render_to_rgba(
+            &mut context,
+            builder.build(),
             [size[0] as u32, size[1] as u32],
             Some(Color::TRANSPARENT),
         );
@@ -4299,7 +4357,12 @@ fn a_rotated_layer_keeps_its_whole_drop_shadow() {
     b.restore();
 
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(&b.build(), [120, 120], Some(Color::TRANSPARENT));
+    let pixels = valo_harness::render_to_rgba(
+        &mut context,
+        b.build(),
+        [120, 120],
+        Some(Color::TRANSPARENT),
+    );
     let at = |x: usize, y: usize| {
         let start = (y * 120 + x) * 4;
         [pixels[start], pixels[start + 1], pixels[start + 2]]
@@ -4338,7 +4401,8 @@ fn drop_shadow_places_the_shadow_at_the_offset() {
         },
     );
     let mut context = Context::new(device, queue);
-    let pixels = context.render_to_rgba(&b.build(), [24, 24], Some(Color::TRANSPARENT));
+    let pixels =
+        valo_harness::render_to_rgba(&mut context, b.build(), [24, 24], Some(Color::TRANSPARENT));
     let at = |x: usize, y: usize| {
         let start = (y * 24 + x) * 4;
         [
@@ -4450,7 +4514,8 @@ fn assert_cpu_fold_matches_filter_pass(
     builder.draw_rect(right, &Paint::from_color(destination));
     builder.restore();
 
-    let pixels = context.render_to_rgba(&builder.build(), [8, 4], Some(Color::TRANSPARENT));
+    let pixels =
+        valo_harness::render_to_rgba(context, builder.build(), [8, 4], Some(Color::TRANSPARENT));
     for y in 0..4usize {
         for x in 0..4usize {
             let folded = 4 * (y * 8 + x);
