@@ -1,4 +1,5 @@
-//! SVG parsing and translation into Valo display lists.
+//! SVG to and from Valo display lists: parsing and translating SVG documents, and writing a
+//! list as an SVG document ([`write`]).
 //!
 //! Translation is best-effort. Unsupported features degrade only the affected
 //! element and are reported through [`Svg::missing`]; they do not reject the
@@ -11,7 +12,10 @@ use std::sync::Arc;
 use valo_dl::DisplayList;
 
 mod convert;
+mod export;
 mod translate;
+
+pub use export::{write, NativeEffects, SvgFuture, SvgOptions, SvgWriteError};
 
 /// `Svg` is a translated vector document ready to record or draw.
 ///

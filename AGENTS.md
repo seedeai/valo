@@ -16,12 +16,12 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 | crate | role |
 |---|---|
 | `valo-geometry` | pure math: points, rects, paths, 4×4 matrices, strokes, color. No GPU, no unicode, no deps beyond glam |
-| `valo-dl` | recording: `DisplayListBuilder`, ops, paints, shaders. GPU-free and `Send + Sync` |
+| `valo-dl` | recording: `DisplayListBuilder`, ops, paints, shaders, and walking a list (`DisplayList::walk`, a `DisplayListWalker` iterator keeping the transform and clips in force as a `MatrixClipState`, which gives an op's bounds and any ops alone in their place, as vector writers need). GPU-free and `Send + Sync` |
 | `valo-text` | fonts and their collections, fallback, the shaper, glyph raster, SDF, COLR: Skia's core and `skshaper`. GPU-free |
 | `valo-paragraph` | styled paragraphs: spans, bidi, wrapping, and recording them into a display list. Above `valo-dl`, so a style can hold a paint, as `skparagraph` sits above Skia's core |
 | `valo-renderer` | the wgpu core: planner, encoder, pipelines, atlases, pools, caches |
 | `valo` | the facade hosts use, plus `Hud`, and the export path: `Context::request_pixels` draws a list into pixels of any size, in tiles past the device's largest texture, and asks the GPU for them; the answer is delivered by the browser on the web and by the host's `Context::check_requests` natively, as Skia's async reads are |
-| `valo-svg` | SVG → display list translation |
+| `valo-svg` | SVG to and from display lists: translating SVG documents into lists, and writing a list as an SVG document (`write`, an `SvgFuture` completed as any pixel request is): glyphs defined once, as outlines or, for colour glyphs, their images, shadows, blurs, masks and colour filters as SVG's own where `NativeEffects` lets them, the rest as pictures valo draws, as `valo-pdf`'s are |
 | `valo-fontmgr` | installed fonts in Skia's `SkFontMgr` shape: faces by family and style, a face covering a character in a language, the platform's UI font. CoreText on Apple systems, a directory scan elsewhere, trait-only on wasm. The one crate that opens font files (memory-mapped), and it carries no text stack, so a host can forward fonts with it alone |
 | `valo-system-fonts` | the adapter from a `valo-fontmgr` manager to `FontSource`, so a collection resolves its misses. Builds anywhere `valo-text` does |
 | `valo-codec` | image decoding for hosts that want the engine to do it: a `Decoder` trait codec libraries implement, an `ImageLoader` that tries decoders in order and turns their pixels or textures into `Image`s, and `Pending` futures for the results. Decodes inline (inside the poll, for wasm and single-threaded hosts) or on one worker thread (`worker` feature). No codecs of its own, no file IO |

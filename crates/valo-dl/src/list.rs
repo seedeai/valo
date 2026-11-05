@@ -186,15 +186,7 @@ pub enum Op {
     /// the text stack). One op per placed run; `y` sits on the
     /// baseline; the renderer picks bitmap/SDF/path per transform.
     GlyphRun {
-        /// The font INSTANCE, carried by value to raster (Skia: text
-        /// blobs hold `sk_sp<SkTypeface>` — nothing is registered
-        /// renderer-side). Serialization keeps only the raster identity.
-        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_font_uid"))]
-        font: std::sync::Arc<valo_text::Font>,
-        size: f32,
-        /// The bold and italic the glyphs fake because the font lacks them.
-        #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_synthesis"))]
-        synthesis: valo_text::FontSynthesis,
+        font: RunFont,
         /// Blend/alpha/mask-blur apply like any draw; `paint.color` tints
         /// mask glyphs (color glyphs keep their palette, alpha only).
         paint: Paint,
@@ -275,6 +267,24 @@ pub struct GlyphPos {
     pub x: f32,
     /// `y` is the glyph's local baseline position in pixels.
     pub y: f32,
+}
+
+/// `RunFont` is what a glyph run's glyphs are drawn with, as Skia's `SkFont` is: a face at a
+/// size, with the bold and italic it fakes.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct RunFont {
+    /// `face` is the font the glyphs come from, carried by value to raster (Skia's text blobs
+    /// hold `sk_sp<SkTypeface>`: nothing is registered renderer-side). Serialization keeps only
+    /// its raster identity.
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_font_uid"))]
+    pub face: Arc<valo_text::Font>,
+    /// `size` is the font size in pixels.
+    pub size: f32,
+    /// `synthesis` is the bold and italic the glyphs fake because the face lacks them;
+    /// [`valo_text::FontSynthesis::NONE`] draws the face as it is.
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_synthesis"))]
+    pub synthesis: valo_text::FontSynthesis,
 }
 
 /// `RunText` is the text a glyph run shows, as Skia's text blobs keep it (`allocRunText`): what a

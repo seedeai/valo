@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use valo_dl::{DisplayListBuilder, GlyphPos, Paint, RunText};
+use valo_dl::{DisplayListBuilder, GlyphPos, Paint, RunFont, RunText};
 use valo_geometry::{Point, Rect};
 use valo_text::FaceSet;
 
@@ -255,9 +255,11 @@ fn draw_run(
         run.ink.height,
     );
     b.draw_glyph_run(
-        fonts.get_arc(run.font),
-        run.size,
-        run.synthesis,
+        RunFont {
+            face: fonts.get_arc(run.font),
+            size: run.size,
+            synthesis: run.synthesis,
+        },
         paint,
         Arc::new(glyphs),
         run_text(run),

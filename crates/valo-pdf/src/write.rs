@@ -1,4 +1,4 @@
-//! The second pass: a page's ops onto a krilla surface, with each part the first pass found
+//! The second pass: a page's ops onto a krilla surface, with each region the first pass found
 //! drawn as its picture.
 
 use std::collections::HashMap;
@@ -18,15 +18,15 @@ use krilla::surface::Surface;
 use krilla::text::{Font as PdfFont, GlyphId, KrillaGlyph};
 use krilla::Document;
 use valo::{
-    BlendMode, Cap, ClipOp, Color, DisplayList, FillRule, Join, Matrix, Op, Paint, PaintStyle,
-    Path, PixelBuffer, RunText, Shader, SpreadMode,
+    BlendMode, Cap, ClipOp, Color, FillRule, Join, Matrix, MatrixClipState, Op, Paint, PaintStyle,
+    Path, PixelBuffer, Rect, RunFont, RunText, Shader, SpreadMode,
 };
 use valo_codec_software::{encode, Encoding};
 use valo_dl::GlyphPos;
 use valo_geometry::PathElement;
-use valo_text::{Font, FontSynthesis, FontUid};
+use valo_text::{Font, FontUid};
 
-use crate::picture::{pictured_draw, pictured_scope, scope_end};
+use crate::raster::rasterized;
 use crate::{PdfError, PdfPage, Picture};
 
 /// `DocumentWriter` holds a document being written and the fonts its pages embed, each made once.
@@ -48,22 +48,30 @@ impl DocumentWriter {
         let points = page.settings.points_per_unit;
         let settings = PdfPageSettings::from_wh(page.size[0] * points, page.size[1] * points)
             .ok_or_else(|| PdfError::Write("a page has no area".to_owned()))?;
+        let pictures = images_of(&page.pictures, page.settings.quality)?;
         let mut pdf_page = self.document.start_page_with(settings);
         let mut surface = pdf_page.surface();
         surface.push_transform(&Transform::from_scale(points, points));
         let mut writer = Writer {
             surface: &mut surface,
             fonts: &mut self.fonts,
-            scopes: vec![Scope::default()],
-            pictures: page.pictures.iter(),
-            quality: page.settings.quality,
+            scopes: vec![0],
+            pictures: pictures.into_iter(),
         };
-        let written = writer.list(&page.list);
+        let mut ops = page.list.walk();
+        while let Some(op) = ops.next() {
+            if rasterized(op, ops.scope()) {
+                writer.picture(ops.matrix_clip());
+                ops.skip_scope();
+            } else {
+                writer.op(op);
+            }
+        }
         writer.close_all();
         surface.pop();
         surface.finish();
         pdf_page.finish();
-        written
+        Ok(())
     }
 
     pub fn finish(self) -> Result<Vec<u8>, PdfError> {
@@ -73,45 +81,47 @@ impl DocumentWriter {
     }
 }
 
-/// `Scope` is a save scope open on the surface: the pushes it made, which its `Restore` pops,
-/// and the transform to the page's space inside it.
-#[derive(Default)]
-struct Scope {
-    pushes: usize,
-    transform: Matrix,
+/// `PlacedImage` is a region's picture as a PDF image, and where it goes on the page.
+struct PlacedImage {
+    page_bounds: Rect,
+    image: PdfImage,
 }
 
-struct Writer<'a, 'b, 'p> {
+/// `images_of` encodes each region's picture before the page is written, so writing can't fail.
+fn images_of(
+    pictures: &[Option<Picture>],
+    quality: u8,
+) -> Result<Vec<Option<PlacedImage>>, PdfError> {
+    pictures
+        .iter()
+        .map(|picture| {
+            picture
+                .as_ref()
+                .map(|picture| {
+                    Ok(PlacedImage {
+                        page_bounds: picture.bounds,
+                        image: image_of(&picture.pixels, quality)?,
+                    })
+                })
+                .transpose()
+        })
+        .collect()
+}
+
+/// `Writer` writes a page as a walk gives its ops. `scopes` counts, for each scope open on the
+/// surface, the pushes it made, which its `Restore` pops.
+struct Writer<'a, 'b> {
     surface: &'a mut Surface<'b>,
     fonts: &'a mut HashMap<FontUid, Option<PdfFont>>,
-    scopes: Vec<Scope>,
-    pictures: std::slice::Iter<'p, Option<Picture>>,
-    quality: u8,
+    scopes: Vec<usize>,
+    pictures: std::vec::IntoIter<Option<PlacedImage>>,
 }
 
-impl Writer<'_, '_, '_> {
-    fn list(&mut self, list: &DisplayList) -> Result<(), PdfError> {
-        let ops = list.ops();
-        let mut at = 0;
-        while at < ops.len() {
-            at = self.op(ops, at)?;
-        }
-        Ok(())
-    }
-
-    /// `op` writes `ops[at]` and returns the index of the next op to write.
-    fn op(&mut self, ops: &[Op], at: usize) -> Result<usize, PdfError> {
-        let op = &ops[at];
-        if pictured_scope(ops, at) {
-            self.picture()?;
-            return Ok(scope_end(ops, at) + 1);
-        }
-        if pictured_draw(op) {
-            self.picture()?;
-            return Ok(at + 1);
-        }
+impl Writer<'_, '_> {
+    /// `op` writes an op PDF can hold.
+    fn op(&mut self, op: &Op) {
         match op {
-            Op::Save => self.open(),
+            Op::Save | Op::DrawDisplayList { .. } => self.open(),
             Op::SaveLayer { paint, .. } => {
                 self.open();
                 self.layer(paint);
@@ -119,9 +129,7 @@ impl Writer<'_, '_, '_> {
             Op::Restore => self.close(),
             Op::Transform(matrix) => {
                 self.surface.push_transform(&transform_of(matrix));
-                let scope = self.scope();
-                scope.pushes += 1;
-                scope.transform = scope.transform.then(matrix);
+                self.pushed();
             }
             Op::ClipPath {
                 path,
@@ -152,36 +160,24 @@ impl Writer<'_, '_, '_> {
             }
             Op::GlyphRun {
                 font,
-                size,
-                synthesis,
                 paint,
                 glyphs,
                 text,
                 ..
-            } => self.glyph_run(font, *size, *synthesis, paint, glyphs, text),
-            Op::DrawDisplayList { list, .. } => {
-                self.open();
-                self.list(list)?;
-                self.close();
-            }
+            } => self.glyph_run(font, paint, glyphs, text),
             Op::RRectBlur { .. } | Op::DrawImage { .. } => {
-                unreachable!("blurs and images are pictured draws")
+                unreachable!("blurs and images are rasterized")
             }
         }
-        Ok(at + 1)
     }
 
     fn open(&mut self) {
-        let transform = self.scope().transform;
-        self.scopes.push(Scope {
-            pushes: 0,
-            transform,
-        });
+        self.scopes.push(0);
     }
 
     fn close(&mut self) {
-        if let Some(scope) = self.scopes.pop() {
-            (0..scope.pushes).for_each(|_| self.surface.pop());
+        if let Some(pushes) = self.scopes.pop() {
+            (0..pushes).for_each(|_| self.surface.pop());
         }
     }
 
@@ -192,44 +188,43 @@ impl Writer<'_, '_, '_> {
         }
     }
 
-    fn scope(&mut self) -> &mut Scope {
-        self.scopes.last_mut().expect("the page's scope is open")
+    /// `pushed` counts a push the open scope's `Restore` pops.
+    fn pushed(&mut self) {
+        *self.scopes.last_mut().expect("the page's scope is open") += 1;
     }
 
-    /// `picture` draws the next part as its pixels, where it was drawn on the page.
-    fn picture(&mut self) -> Result<(), PdfError> {
+    /// `picture` draws the next region's picture where it was drawn on the page, from where
+    /// `state` places what is drawn now.
+    fn picture(&mut self, state: &MatrixClipState) {
         let Some(Some(picture)) = self.pictures.next() else {
-            return Ok(());
+            return;
         };
-        let Some(back) = self.scope().transform.invert() else {
-            return Ok(());
+        let bounds = picture.page_bounds;
+        let (Some(back), Some(size)) = (
+            state.transform().invert(),
+            Size::from_wh(bounds.width, bounds.height),
+        ) else {
+            return;
         };
-        let Some(size) = Size::from_wh(picture.bounds.width, picture.bounds.height) else {
-            return Ok(());
-        };
-        let image = image_of(&picture.pixels, self.quality)?;
         self.surface.push_transform(&transform_of(&back));
-        self.surface.push_transform(&Transform::from_translate(
-            picture.bounds.x,
-            picture.bounds.y,
-        ));
-        self.surface.draw_image(image, size);
+        self.surface
+            .push_transform(&Transform::from_translate(bounds.x, bounds.y));
+        self.surface.draw_image(picture.image, size);
         self.surface.pop();
         self.surface.pop();
-        Ok(())
     }
 
     /// `layer` opens a layer as a transparency group with its opacity and blend mode.
     fn layer(&mut self, paint: &Paint) {
         if let Some(blend) = blend_of(paint.blend_mode) {
             self.surface.push_blend_mode(blend);
-            self.scope().pushes += 1;
+            self.pushed();
         }
         self.surface.push_isolated();
-        self.scope().pushes += 1;
+        self.pushed();
         if paint.color.a < 1.0 {
             self.surface.push_opacity(normalized(paint.color.a));
-            self.scope().pushes += 1;
+            self.pushed();
         }
     }
 
@@ -249,7 +244,7 @@ impl Writer<'_, '_, '_> {
         };
         if let Some((path, rule)) = clip {
             self.surface.push_clip_path(&path, &rule);
-            self.scope().pushes += 1;
+            self.pushed();
         }
     }
 
@@ -293,15 +288,19 @@ impl Writer<'_, '_, '_> {
     /// shows, so the text can be selected and searched.
     fn glyph_run(
         &mut self,
-        font: &Arc<Font>,
-        size: f32,
-        synthesis: FontSynthesis,
+        font: &RunFont,
         paint: &Paint,
         glyphs: &[GlyphPos],
         text: &Option<RunText>,
     ) {
+        let RunFont {
+            face,
+            size,
+            synthesis,
+        } = font;
+        let (size, synthesis) = (*size, *synthesis);
         let (Some(origin), Some(pdf_paint), Some(pdf_font)) =
-            (glyphs.first().copied(), paint_of(paint), self.font(font))
+            (glyphs.first().copied(), paint_of(paint), self.font(face))
         else {
             return;
         };

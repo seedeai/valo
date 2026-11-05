@@ -1,6 +1,6 @@
 [package]
 name = "valo-svg"
-description = "SVG to display-list translation for valo"
+description = "SVG to and from valo display lists: translating SVG documents, and writing pages as SVG"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,12 @@ readme.workspace = true
 [dependencies]
 valo-geometry = { workspace = true }
 valo-dl = { workspace = true }
+# Writing pages: what an SVG won't hold is drawn on the GPU and placed as pictures, and glyphs
+# go in as their outlines.
+valo = { workspace = true }
+valo-text = { workspace = true }
+valo-codec-software = { workspace = true, features = ["png", "jpeg"] }
+base64 = "0.22"
 # The normalization layer (Skia modules/svg's DOM+parser role): XML, CSS
 # cascade, defs/use/markers, units — its output tree is groups+paths with
 # resolved paints. `text` stays OFF pending a user call: probed 2026-07-13
@@ -39,3 +45,8 @@ decode = ["dep:image"]
 # Tests inspect recorded ops and paints directly.
 valo-dl = { workspace = true }
 valo-geometry = { workspace = true }
+# Written pages are drawn, read back and compared.
+valo-harness = { workspace = true }
+valo-paragraph = { workspace = true }
+pollster = { workspace = true }
+wgpu = { workspace = true }

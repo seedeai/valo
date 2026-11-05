@@ -564,20 +564,16 @@ impl DisplayListBuilder {
         });
     }
 
-    /// `draw_glyph_run` records positioned glyphs from one font and size.
+    /// `draw_glyph_run` records positioned glyphs drawn with `font`.
     ///
-    /// `synthesis` is the bold and italic the glyphs fake because the font
-    /// lacks them, as a placed run carries it; [`valo_text::FontSynthesis::NONE`]
-    /// draws the font as it is. `local_bounds` must enclose the glyph ink in
-    /// local coordinates, synthesis included. `text` is the text the glyphs
-    /// show, which only a PDF reads back; `None` draws the same, its text
-    /// just can't be copied. Valo retains the supplied font and glyph
-    /// positions in the display list.
+    /// `local_bounds` must enclose the glyph ink in local coordinates, the
+    /// font's synthesis included. `text` is the text the glyphs show, which
+    /// only a PDF reads back; `None` draws the same, its text just can't be
+    /// copied. Valo retains the supplied font and glyph positions in the
+    /// display list.
     pub fn draw_glyph_run(
         &mut self,
-        font: std::sync::Arc<valo_text::Font>,
-        size: f32,
-        synthesis: valo_text::FontSynthesis,
+        font: crate::RunFont,
         paint: &Paint,
         glyphs: Arc<Vec<crate::GlyphPos>>,
         text: Option<crate::RunText>,
@@ -598,8 +594,6 @@ impl DisplayListBuilder {
             takes_group_opacity,
             |bounds, slot| Op::GlyphRun {
                 font,
-                size,
-                synthesis,
                 paint: paint.clone(),
                 glyphs,
                 text,
@@ -658,17 +652,13 @@ impl DisplayListBuilder {
             } => self.draw_image_rect(image, *src, *dst, *sampling, paint),
             Op::GlyphRun {
                 font,
-                size,
-                synthesis,
                 paint,
                 glyphs,
                 text,
                 content_bounds,
                 ..
             } => self.draw_glyph_run(
-                Arc::clone(font),
-                *size,
-                *synthesis,
+                font.clone(),
                 paint,
                 Arc::clone(glyphs),
                 text.clone(),

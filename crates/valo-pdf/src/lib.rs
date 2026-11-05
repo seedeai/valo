@@ -9,7 +9,7 @@
 //! the web and by the host's `Context::check_requests` natively. The second writes the page with
 //! the pictures in place ([`PdfDocument::add`]).
 
-mod picture;
+mod raster;
 mod write;
 
 use std::fmt;
@@ -63,12 +63,13 @@ pub fn draw_page(
     size: [f32; 2],
     settings: PageSettings,
 ) -> PdfPageFuture {
-    let sites = picture::sites(list, size, settings.pixels_per_unit);
-    let requests = sites
+    let regions = raster::raster_regions(list, size, settings.pixels_per_unit);
+    let requests = regions
         .iter()
-        .map(|site| {
-            site.as_ref()
-                .map(|site| context.request_pixels(&site.list, site.pixels, None))
+        .map(|region| {
+            region
+                .as_ref()
+                .map(|region| context.request_pixels(&region.list, region.pixel_size, None))
         })
         .collect();
     PdfPageFuture {
@@ -78,9 +79,9 @@ pub fn draw_page(
             settings,
             pictures: Vec::new(),
         }),
-        sites: sites
+        page_bounds: regions
             .into_iter()
-            .map(|site| site.map(|site| site.bounds))
+            .map(|region| region.map(|region| region.page_bounds))
             .collect(),
         requests,
     }
@@ -90,7 +91,7 @@ pub fn draw_page(
 /// `Context::check_requests` delivers them natively, or as the browser does on the web.
 pub struct PdfPageFuture {
     page: Option<PdfPage>,
-    sites: Vec<Option<Rect>>,
+    page_bounds: Vec<Option<Rect>>,
     requests: Vec<Option<PixelRequest>>,
 }
 
@@ -105,7 +106,7 @@ impl Future for PdfPageFuture {
             .expect("a finished PdfPageFuture isn't polled again");
         while page.pictures.len() < this.requests.len() {
             let at = page.pictures.len();
-            let picture = match (&mut this.requests[at], this.sites[at]) {
+            let picture = match (&mut this.requests[at], this.page_bounds[at]) {
                 (Some(request), Some(bounds)) => match Pin::new(request).poll(cx) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(PdfError::Read(error))),
