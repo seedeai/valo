@@ -53,8 +53,9 @@ objc2 = "0.6"
 objc2-metal = { version = "0.3.2", features = ["MTLTexture", "MTLDevice"] }
 
 [dev-dependencies]
-# Golden-tests the svg translator end to end (Skia's modules/svg shape).
-valo-svg = { workspace = true }
+# Golden-tests the svg translator end to end (Skia's modules/svg shape). Version-less, as
+# valo-harness is, so publishing drops it: valo-svg depends on valo to write SVG.
+valo-svg = { path = "../valo-svg" }
 valo-harness = { workspace = true }
 pollster = { workspace = true }
 png = { workspace = true }
