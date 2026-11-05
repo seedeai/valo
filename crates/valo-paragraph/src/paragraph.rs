@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use unicode_bidi::BidiInfo;
 use valo_dl::Paint;
@@ -50,6 +51,9 @@ pub struct PlacedRun {
     pub shadows: Vec<crate::style::Shadow>,
     /// `glyphs` contains the run's glyphs in visual order.
     pub glyphs: Vec<PlacedGlyph>,
+    /// `text` is the paragraph's text the glyphs show, from their first cluster on; empty for
+    /// a placeholder or an ellipsis, which stand for none of it.
+    pub text: Arc<str>,
     /// `rtl` indicates that logical text order runs from right to left.
     pub rtl: bool,
     /// `bounds` is the paragraph-local advance box used for layout geometry.

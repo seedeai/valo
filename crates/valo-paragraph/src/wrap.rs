@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::sync::Arc;
 
 use unicode_bidi::BidiInfo;
 use valo_text::{FaceSet, Font};
@@ -549,6 +550,7 @@ fn place_slice(
     if glyphs.is_empty() {
         return None;
     }
+    let shown = run.range.start.max(slice.range.start)..run.range.end.min(slice.range.end);
     let bounds = valo_geometry::Rect::from_ltrb(
         start_x,
         slice.baseline - font.ascent_px(run.size),
@@ -566,6 +568,7 @@ fn place_slice(
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
+        text: Arc::from(&text[shown]),
         rtl: slice.rtl,
         bounds,
         ink: ink_bounds(font, run, start_x, last_origin, *x, slice.baseline),
@@ -610,6 +613,7 @@ fn place_placeholder(
             cluster: run.range.start,
             advance: placeholder.style.width,
         }],
+        text: Arc::from(""),
         rtl: slice.rtl,
         bounds: rect,
         ink: rect,
@@ -684,6 +688,7 @@ fn place_isolated(
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
+        text: Arc::from(""),
         rtl: false,
         bounds: valo_geometry::Rect::from_ltrb(
             start_x,

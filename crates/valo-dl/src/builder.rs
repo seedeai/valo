@@ -292,6 +292,7 @@ impl DisplayListBuilder {
         // numbering) — the layer's pass rebases against base_slot.
         self.ops.push(Op::SaveLayer {
             paint,
+            bounds_hint,
             mask_composite,
             scope_bounds: Bounds::Empty, // backpatched at restore
             clip_bounds: layer.opening_clip,
@@ -568,8 +569,10 @@ impl DisplayListBuilder {
     /// `synthesis` is the bold and italic the glyphs fake because the font
     /// lacks them, as a placed run carries it; [`valo_text::FontSynthesis::NONE`]
     /// draws the font as it is. `local_bounds` must enclose the glyph ink in
-    /// local coordinates, synthesis included. Valo retains the supplied font
-    /// and glyph positions in the display list.
+    /// local coordinates, synthesis included. `text` is the text the glyphs
+    /// show, which only a PDF reads back; `None` draws the same, its text
+    /// just can't be copied. Valo retains the supplied font and glyph
+    /// positions in the display list.
     pub fn draw_glyph_run(
         &mut self,
         font: std::sync::Arc<valo_text::Font>,
@@ -577,6 +580,7 @@ impl DisplayListBuilder {
         synthesis: valo_text::FontSynthesis,
         paint: &Paint,
         glyphs: Arc<Vec<crate::GlyphPos>>,
+        text: Option<crate::RunText>,
         local_bounds: Rect,
     ) {
         if glyphs.is_empty() {
@@ -598,11 +602,86 @@ impl DisplayListBuilder {
                 synthesis,
                 paint: paint.clone(),
                 glyphs,
+                text,
                 content_bounds,
                 bounds,
                 slot,
             },
         );
+    }
+
+    /// `replay` records `op` again, as the call that recorded it: Flutter's
+    /// display list dispatching to a builder. Drawing a recorded part of a
+    /// list on its own, such as a shadow an exporter draws as pixels, replays
+    /// its ops between the transforms and clips around them.
+    pub fn replay(&mut self, op: &Op) {
+        match op {
+            Op::Save => self.save(),
+            Op::SaveLayer {
+                paint,
+                bounds_hint,
+                mask_composite,
+                backdrop,
+                ..
+            } => match (mask_composite, backdrop) {
+                (Some(kind), _) => self.save_layer_mask(*bounds_hint, *kind),
+                (None, Some(backdrop)) => {
+                    self.save_layer_backdrop(*bounds_hint, paint, backdrop.clone())
+                }
+                (None, None) => self.save_layer(*bounds_hint, paint),
+            },
+            Op::Restore => self.restore(),
+            Op::Transform(matrix) => self.concat(matrix),
+            Op::DrawRect { rect, paint, .. } => self.draw_rect(*rect, paint),
+            Op::DrawPath {
+                path,
+                fill_rule,
+                paint,
+                ..
+            } => self.draw_path(path, *fill_rule, paint),
+            Op::RRectBlur {
+                rect, radii, paint, ..
+            } => self.draw_rrect_radii(*rect, *radii, paint),
+            Op::ClipPath {
+                path,
+                fill_rule,
+                op,
+                ..
+            } => self.clip_path(path, *fill_rule, *op),
+            Op::DrawImage {
+                image,
+                src,
+                dst,
+                sampling,
+                paint,
+                ..
+            } => self.draw_image_rect(image, *src, *dst, *sampling, paint),
+            Op::GlyphRun {
+                font,
+                size,
+                synthesis,
+                paint,
+                glyphs,
+                text,
+                content_bounds,
+                ..
+            } => self.draw_glyph_run(
+                Arc::clone(font),
+                *size,
+                *synthesis,
+                paint,
+                Arc::clone(glyphs),
+                text.clone(),
+                *content_bounds,
+            ),
+            Op::DrawDisplayList { list, cache, .. } => {
+                if *cache {
+                    self.draw_display_list_cached(list);
+                } else {
+                    self.draw_display_list(list);
+                }
+            }
+        }
     }
 
     /// `draw_display_list` records a nested display list by shared reference.
@@ -906,7 +985,7 @@ fn rect_path(r: Rect) -> Arc<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlendMode, ImageFilter};
+    use crate::{BlendMode, ImageFilter, MaskBlur};
     use valo_geometry::Color;
 
     #[test]
@@ -1873,5 +1952,38 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&dl).unwrap();
         assert_eq!(json["ops"].as_array().unwrap().len(), dl.ops().len());
         assert!(json["ops"][1]["DrawRect"]["slot"].is_number());
+    }
+
+    #[test]
+    fn replaying_a_lists_ops_records_the_same_list() {
+        let mut b = DisplayListBuilder::new();
+        b.save();
+        b.translate(10.0, 5.0);
+        b.clip_rect(Rect::new(0.0, 0.0, 80.0, 60.0), ClipOp::Intersect);
+        b.save_layer(
+            Some(Rect::new(0.0, 0.0, 40.0, 40.0)),
+            &Paint {
+                image_filter: Some(ImageFilter::blur(3.0, 3.0)),
+                ..Paint::default()
+            },
+        );
+        b.draw_rect(Rect::new(4.0, 4.0, 20.0, 20.0), &Paint::default());
+        b.restore();
+        b.draw_rrect(
+            Rect::new(30.0, 30.0, 20.0, 10.0),
+            4.0,
+            &Paint {
+                mask_blur: Some(MaskBlur::new(2.0)),
+                ..Paint::default()
+            },
+        );
+        b.restore();
+        let original = b.build();
+
+        let mut again = DisplayListBuilder::new();
+        for op in original.ops() {
+            again.replay(op);
+        }
+        assert!(again.build() == original);
     }
 }

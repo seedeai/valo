@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use valo_dl::{DisplayListBuilder, GlyphPos, Paint};
+use valo_dl::{DisplayListBuilder, GlyphPos, Paint, RunText};
 use valo_geometry::{Point, Rect};
 use valo_text::FaceSet;
 
@@ -260,8 +260,27 @@ fn draw_run(
         run.synthesis,
         paint,
         Arc::new(glyphs),
+        run_text(run),
         bounds,
     );
+}
+
+/// `run_text` is the text a run's glyphs show, its clusters counted from the run's start: the
+/// first cluster, which glyphs in visual order may show last. `None` for a run that stands for
+/// none of the paragraph's text.
+fn run_text(run: &PlacedRun) -> Option<RunText> {
+    if run.text.is_empty() {
+        return None;
+    }
+    let start = run.glyphs.iter().map(|g| g.cluster).min().unwrap_or(0);
+    Some(RunText {
+        text: Arc::clone(&run.text),
+        clusters: run
+            .glyphs
+            .iter()
+            .map(|g| (g.cluster - start) as u32)
+            .collect(),
+    })
 }
 
 /// `draw_decoration` records a run's decoration as geometry.

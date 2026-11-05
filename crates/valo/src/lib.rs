@@ -43,7 +43,7 @@ pub use valo_dl::{
     Backdrop, BackdropGroup, BlendMode, BlurStyle, Bounds, ClipOp, ColorFilter, DisplayList,
     DisplayListBuilder, EffectError, EffectImage, EffectKind, Filter, FilterInputs, FocalCircle,
     GradientStop, Image, ImageFilter, MaskBlur, MaskKind, MipmapMode, Op, Paint, PaintStyle,
-    RuntimeEffect, RuntimeShader, Sampling, Shader, SpreadMode, TileMode, UniformField,
+    RunText, RuntimeEffect, RuntimeShader, Sampling, Shader, SpreadMode, TileMode, UniformField,
     UniformLayout, UniformType, MAX_UNIFORM_BYTES,
 };
 pub use valo_geometry::{

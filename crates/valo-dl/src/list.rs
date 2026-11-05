@@ -68,6 +68,9 @@ pub enum Op {
     /// still record time; replay reads them, never works them out again.
     SaveLayer {
         paint: Paint,
+        /// The local-space crop the layer was opened with, as recorded: what
+        /// replaying the op passes again ([`crate::DisplayListBuilder::replay`]).
+        bounds_hint: Option<Rect>,
         /// Set = this layer is a MASK: its composite converts
         /// the texture to COVERAGE (luminance or alpha) and multiplies the
         /// enclosing layer by it (DstIn over the whole enclosing extent, so
@@ -196,6 +199,8 @@ pub enum Op {
         /// mask glyphs (color glyphs keep their palette, alpha only).
         paint: Paint,
         glyphs: Arc<Vec<GlyphPos>>,
+        /// The text the glyphs show, when the run has it.
+        text: Option<RunText>,
         /// The run's ink in local coordinates, stroke included and before
         /// any effect: what a layer for the paint's effects has to hold.
         content_bounds: Rect,
@@ -270,6 +275,19 @@ pub struct GlyphPos {
     pub x: f32,
     /// `y` is the glyph's local baseline position in pixels.
     pub y: f32,
+}
+
+/// `RunText` is the text a glyph run shows, as Skia's text blobs keep it (`allocRunText`): what a
+/// PDF reads back for selection and search. Drawing never reads it.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct RunText {
+    /// `text` is the run's text.
+    pub text: Arc<str>,
+    /// `clusters` holds one entry for each glyph: where the part of `text` it shows starts, in
+    /// UTF-8 bytes. Glyphs sharing a cluster show it together; a ligature is one glyph whose part
+    /// runs to the next cluster.
+    pub clusters: Arc<[u32]>,
 }
 
 /// `BackdropGroup` summarizes regions sharing one backdrop-filter key.

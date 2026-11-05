@@ -69,7 +69,7 @@ pub fn shape(
         .iter()
         .map(|feature| harfrust::Feature::new(harfrust::Tag::new(&feature.tag), feature.value, ..))
         .collect();
-    let output = shaper.shape(buffer, &features);
+    let output = shaper.shape(buffer, harfrust::ShapeOptions::new().features(&features));
     let scale = size / font.units_per_em();
     output
         .glyph_infos()

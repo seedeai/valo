@@ -77,6 +77,7 @@ fn overlapping_glyphs_under_a_group_alpha_blend_once() {
             FontSynthesis::NONE,
             paint,
             Arc::new(glyphs),
+            None,
             bounds,
         );
     };

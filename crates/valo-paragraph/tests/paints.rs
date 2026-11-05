@@ -345,3 +345,38 @@ fn one_glyph_paint_keeps_the_spans_backgrounds() {
     assert_eq!(drawn[0].color(), GRAY);
     assert_eq!(drawn[1], Drawn::Glyphs(replacement));
 }
+
+#[test]
+fn a_recorded_run_keeps_the_text_its_glyphs_show() {
+    let style = TextStyle::new("Fira Sans", 20.0, Color::BLACK);
+    let paragraph = laid_out_in(&[("office files", style)], ParagraphStyle::default(), 60.0);
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_paragraph(&paragraph, Point::new(0.0, 0.0));
+    let runs: Vec<(String, Vec<u32>)> = builder
+        .build()
+        .ops()
+        .iter()
+        .filter_map(|op| match op {
+            Op::GlyphRun {
+                text: Some(text), ..
+            } => Some((text.text.to_string(), text.clusters.to_vec())),
+            _ => None,
+        })
+        .collect();
+    let texts: Vec<&str> = runs.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(
+        texts.concat().replace(' ', ""),
+        "officefiles",
+        "each line's run shows its own text"
+    );
+    let (office, clusters) = &runs[0];
+    assert!(office.starts_with("office"));
+    assert!(
+        clusters.len() < office.trim_end().len(),
+        "Fira Sans's ffi is one glyph for three letters: {clusters:?}"
+    );
+    assert_eq!(
+        clusters[0], 0,
+        "the first glyph shows the run's first letter"
+    );
+}

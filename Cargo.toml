@@ -6,7 +6,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/seedeai/valo"
@@ -20,25 +20,27 @@ categories = ["graphics", "rendering::engine"]
 # internal — path + version, because crates.io drops the path and needs the
 # version. valo-harness stays version-less on purpose: it is dev-only and a
 # version-less dev-dependency is stripped at publish instead of published.
-valo-geometry = { path = "crates/valo-geometry", version = "0.16.0" }
-valo-dl = { path = "crates/valo-dl", version = "0.16.0" }
-valo-text = { path = "crates/valo-text", version = "0.16.0" }
-valo-paragraph = { path = "crates/valo-paragraph", version = "0.16.0" }
-valo-renderer = { path = "crates/valo-renderer", version = "0.16.0" }
+valo-geometry = { path = "crates/valo-geometry", version = "0.17.0" }
+valo-dl = { path = "crates/valo-dl", version = "0.17.0" }
+valo-text = { path = "crates/valo-text", version = "0.17.0" }
+valo-paragraph = { path = "crates/valo-paragraph", version = "0.17.0" }
+valo-renderer = { path = "crates/valo-renderer", version = "0.17.0" }
 valo-harness = { path = "crates/valo-harness" }
-valo = { path = "crates/valo", version = "0.16.0" }
-valo-svg = { path = "crates/valo-svg", version = "0.16.0" }
-valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.16.0" }
-valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.16.0" }
-valo-codec = { path = "crates/valo-codec", version = "0.16.0" }
+valo = { path = "crates/valo", version = "0.17.0" }
+valo-svg = { path = "crates/valo-svg", version = "0.17.0" }
+valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.17.0" }
+valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.17.0" }
+valo-codec = { path = "crates/valo-codec", version = "0.17.0" }
+valo-codec-software = { path = "crates/valo-codec-software", version = "0.17.0", default-features = false }
+valo-pdf = { path = "crates/valo-pdf", version = "0.17.0" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
 naga = { version = "30", features = ["wgsl-in"] }
 # text — one crate per role in Skia's stack, each an intended swap seam:
 # shaping (HarfBuzz's role -> harfrust), font parsing (skrifa), glyph raster
 # (swash), ICU's line breaks + bidi (unicode-*), atlas packing (etagere)
-harfrust = "0.4"
-skrifa = "0.35"
+harfrust = "0.8.4"
+skrifa = "0.42"
 swash = "0.2"
 unicode-bidi = "0.3"
 unicode-linebreak = "0.1"
@@ -68,6 +70,8 @@ tracing = "0.1"
 # dev: native bring-up + goldens + examples (no browser anywhere)
 pollster = "0.4"
 futures-channel = "0.3"
+# PDF: krilla writes the file (typst's writer), its shaper off since valo shapes text.
+krilla = { version = "=0.8.2", default-features = false, features = ["raster-images"] }
 png = "0.17"
 winit = "0.30"
 

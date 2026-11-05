@@ -1,0 +1,28 @@
+[package]
+name = "valo-pdf"
+description = "Valo display lists as PDF pages: real text and shapes, with what PDF can't hold drawn as pictures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+valo = { workspace = true }
+valo-dl = { workspace = true }
+valo-geometry = { workspace = true }
+valo-text = { workspace = true }
+# Opaque pictures go in as JPEG.
+valo-codec-software = { workspace = true, features = ["jpeg"] }
+krilla = { workspace = true }
+
+[dev-dependencies]
+valo-harness = { workspace = true }
+valo-paragraph = { workspace = true }
+pollster = { workspace = true }
+wgpu = { workspace = true }
+# Reads the PDFs back, their text included.
+lopdf = "0.47"

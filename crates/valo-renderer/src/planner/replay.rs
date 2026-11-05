@@ -375,6 +375,7 @@ impl<'a> RecordedDraw<'a> {
                 content_bounds,
                 bounds,
                 slot,
+                ..
             } => {
                 let device_bounds = state.device_bounds(bounds);
                 let source = DrawSource::Glyphs(GlyphRun {
