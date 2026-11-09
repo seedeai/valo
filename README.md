@@ -61,34 +61,20 @@ if let Some(frame) = surface.acquire() {
 }
 ```
 
-### Export Pixels
+### Export pixels
 
-`Context::request_pixels` is unchanged: it submits all tiles immediately and returns a
-`PixelRequest` future. Native hosts deliver GPU completions with `check_requests`; the
-browser delivers them automatically.
-
-For large exports, use a step-by-step `PixelExporter`:
+Export a picture of any size tile by tile, with progress:
 
 ```rust
 let mut export = context.export_pixels(&display_list, size, clear)?;
 while !export.is_done() {
     export.next_tile(&mut context).await?;
-    // Update progress from export.completed() / export.total().
+    // Progress: export.completed() of export.total() tiles.
 }
 let pixels = export.finish()?;
 ```
 
-Each step submits one tile, then waits for its pixels and copies them into the final buffer.
-The context is borrowed only for submission, not while awaiting GPU readback. The exporter
-retains one full-size output and at most one staging buffer, with no shared renderer,
-mutex or scheduling queue. Native hosts must keep pumping `check_requests` while waiting;
-the browser delivers GPU completions automatically.
-
-Use the originating context with unchanged rendering settings. Dropping a step future
-preserves its pending tile for the next call; dropping the exporter stops further
-submissions. A failed step stops the export without retries. Progress covers readback
-and assembly, not file encoding. The existing `request_pixels` future keeps its original
-contract; it cannot drive later tiles without access to the context.
+Each step draws one tile, then waits for its pixels; the context can keep drawing frames meanwhile. Natively, keep calling `context.check_requests()` while waiting; in the browser the GPU answers on its own.
 
 ## JavaScript and TypeScript
 
