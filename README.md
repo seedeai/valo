@@ -61,6 +61,21 @@ if let Some(frame) = surface.acquire() {
 }
 ```
 
+### Export pixels
+
+Export a picture of any size tile by tile, with progress:
+
+```rust
+let mut export = context.export_pixels(&display_list, size, clear)?;
+while !export.is_done() {
+    export.next_tile(&mut context).await?;
+    // Progress: export.completed() of export.total() tiles.
+}
+let pixels = export.finish()?;
+```
+
+Each step draws one tile, then waits for its pixels; the context can keep drawing frames meanwhile. Natively, keep calling `context.check_requests()` while waiting; in the browser the GPU answers on its own.
+
 ## JavaScript and TypeScript
 
 ```sh

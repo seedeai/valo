@@ -7,6 +7,8 @@
 //! the GPU at once, and its answer is delivered when the device is polled — by the browser on the
 //! web, by the host natively through [`Context::check_requests`], as Skia's hosts call
 //! `checkAsyncWorkCompletion`.
+//! Step-by-step exports use [`Context::export_pixels`], submitting and reading one tile
+//! at a time without giving the exporter renderer ownership.
 
 use std::fmt;
 use std::future::Future;
@@ -66,6 +68,37 @@ impl Context {
         }
     }
 
+    /// `export_pixels` prepares a pixel exporter that draws and reads one tile per step.
+    ///
+    /// Preparation allocates the output but submits no GPU work. Each
+    /// [`PixelExporter::next_tile`] submits one tile through this context, then waits for its
+    /// readback without borrowing the context. Native hosts must keep pumping
+    /// [`Self::check_requests`]; the browser delivers GPU completions automatically.
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use valo::{Context, DisplayList, PixelBuffer, PixelReadError};
+    /// # async fn example(context: &mut Context, list: &Arc<DisplayList>)
+    /// #     -> Result<PixelBuffer, PixelReadError> {
+    /// let mut export = context.export_pixels(list, [4096, 4096], None)?;
+    /// while !export.is_done() {
+    ///     export.next_tile(context).await?;
+    ///     // Update progress from `export.completed()` and `export.total()`.
+    /// }
+    /// let pixels = export.finish()?;
+    /// # Ok(pixels)
+    /// # }
+    /// ```
+    pub fn export_pixels(
+        &mut self,
+        dl: &Arc<DisplayList>,
+        size: [u32; 2],
+        clear: Option<Color>,
+    ) -> Result<PixelExporter, PixelReadError> {
+        let side = self.device().limits().max_texture_dimension_2d;
+        PixelExporter::new(dl.clone(), size, clear, side)
+    }
+
     /// `check_requests` delivers the requests the GPU has answered, without waiting. It fails
     /// only when the device is lost.
     pub fn check_requests(&self) -> Result<(), PixelReadError> {
@@ -75,8 +108,7 @@ impl Context {
             .map_err(|e| PixelReadError::Failed(e.to_string()))
     }
 
-    /// `copy_in_tiles` draws `dl` in tiles at most `side` pixels a side, each copied into a
-    /// buffer the CPU will map.
+    /// `copy_in_tiles` submits an ordinary request's tiles eagerly, as before.
     fn copy_in_tiles(
         &mut self,
         dl: &Arc<DisplayList>,
@@ -100,8 +132,7 @@ impl Context {
         Ok(Copies { layout, tiles })
     }
 
-    /// `copy_tile` draws `dl` into a `size` texture, copies it into a buffer and asks for the
-    /// buffer mapped, in one submission; the tile sits at `origin` in the whole picture.
+    /// `copy_tile` renders a tile and asks for its padded staging buffer in one submission.
     fn copy_tile(
         &mut self,
         dl: &DisplayList,
@@ -182,7 +213,7 @@ impl Future for PixelRequest {
     }
 }
 
-/// `Copies` is a picture drawn and copied tile by tile, its buffers asked for.
+/// `Copies` is an ordinary request's eagerly submitted tiles.
 struct Copies {
     layout: PixelLayout,
     tiles: Vec<TileCopy>,
@@ -208,7 +239,7 @@ impl Copies {
         Poll::Ready(Ok(()))
     }
 
-    /// `join` copies the mapped tiles into one picture with straight alpha.
+    /// `join` assembles mapped tiles into a single straight-alpha pixel buffer.
     fn join(self) -> Result<PixelBuffer, PixelReadError> {
         let mut rgba = vec![
             0;
@@ -226,6 +257,158 @@ impl Copies {
         }
         unpremultiply(&mut rgba);
         Ok(PixelBuffer::new(self.layout, rgba).expect("the tiles fill the layout"))
+    }
+}
+
+/// `PixelExporter` assembles a picture by drawing and reading one tile at a time.
+///
+/// It retains one output buffer and at most one tile readback, but no context or renderer.
+/// Use the originating context with unchanged rendering settings for every step. Dropping
+/// the exporter discards its output; already submitted GPU work finishes normally.
+/// Progress counts tiles assembled in memory, not file encoding or saving.
+pub struct PixelExporter {
+    layout: PixelLayout,
+    display_list: Arc<DisplayList>,
+    clear: Option<Color>,
+    side: u32,
+    columns: u32,
+    total: usize,
+    completed: usize,
+    pending: Option<TileCopy>,
+    rgba: Vec<u8>,
+    error: Option<PixelReadError>,
+}
+
+impl PixelExporter {
+    /// `completed` returns the number of tiles copied into the output buffer.
+    pub fn completed(&self) -> usize {
+        self.completed
+    }
+
+    /// `total` returns the number of tiles needed for the picture.
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// `is_done` reports whether every tile has been copied successfully.
+    pub fn is_done(&self) -> bool {
+        self.completed == self.total
+    }
+
+    /// `next_tile` submits one tile and returns a future that reads it into the output.
+    ///
+    /// Submission happens before this method returns. The future borrows only the exporter,
+    /// leaving `context` free for drawing and native GPU polling while it waits. Dropping
+    /// the future preserves the pending readback: the next call resumes it without drawing
+    /// again. Errors stop the export without retries; after completion this is a no-op.
+    pub fn next_tile<'a>(
+        &'a mut self,
+        context: &mut Context,
+    ) -> impl Future<Output = Result<(), PixelReadError>> + use<'a> {
+        self.submit_next_tile(context);
+        self.read_next_tile()
+    }
+
+    /// `finish` consumes a completed exporter and returns straight-alpha pixels.
+    ///
+    /// Returns the saved GPU error if a step failed, or an error if tiles are still missing.
+    pub fn finish(mut self) -> Result<PixelBuffer, PixelReadError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if !self.is_done() {
+            return Err(PixelReadError::Failed(
+                "pixel export is incomplete".to_owned(),
+            ));
+        }
+        unpremultiply(&mut self.rgba);
+        Ok(PixelBuffer::new(self.layout, self.rgba).expect("the tiles fill the output"))
+    }
+
+    /// `new` validates the output and allocates its only assembled pixel buffer.
+    fn new(
+        display_list: Arc<DisplayList>,
+        size: [u32; 2],
+        clear: Option<Color>,
+        side: u32,
+    ) -> Result<Self, PixelReadError> {
+        let layout = checked_layout(size)?;
+        if side == 0 {
+            return Err(PixelReadError::Empty);
+        }
+        let columns = size[0].div_ceil(side);
+        let rows = size[1].div_ceil(side);
+        let total = usize::try_from(u64::from(columns) * u64::from(rows))
+            .map_err(|_| PixelReadError::TooLarge)?;
+        let rgba = vec![0; layout.byte_len().map_err(|_| PixelReadError::TooLarge)?];
+        Ok(Self {
+            layout,
+            display_list,
+            clear,
+            side,
+            columns,
+            total,
+            completed: 0,
+            pending: None,
+            rgba,
+            error: None,
+        })
+    }
+
+    /// `submit_next_tile` starts a readback only if no step is pending or finished.
+    fn submit_next_tile(&mut self, context: &mut Context) {
+        if self.pending.is_some() || self.error.is_some() || self.is_done() {
+            return;
+        }
+        let origin = [
+            (self.completed % self.columns as usize) as u32 * self.side,
+            (self.completed / self.columns as usize) as u32 * self.side,
+        ];
+        let size = [
+            self.side.min(self.layout.size[0] - origin[0]),
+            self.side.min(self.layout.size[1] - origin[1]),
+        ];
+        let moved = moved_by(&self.display_list, origin);
+        self.pending = Some(context.copy_tile(&moved, origin, size, self.clear));
+    }
+
+    /// `read_next_tile` preserves failures and releases their retained pixel storage.
+    async fn read_next_tile(&mut self) -> Result<(), PixelReadError> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.is_done() {
+            return Ok(());
+        }
+        let result = self.collect_next_tile().await;
+        if let Err(error) = &result {
+            self.error = Some(error.clone());
+            self.pending = None;
+            self.rgba = Vec::new();
+        }
+        result
+    }
+
+    /// `collect_next_tile` waits for one readback and copies its rows into the output.
+    async fn collect_next_tile(&mut self) -> Result<(), PixelReadError> {
+        let tile = self.pending.as_mut().expect("the next tile was submitted");
+        tile.answered
+            .as_mut()
+            .expect("the pending tile has a mapping receiver")
+            .await
+            .map_err(|_| PixelReadError::Failed("GPU readback channel closed".to_owned()))?
+            .map_err(|error| PixelReadError::Failed(error.to_string()))?;
+        let data = tile
+            .buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| PixelReadError::Failed(error.to_string()))?;
+        place_tile(&mut self.rgba, self.layout.size[0], tile, &data);
+        drop(data);
+        tile.buffer.unmap();
+        self.pending = None;
+        self.completed += 1;
+        Ok(())
     }
 }
 
@@ -306,12 +489,21 @@ mod tests {
     }
 
     /// `answer` waits for the device, then takes the request's answer.
-    fn answer(context: &Context, request: PixelRequest) -> Result<PixelBuffer, PixelReadError> {
-        context
-            .device()
-            .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
-        pollster::block_on(request)
+    fn answer<T>(
+        context: &Context,
+        request: impl Future<Output = Result<T, PixelReadError>>,
+    ) -> Result<T, PixelReadError> {
+        let mut request = Box::pin(request);
+        let mut waiting = task::Context::from_waker(task::Waker::noop());
+        let started = Instant::now();
+        loop {
+            context.check_requests().unwrap();
+            if let Poll::Ready(answered) = request.as_mut().poll(&mut waiting) {
+                return answered;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5), "never answered");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// `scene` is a gradient under a translucent circle and a turned square, so a seam or a
@@ -348,14 +540,10 @@ mod tests {
         };
         let (dl, size) = (scene(), [300, 200]);
         let mut drawn = |side| {
-            let copies = context.copy_in_tiles(&dl, size, Some(Color::WHITE), side);
-            answer(
-                &context,
-                PixelRequest {
-                    copies: Some(copies),
-                },
-            )
-            .unwrap()
+            let request = PixelRequest {
+                copies: Some(context.copy_in_tiles(&dl, size, Some(Color::WHITE), side)),
+            };
+            answer(&context, request).unwrap()
         };
         let (whole, tiled) = (drawn(1024), drawn(64));
         assert_eq!(tiled.layout(), whole.layout());
@@ -363,6 +551,87 @@ mod tests {
             tiled.bytes() == whole.bytes(),
             "tiles of 64 px show the picture drawn whole"
         );
+    }
+
+    #[test]
+    fn an_export_steps_through_its_tiles_to_the_requested_picture() {
+        let Some(mut context) =
+            context("an_export_steps_through_its_tiles_to_the_requested_picture")
+        else {
+            return;
+        };
+        let (dl, size) = (scene(), [300, 200]);
+        let request = context.request_pixels(&dl, size, Some(Color::WHITE));
+        let whole = answer(&context, request).unwrap();
+        for side in [64, 1024] {
+            let mut export =
+                PixelExporter::new(dl.clone(), size, Some(Color::WHITE), side).unwrap();
+            for completed in 1..=export.total() {
+                let step = export.next_tile(&mut context);
+                answer(&context, step).unwrap();
+                assert_eq!(export.completed(), completed);
+            }
+            assert!(export.is_done());
+            assert_eq!(export.finish().unwrap().bytes(), whole.bytes());
+        }
+        let unfinished = context.export_pixels(&dl, size, None).unwrap();
+        assert!(
+            unfinished.finish().is_err(),
+            "an export can't finish before its last tile"
+        );
+    }
+
+    #[test]
+    fn a_dropped_step_resumes_its_tile_while_the_context_draws() {
+        let Some(mut context) = context("a_dropped_step_resumes_its_tile_while_the_context_draws")
+        else {
+            return;
+        };
+        let dl = scene();
+        let mut export = PixelExporter::new(dl.clone(), [300, 200], None, 64).unwrap();
+        drop(export.next_tile(&mut context));
+        let pending = export.pending.as_ref().unwrap().buffer.clone();
+        context.render(
+            &dl,
+            &Offscreen::new(context.device(), [300, 200]).target(None),
+        );
+        drop(export.next_tile(&mut context));
+        assert_eq!(
+            export.pending.as_ref().unwrap().buffer,
+            pending,
+            "the same tile is awaited again, not drawn again"
+        );
+        let step = export.next_tile(&mut context);
+        answer(&context, step).unwrap();
+        assert_eq!(export.completed(), 1);
+    }
+
+    #[test]
+    fn a_failed_step_stops_the_export() {
+        let Some(mut context) = context("a_failed_step_stops_the_export") else {
+            return;
+        };
+        let mut export = PixelExporter::new(scene(), [300, 200], None, 64).unwrap();
+        drop(export.next_tile(&mut context));
+        let (sender, receiver) = oneshot::channel();
+        export.pending.as_mut().unwrap().answered = Some(receiver);
+        drop(sender);
+        let step = export.next_tile(&mut context);
+        let error = answer(&context, step).unwrap_err();
+        let step = export.next_tile(&mut context);
+        assert_eq!(
+            answer(&context, step).unwrap_err(),
+            error,
+            "it isn't retried"
+        );
+        assert_eq!(export.finish().err(), Some(error));
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_native_export_can_move_between_threads() {
+        fn assert_send<T: Send>() {}
+        assert_send::<PixelExporter>();
     }
 
     #[test]
@@ -415,6 +684,10 @@ mod tests {
         let request = context.request_pixels(&scene(), [0, 10], None);
         assert_eq!(
             pollster::block_on(request).err(),
+            Some(PixelReadError::Empty)
+        );
+        assert_eq!(
+            context.export_pixels(&scene(), [0, 10], None).err(),
             Some(PixelReadError::Empty)
         );
     }
