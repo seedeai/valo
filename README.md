@@ -67,17 +67,28 @@ if let Some(frame) = surface.acquire() {
 `PixelRequest` future. Native hosts deliver GPU completions with `check_requests`; the
 browser delivers them automatically.
 
-For large exports, `Context::request_pixel_export` returns a `PixelExport` with at most two
-GPU readbacks in flight and one assembled output buffer. The host advances it through
-`Context::poll_pixel_export` and reads `(completed_tiles, total_tiles)` from
-`PixelExport::progress`. The renderer stays owned by `Context`, with no shared renderer or
-mutex; the context is available to draw ordinary frames between export polls.
+For large exports, use a step-by-step `PixelExporter`:
 
-Unlike `PixelRequest`, `PixelExport` is not a future. On both native and browser hosts,
-poll it again when the supplied waker is notified; GPU callbacks cannot draw later tiles
-on their own. Native hosts must also keep delivering completions with `check_requests`.
-Use the originating context with unchanged rendering settings. Dropping an export stops
-further tile submissions. Progress measures readback and assembly, not file encoding.
+```rust
+let mut export = context.export_pixels(&display_list, size, clear)?;
+while !export.is_done() {
+    export.next_tile(&mut context).await?;
+    // Update progress from export.completed() / export.total().
+}
+let pixels = export.finish()?;
+```
+
+Each step submits one tile, then waits for its pixels and copies them into the final buffer.
+The context is borrowed only for submission, not while awaiting GPU readback. The exporter
+retains one full-size output and at most one staging buffer, with no shared renderer,
+mutex or scheduling queue. Native hosts must keep pumping `check_requests` while waiting;
+the browser delivers GPU completions automatically.
+
+Use the originating context with unchanged rendering settings. Dropping a step future
+preserves its pending tile for the next call; dropping the exporter stops further
+submissions. A failed step stops the export without retries. Progress covers readback
+and assembly, not file encoding. The existing `request_pixels` future keeps its original
+contract; it cannot drive later tiles without access to the context.
 
 ## JavaScript and TypeScript
 

@@ -29,7 +29,7 @@ mod metal;
 mod surface;
 
 pub use context::Context;
-pub use export::{unpremultiply, PixelExport, PixelReadError, PixelRequest};
+pub use export::{unpremultiply, PixelExporter, PixelReadError, PixelRequest};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use metal::{import_metal_texture, metal_device_of, wrap_metal_texture, ExternalMetalTexture};
 pub use surface::{
