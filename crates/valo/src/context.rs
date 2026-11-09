@@ -1,4 +1,3 @@
-use std::sync::{Arc, Mutex};
 use valo_dl::{BlendMode, DisplayList, Filter, Image, MipmapMode, Paint, Sampling, TileMode};
 use valo_geometry::Color;
 use valo_renderer::{ImageDesc, MemoryReport, RenderStats, RenderTarget, RendererCore};
@@ -8,17 +7,15 @@ use valo_renderer::{ImageDesc, MemoryReport, RenderStats, RenderTarget, Renderer
 /// Create one context per device. The host may freely retain clones of the
 /// device and queue handles.
 pub struct Context {
-    pub(crate) renderer: Arc<Mutex<RendererCore>>,
-    device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
+    renderer: RendererCore,
+    queue: wgpu::Queue,
 }
 
 impl Context {
     /// `new` creates a context from a host-owned device and queue.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         Self {
-            renderer: Arc::new(Mutex::new(RendererCore::new(device.clone(), queue.clone()))),
-            device,
+            renderer: RendererCore::new(device, queue.clone()),
             queue,
         }
     }
@@ -36,12 +33,7 @@ impl Context {
         raster: Box<dyn crate::GlyphRaster>,
     ) -> Self {
         Self {
-            renderer: Arc::new(Mutex::new(RendererCore::with_glyph_raster(
-                device.clone(),
-                queue.clone(),
-                raster,
-            ))),
-            device,
+            renderer: RendererCore::with_glyph_raster(device, queue.clone(), raster),
             queue,
         }
     }
@@ -50,20 +42,14 @@ impl Context {
     ///
     /// The `counters` feature adds the counters reported by wgpu.
     pub fn memory_report(&self) -> MemoryReport {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .memory_report()
+        self.renderer.memory_report()
     }
 
     /// `render` draws a display list into a target and returns frame statistics.
     ///
     /// Each call submits one command buffer.
     pub fn render(&mut self, dl: &DisplayList, target: &RenderTarget) -> RenderStats {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .render(dl, target)
+        self.renderer.render(dl, target)
     }
 
     /// `set_hide_missing_glyphs` controls whether unresolved characters render blank.
@@ -72,10 +58,7 @@ impl Context {
     /// usually a "tofu" box. This is common when CJK fallback fonts are missing.
     /// Use [`crate::FontDemand`] to detect characters hidden by this option.
     pub fn set_hide_missing_glyphs(&mut self, hide: bool) {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .set_hide_missing_glyphs(hide);
+        self.renderer.set_hide_missing_glyphs(hide);
     }
 
     /// `set_text_tiers` controls how text is rendered across font-size ranges.
@@ -84,10 +67,7 @@ impl Context {
     /// outlines above it. The defaults suit normal use; override them only for
     /// specialized scaling or zoom behavior.
     pub fn set_text_tiers(&mut self, tiers: valo_renderer::TextTiers) {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .set_text_tiers(tiers);
+        self.renderer.set_text_tiers(tiers);
     }
 
     /// `set_text_raster_hold` allows existing text rasters to stand in for missing sizes.
@@ -96,10 +76,7 @@ impl Context {
     /// useful during rapid zooming: enable it while the gesture is active and
     /// clear it afterward so the next frame renders sharply.
     pub fn set_text_raster_hold(&mut self, held: bool) {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .set_text_raster_hold(held);
+        self.renderer.set_text_raster_hold(held);
     }
 
     /// `set_raster_hold` allows cached display-list textures to be reused at any scale.
@@ -107,15 +84,17 @@ impl Context {
     /// This is useful during rapid zooming: enable it when the gesture starts
     /// and clear it when the view settles so caches refill at the final scale.
     pub fn set_raster_hold(&mut self, held: bool) {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .set_raster_hold(held);
+        self.renderer.set_raster_hold(held);
     }
 
     /// `device` returns the device used by this context.
     pub fn device(&self) -> &wgpu::Device {
-        &self.device
+        self.renderer.device()
+    }
+
+    // Reading pixels back submits its own copies.
+    pub(crate) fn queue_handle(&self) -> wgpu::Queue {
+        self.queue.clone()
     }
 
     /// `present` hands a rendered surface frame to the compositor.
@@ -125,10 +104,7 @@ impl Context {
 
     /// `image_context` returns upload/import operations that can run independently of rendering.
     pub fn image_context(&self) -> crate::ImageContext {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .image_context()
+        self.renderer.image_context()
     }
 
     /// `upload_image` uploads RGBA8 pixels and returns a retained [`Image`].
@@ -139,22 +115,14 @@ impl Context {
     ///
     /// Panics if `pixels` does not contain exactly four bytes per pixel.
     pub fn upload_image(&mut self, desc: ImageDesc, pixels: &[u8]) -> Image {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .images()
-            .upload(desc, pixels)
+        self.renderer.images().upload(desc, pixels)
     }
 
     /// `import_image` wraps an existing texture as an [`Image`] without copying it.
     ///
     /// Imported images have one mip level.
     pub fn import_image(&mut self, texture: wgpu::Texture, size: [u32; 2]) -> Image {
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .images()
-            .finish_external(texture, size, 1)
+        self.renderer.images().finish_external(texture, size, 1)
     }
 
     /// `upload_image_bitmap` uploads a browser-decoded `ImageBitmap`.
@@ -205,14 +173,10 @@ impl Context {
         };
         let texture = self
             .renderer
-            .lock()
-            .expect("renderer lock poisoned")
             .images()
             .create_image_texture(size, mip_levels);
         copy_external_image(&self.queue, source, origin, &texture, size);
         self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
             .images()
             .finish_external(texture, size, mip_levels)
     }
@@ -233,11 +197,7 @@ impl Context {
             return false;
         }
         copy_external_image(&self.queue, source, [0, 0], image.texture(), size);
-        self.renderer
-            .lock()
-            .expect("renderer lock poisoned")
-            .images()
-            .regenerate_mips(image);
+        self.renderer.images().regenerate_mips(image);
         true
     }
 }

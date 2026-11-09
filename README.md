@@ -61,6 +61,24 @@ if let Some(frame) = surface.acquire() {
 }
 ```
 
+### Export Pixels
+
+`Context::request_pixels` is unchanged: it submits all tiles immediately and returns a
+`PixelRequest` future. Native hosts deliver GPU completions with `check_requests`; the
+browser delivers them automatically.
+
+For large exports, `Context::request_pixel_export` returns a `PixelExport` with at most two
+GPU readbacks in flight and one assembled output buffer. The host advances it through
+`Context::poll_pixel_export` and reads `(completed_tiles, total_tiles)` from
+`PixelExport::progress`. The renderer stays owned by `Context`, with no shared renderer or
+mutex; the context is available to draw ordinary frames between export polls.
+
+Unlike `PixelRequest`, `PixelExport` is not a future. On both native and browser hosts,
+poll it again when the supplied waker is notified; GPU callbacks cannot draw later tiles
+on their own. Native hosts must also keep delivering completions with `check_requests`.
+Use the originating context with unchanged rendering settings. Dropping an export stops
+further tile submissions. Progress measures readback and assembly, not file encoding.
+
 ## JavaScript and TypeScript
 
 ```sh
