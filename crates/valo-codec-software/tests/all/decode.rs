@@ -1,4 +1,3 @@
-#![cfg(all(feature = "png", feature = "gif"))]
 use image::ImageEncoder;
 use pollster::block_on;
 use std::{sync::Arc, time::Duration};

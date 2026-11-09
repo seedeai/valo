@@ -5,7 +5,7 @@
 //! * `latency_synced` — full GPU drain per frame: scene cost PLUS the
 //!   ~1.4ms submit→wake round-trip on Metal. An upper bound on input-to-
 //!   photon latency, NOT a throughput measure. (skpbench avoids this tax by
-//!   allowing kMaxFrameLag=3 frames in flight; tests/perf_probe.rs breaks
+//!   allowing kMaxFrameLag=3 frames in flight; tests/all/perf_probe.rs breaks
 //!   the split down with gpu_ms/plan_ms/encode_ms.)
 
 use std::cell::Cell;
@@ -131,7 +131,7 @@ fn frame_benches(c: &mut Criterion) {
     });
 }
 
-/// The Figma-board limit tests (tests/perf_probe.rs has the full breakdown):
+/// The Figma-board limit tests (tests/all/perf_probe.rs has the full breakdown):
 /// fit-the-board renders EVERYTHING (3.3k draws, 16 backdrops → 49 passes);
 /// the work view proves record-time culling (123 of 3304 draws survive).
 fn board_benches(c: &mut Criterion) {

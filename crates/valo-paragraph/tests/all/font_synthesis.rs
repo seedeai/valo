@@ -9,10 +9,7 @@
 use valo_paragraph::{Paragraph, ParagraphBuilder, PlacedRun, TextStyle};
 use valo_text::{FontCollection, FontSynthesis};
 
-fn asset(name: &str) -> Vec<u8> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
-    std::fs::read(format!("{dir}/{name}")).unwrap()
-}
+use crate::asset;
 
 /// Fira Sans whose OS/2 table declares `weight` and, when `italic`, the italic style.
 fn fira_declaring(weight: u16, italic: bool) -> Vec<u8> {

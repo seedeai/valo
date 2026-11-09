@@ -1,5 +1,4 @@
 //! The shared CoreVideo backing must outlive every GPU command that samples it.
-#![cfg(any(target_os = "macos", target_os = "ios"))]
 use image::ImageEncoder;
 use pollster::block_on;
 use std::ptr::NonNull;

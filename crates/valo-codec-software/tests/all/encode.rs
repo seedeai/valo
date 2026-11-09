@@ -1,4 +1,3 @@
-#![cfg(all(feature = "png", feature = "jpeg", feature = "webp"))]
 //! What `encode` writes, read back with the `image` crate's decoders.
 
 use valo::{AlphaType, Color, PixelBuffer, PixelFormat, PixelLayout};

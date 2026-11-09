@@ -16,6 +16,8 @@ use valo::{
     Sampling, Shader, TextStyle,
 };
 
+use crate::goldens_dir;
+
 /// `checker_pixels` is a premultiplied RGBA checkerboard for pattern tests.
 fn checker_pixels(size: usize, cell: usize) -> Vec<u8> {
     let mut px = vec![0u8; size * size * 4];
@@ -633,10 +635,6 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
     b.draw_paragraph_with(&paragraph("R", 340.0), (400.0, 1050.0), &text_paint);
 
     b.build()
-}
-
-fn goldens_dir() -> &'static std::path::Path {
-    std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
 }
 
 /// Records `scene` into a fresh context and renders it once to an offscreen

@@ -1,11 +1,8 @@
-#![cfg(all(feature = "worker", not(target_arch = "wasm32")))]
-mod support;
-
+use crate::support::*;
 use pollster::block_on;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use support::*;
 use valo_codec::{DecodeError, DecodeOptions, ImageLoader, Repetition};
 
 fn wait_for(log: &Log, count: usize) {

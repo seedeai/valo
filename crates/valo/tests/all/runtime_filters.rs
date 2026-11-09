@@ -3,7 +3,6 @@
 //! asks. Skips (with a note) when the machine has no adapter; `VALO_BLESS=1 cargo test`
 //! regenerates the golden.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use valo::{
@@ -11,16 +10,7 @@ use valo::{
     Paint, Rect, RuntimeEffect, RuntimeShader,
 };
 
-fn goldens_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
-}
-
-fn floats(values: &[f32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_ne_bytes())
-        .collect()
-}
+use crate::{floats, goldens_dir};
 
 fn filter(effect: &Arc<RuntimeEffect>, uniforms: &[f32]) -> ImageFilter {
     let shader = RuntimeShader::new(effect.clone(), floats(uniforms), Vec::new())

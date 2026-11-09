@@ -2,7 +2,6 @@
 //! images and override variants reaching the GPU. Skips (with a note) when the machine has no
 //! adapter; `VALO_BLESS=1 cargo test` regenerates the golden.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use valo::{
@@ -11,9 +10,7 @@ use valo::{
     Shader, Stroke,
 };
 
-fn goldens_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
-}
+use crate::{floats, goldens_dir};
 
 /// Concentric bands around a centre, `count` of them per 80 units.
 const RINGS: &str = "
@@ -29,13 +26,6 @@ fn shade(position: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(rings.tint.rgb * band, rings.tint.a);
 }
 ";
-
-fn floats(values: &[f32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_ne_bytes())
-        .collect()
-}
 
 fn rings(effect: &Arc<RuntimeEffect>, centre: Point, tint: [f32; 4]) -> RuntimeShader {
     let [r, g, b, a] = tint;

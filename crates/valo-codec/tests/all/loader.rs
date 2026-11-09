@@ -1,8 +1,6 @@
-mod support;
-
+use crate::support::*;
 use pollster::block_on;
 use std::time::Duration;
-use support::*;
 use valo_codec::{DecodeError, DecodeLimits, DecodeOptions, ImageLoader, Repetition};
 
 #[test]

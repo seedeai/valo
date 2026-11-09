@@ -78,3 +78,9 @@ winit = "0.30"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# Dependencies keep only line tables in dev and test builds, which is what a
+# backtrace needs, for less build time and disk; the workspace's own crates
+# keep full debug info for the debugger.
+[profile.dev.package."*"]
+debug = "line-tables-only"

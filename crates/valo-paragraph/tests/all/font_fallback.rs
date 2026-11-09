@@ -5,10 +5,7 @@
 use valo_paragraph::{ParagraphBuilder, TextStyle};
 use valo_text::{Font, FontAttrs};
 
-fn asset(name: &str) -> Vec<u8> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
-    std::fs::read(format!("{dir}/{name}")).unwrap()
-}
+use crate::asset;
 
 /// A built paragraph carries the demand signal — families the
 /// collection lacks entirely, and chars nothing present covers. valo only

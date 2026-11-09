@@ -1,8 +1,7 @@
 //! A decoder that hands back a texture instead of pixels: the zero-copy path.
-mod support;
 
+use crate::support::*;
 use pollster::block_on;
-use support::*;
 use valo::{Color, Context, DisplayListBuilder, Paint, Rect};
 use valo_codec::{
     DecodeError, DecodeOptions, DecodedFrame, Decoder, Decoding, FramePixels, FrameReader,

@@ -11,16 +11,10 @@ use valo::{
 };
 use valo_dl::{GlyphPos, RunFont};
 
+use crate::context;
+
 const SIZE: [u32; 2] = [160, 96];
 const BACKGROUND: Color = Color::WHITE;
-
-fn context(test: &str) -> Option<Context> {
-    let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP {test}: no GPU adapter");
-        return None;
-    };
-    Some(Context::new(device, queue))
-}
 
 fn fonts() -> FontCollection {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");

@@ -4,10 +4,7 @@
 
 use valo_text::{match_style, FaceSet, Font, FontAttrs, FontId};
 
-fn asset(name: &str) -> Vec<u8> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
-    std::fs::read(format!("{dir}/{name}")).unwrap()
-}
+use crate::asset;
 
 #[test]
 fn from_bytes_reads_embedded_family() {

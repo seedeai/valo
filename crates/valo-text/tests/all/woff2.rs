@@ -1,4 +1,3 @@
-#![cfg(feature = "woff2")]
 //! WOFF2 registration: icon and web fonts ship brotli-wrapped; the `woff2`
 //! feature unwraps them at the registration boundary.
 

@@ -8,6 +8,8 @@ use valo::{
     FontCollection, Paint, Paragraph, ParagraphBuilder, TextStyle, TextTiers,
 };
 
+use crate::context;
+
 const SIZE: [u32; 2] = [128, 96];
 const ORIGIN: (f32, f32) = (16.0, 8.0);
 
@@ -109,14 +111,6 @@ fn render_over(
         SIZE,
         Some(backdrop),
     ))
-}
-
-fn context(test: &str) -> Option<Context> {
-    let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP {test}: no GPU adapter");
-        return None;
-    };
-    Some(Context::new(device, queue))
 }
 
 /// A colour filter that colours transparent pixels colours the glyphs and

@@ -2,16 +2,13 @@
 //! headless native device; skips (with a note) when the machine has no adapter.
 //! `VALO_BLESS=1 cargo test` regenerates the checked-in PNGs.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use valo::{
     Backdrop, BlendMode, Color, Context, DisplayListBuilder, MaskBlur, Offscreen, Paint, Rect,
 };
 
-fn goldens_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
-}
+use crate::goldens_dir;
 
 /// Deterministic M1 scene: alpha stacking, transforms, pipeline blends, nesting,
 /// and one culled rect (asserted via stats, invisible in pixels).

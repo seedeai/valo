@@ -3,12 +3,12 @@
 //! layer draws is not clipped to them. Each check runs the same scene with an
 //! unbounded blur too, to show the scene would catch the bleed.
 
-use std::path::Path;
-
 use valo::{
     Backdrop, ClipOp, Color, Context, DisplayList, DisplayListBuilder, ImageFilter, Matrix, Paint,
     Point, Rect,
 };
+
+use crate::goldens_dir;
 
 const SIDE: u32 = 128;
 const RED: Color = Color::rgb(1.0, 0.0, 0.0);
@@ -17,10 +17,6 @@ const GREEN: Color = Color::rgb(0.0, 1.0, 0.0);
 
 /// The panel the blur is bounded to, in the scene's local units.
 const PANEL: Rect = Rect::new(40.0, 40.0, 48.0, 48.0);
-
-fn goldens_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
-}
 
 /// `TwoColours` is the no-bleed scene: red everywhere and blue over
 /// [`PANEL`] grown by `blue_overhang`, all under `transform`, blurred with or

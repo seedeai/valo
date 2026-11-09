@@ -10,16 +10,10 @@ use valo::{
     ClipOp, Color, ColorFilter, Context, DisplayListBuilder, ImageFilter, Paint, Rect, TileMode,
 };
 
+use crate::context;
+
 const SIZE: [u32; 2] = [160, 160];
 const ROW: u32 = 80;
-
-fn context(test: &str) -> Option<Context> {
-    let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP {test}: no GPU adapter");
-        return None;
-    };
-    Some(Context::new(device, queue))
-}
 
 fn white() -> Paint {
     Paint::from_color(Color::WHITE)

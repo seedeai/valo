@@ -1,5 +1,5 @@
 //! Manual perf breakdown for the bench scene — run with:
-//!   cargo test -p valo --test perf_probe --release -- --ignored --nocapture
+//!   cargo test -p valo --test all --release -- perf_probe:: --ignored --nocapture
 
 use std::sync::Arc;
 

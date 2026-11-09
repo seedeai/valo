@@ -15,6 +15,8 @@ use valo::{
     Backdrop, BlendMode, Color, Context, DisplayList, DisplayListBuilder, ImageFilter, Paint, Rect,
 };
 
+use crate::context;
+
 const FRAME: usize = 128;
 const CENTRE: f64 = FRAME as f64 / 2.0;
 
@@ -31,14 +33,6 @@ const SIGMAS: [f32; 3] = [8.0, 12.0, 24.0];
 /// Square sides that put the downsample's taps on the layer's edge at one
 /// σ or another.
 const SIDES: [f32; 2] = [46.0, 48.0];
-
-fn context(test: &str) -> Option<Context> {
-    let Some((device, queue)) = valo_harness::headless_device() else {
-        eprintln!("SKIP {test}: no GPU adapter");
-        return None;
-    };
-    Some(Context::new(device, queue))
-}
 
 /// A square `side` pixels wide in the middle of the frame, on whole pixels.
 fn square(side: f32) -> Rect {

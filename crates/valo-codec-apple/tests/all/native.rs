@@ -1,4 +1,3 @@
-#![cfg(any(target_os = "macos", target_os = "ios"))]
 use image::ImageEncoder;
 use pollster::block_on;
 use std::{io::Cursor, sync::Arc, time::Duration};

@@ -6,14 +6,11 @@
 //! frames. There is no gate and no quota: the embedder vouches for
 //! stability by hinting (021d), so churn protection is its job, not ours.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use valo::{Color, Context, DisplayListBuilder, Matrix, Offscreen, Paint, Rect};
 
-fn goldens_dir() -> &'static Path {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens"))
-}
+use crate::goldens_dir;
 
 /// A board-like list: comfortably past MIN_CACHED_DRAWS, with overlap and
 /// alpha so compositing mistakes would show.
