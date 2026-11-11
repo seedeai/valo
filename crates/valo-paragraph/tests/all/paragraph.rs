@@ -2,7 +2,10 @@
 //! the retained tiers (build = shape once; layout = wrap; recolor = place).
 
 use valo_geometry::Color;
-use valo_paragraph::{Paragraph, ParagraphBuilder, ParagraphStyle, TextAlign, TextStyle};
+use valo_paragraph::{
+    LeadingDistribution, Paragraph, ParagraphBuilder, ParagraphStyle, TextAlign,
+    TextHeightBehavior, TextStyle,
+};
 use valo_text::{Font, FontCollection};
 mod valo {
     pub use valo_geometry::Point;
@@ -364,6 +367,148 @@ fn height_multiplier_scales_lines() {
         tall.height()
     );
     assert!(tall.height() > plain.height() + 20.0);
+}
+
+/// An even leading puts half a line's extra height above the text and half
+/// below, so the baseline lies where CSS puts it, half the leading below the
+/// line's top plus the font's ascent: skparagraph's half leading
+/// (`Run::calculateMetrics`). A proportional one shares it as the ascent and
+/// descent do, and neither changes a line without a height multiplier.
+#[test]
+fn an_even_leading_puts_the_baseline_where_css_does() {
+    let mut c = fonts();
+    let laid = |c: &mut FontCollection, height: Option<f32>, leading_distribution| {
+        let mut b = ParagraphBuilder::new(c);
+        b.add_text(
+            "one\ntwo",
+            &TextStyle {
+                height,
+                leading_distribution,
+                ..style(20.0)
+            },
+        );
+        let mut paragraph = b.build();
+        paragraph.layout(f32::INFINITY);
+        paragraph
+    };
+    let even = laid(&mut c, Some(1.5), LeadingDistribution::Even);
+    let (font, _) = even.primary_font().expect("the text has a font");
+    let (ascent, descent) = (font.ascent_px(20.0), font.descent_px(20.0));
+    let half_leading = (30.0 - (ascent + descent)) / 2.0;
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    assert!(
+        near(even.lines()[0].baseline, half_leading + ascent),
+        "{}",
+        even.lines()[0].baseline
+    );
+    assert!(near(even.lines()[1].baseline, 30.0 + half_leading + ascent));
+    assert!(near(even.height(), 60.0));
+
+    let proportional = laid(&mut c, Some(1.5), LeadingDistribution::Proportional);
+    let share = ascent * 30.0 / (ascent + descent);
+    assert!(near(proportional.lines()[0].baseline, share));
+
+    let unset = laid(&mut c, None, LeadingDistribution::Even);
+    let plain = laid(&mut c, None, LeadingDistribution::Proportional);
+    assert!(near(unset.lines()[0].baseline, plain.lines()[0].baseline));
+    assert!(near(unset.height(), plain.height()));
+}
+
+/// `line_gap_paragraph` is "one two" in the line-gap test font at 20 px, a line
+/// `height` times that when set, sharing it as `leading_distribution` says.
+fn line_gap_paragraph(height: Option<f32>, leading_distribution: LeadingDistribution) -> Paragraph {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
+    let mut c = FontCollection::new();
+    let font = std::fs::read(format!("{dir}/line_gap_test.ttf")).unwrap();
+    c.register("Line Gap Test", font).unwrap();
+    let mut b = ParagraphBuilder::new(&mut c);
+    b.add_text(
+        "one two",
+        &TextStyle {
+            height,
+            leading_distribution,
+            ..TextStyle::new("Line Gap Test", 20.0, Color::BLACK)
+        },
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(f32::INFINITY);
+    paragraph
+}
+
+/// A font's line gap is shared half above and half below its text, with or
+/// without a height multiplier, as skparagraph's run metrics share it
+/// (`Run::calculateMetrics`): a proportional height scales the room above and
+/// below, gap included, and an even one adds half the difference to each.
+#[test]
+fn a_fonts_line_gap_is_shared_half_above_and_half_below() {
+    // The test font's ascent, descent and line gap are 0.935, 0.265 and 0.2 of its
+    // size: 18.7, 5.3 and 4 px at 20 px.
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let natural = line_gap_paragraph(None, LeadingDistribution::Proportional);
+    assert!(
+        near(natural.lines()[0].baseline, 18.7 + 2.0),
+        "{}",
+        natural.lines()[0].baseline
+    );
+    assert!(near(natural.height(), 28.0), "{}", natural.height());
+
+    let proportional = line_gap_paragraph(Some(1.5), LeadingDistribution::Proportional);
+    assert!(near(proportional.lines()[0].baseline, 20.7 * 30.0 / 28.0));
+    assert!(near(proportional.height(), 30.0));
+
+    let even = line_gap_paragraph(Some(1.5), LeadingDistribution::Even);
+    assert!(near(even.lines()[0].baseline, 20.7 + 1.0));
+    assert!(near(even.height(), 30.0));
+}
+
+/// A paragraph's first line can keep its fonts' own ascent, and its last line
+/// their own descent, whatever height its text asks for: Flutter's
+/// `TextHeightBehavior`, Skia's `kDisableFirstAscent` and `kDisableLastDescent`
+/// (`TextWrapper::breakTextIntoLines`). The lines between keep their height.
+#[test]
+fn a_paragraph_can_keep_its_fonts_own_room_above_and_below() {
+    let mut c = fonts();
+    let laid = |c: &mut FontCollection, text_height_behavior| {
+        let mut b = ParagraphBuilder::new(c);
+        b.style(ParagraphStyle {
+            text_height_behavior,
+            ..ParagraphStyle::default()
+        });
+        b.add_text(
+            "one\ntwo\nthree",
+            &TextStyle {
+                height: Some(2.0),
+                ..style(20.0)
+            },
+        );
+        let mut paragraph = b.build();
+        paragraph.layout(f32::INFINITY);
+        paragraph
+    };
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let tall = laid(&mut c, TextHeightBehavior::default());
+    let flush = laid(
+        &mut c,
+        TextHeightBehavior {
+            apply_height_to_first_ascent: false,
+            apply_height_to_last_descent: false,
+        },
+    );
+    let (font, _) = tall.primary_font().expect("the text has a font");
+    let (ascent, descent) = (font.ascent_px(20.0), font.descent_px(20.0));
+    let [first, middle, last] = [0, 1, 2].map(|index| &flush.lines()[index]);
+    assert!(near(first.ascent, ascent), "{}", first.ascent);
+    assert!(near(first.baseline, ascent));
+    assert!(near(last.descent, descent), "{}", last.descent);
+    assert!(near(middle.ascent, tall.lines()[1].ascent));
+    assert!(near(middle.descent, tall.lines()[1].descent));
+    // Each end loses what its height added there.
+    let added_above = tall.lines()[0].ascent - ascent;
+    let added_below = tall.lines()[2].descent - descent;
+    assert!(near(
+        flush.height(),
+        tall.height() - added_above - added_below
+    ));
 }
 
 #[test]

@@ -54,6 +54,12 @@ pub struct TextStyle {
     ///
     /// `None` uses the font's metrics.
     pub height: Option<f32>,
+    /// `leading_distribution` is how a `height` other than the font's own shares
+    /// the space it adds or takes above and below the text.
+    ///
+    /// It changes nothing while `height` is `None`. Pick
+    /// [`LeadingDistribution::Even`] for text that should sit where CSS puts it.
+    pub leading_distribution: LeadingDistribution,
     /// `decoration` optionally adds an underline, overline, or strike-through.
     pub decoration: Option<Decoration>,
     /// `shadows` are painted back-to-front beneath the text.
@@ -76,6 +82,7 @@ impl Default for TextStyle {
             letter_spacing: 0.0,
             word_spacing: 0.0,
             height: None,
+            leading_distribution: LeadingDistribution::Proportional,
             decoration: None,
             shadows: Vec::new(),
         }
@@ -185,6 +192,26 @@ pub struct Shadow {
     pub blur: f32,
 }
 
+/// `LeadingDistribution` is how a line height other than the font's own shares
+/// its extra space, the leading, above and below the text: Flutter's
+/// `TextLeadingDistribution`, Skia's half leading (`TextStyle::setHalfLeading`).
+///
+/// The leading is `height × size` less the font's ascent and descent. A height
+/// below the font's own makes it negative, and it is taken away in the same
+/// way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeadingDistribution {
+    /// `Proportional` shares the leading in proportion to the font's ascent and
+    /// descent, so the text keeps its place relative to the line's top and
+    /// bottom: Flutter's default.
+    #[default]
+    Proportional,
+    /// `Even` puts half the leading above the text and half below, as CSS's
+    /// `line-height` does: skparagraph's `Run::calculateMetrics` with half
+    /// leading, where the font's line gap cancels out.
+    Even,
+}
+
 /// `TextAlign` controls horizontal line placement within the layout width.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextAlign {
@@ -288,4 +315,59 @@ pub struct ParagraphStyle {
     pub max_lines: Option<u32>,
     /// `ellipsis` replaces omitted content at the visual end of a truncated paragraph.
     pub ellipsis: Option<String>,
+    /// `text_height_behavior` says whether the first line's top and the last
+    /// line's bottom take the room a height multiplier gives them, or only the
+    /// fonts' own.
+    pub text_height_behavior: TextHeightBehavior,
+}
+
+/// `TextHeightBehavior` is whether a paragraph's first and last lines take the
+/// room a [`TextStyle::height`] gives above and below the text, or keep only the
+/// fonts' own there: Flutter's `TextHeightBehavior`, Skia's `TextHeightBehavior`
+/// flags (`kDisableFirstAscent`, `kDisableLastDescent`).
+///
+/// Turning one off lets a paragraph sit flush with what is above or below it
+/// while keeping the spacing between its lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextHeightBehavior {
+    /// `apply_height_to_first_ascent` gives the first line the room above its
+    /// text that its height asks for; off, it has its fonts' own ascent there.
+    pub apply_height_to_first_ascent: bool,
+    /// `apply_height_to_last_descent` gives the last line the room below its
+    /// text that its height asks for; off, it has its fonts' own descent there.
+    pub apply_height_to_last_descent: bool,
+}
+
+impl Default for TextHeightBehavior {
+    fn default() -> Self {
+        Self {
+            apply_height_to_first_ascent: true,
+            apply_height_to_last_descent: true,
+        }
+    }
+}
+
+impl TextHeightBehavior {
+    /// `applied` is a line's room after this behavior: the fonts' own ascent
+    /// above a `first` line and descent below a `last` one, where they are off.
+    pub(crate) fn applied(
+        self,
+        heights: crate::wrap::LineHeights,
+        first: bool,
+        last: bool,
+    ) -> crate::wrap::LineHeights {
+        crate::wrap::LineHeights {
+            ascent: if first && !self.apply_height_to_first_ascent {
+                heights.raw_ascent
+            } else {
+                heights.ascent
+            },
+            descent: if last && !self.apply_height_to_last_descent {
+                heights.raw_descent
+            } else {
+                heights.descent
+            },
+            ..heights
+        }
+    }
 }

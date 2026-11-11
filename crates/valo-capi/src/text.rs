@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use valo::{
     Decoration, DecorationKind, Font, FontCollection, FontId, Paragraph, ParagraphBuilder,
-    ParagraphStyle, TextAlign, TextStyle,
+    ParagraphStyle, TextAlign, TextHeightBehavior, TextStyle,
 };
 
 use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoRect};
@@ -629,6 +629,9 @@ fn paragraph_style(style: &ValoParagraphStyle) -> ParagraphStyle {
         ellipsis: unsafe { utf8(style.ellipsis_utf8, style.ellipsis_length) }
             .filter(|e| !e.is_empty())
             .map(str::to_owned),
+        // As `direction`: the committed C struct has no field for it, so both lines take the
+        // height they ask for.
+        text_height_behavior: TextHeightBehavior::default(),
     }
 }
 

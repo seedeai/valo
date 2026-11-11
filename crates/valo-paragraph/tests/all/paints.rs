@@ -8,8 +8,9 @@
 use valo_dl::{DisplayListBuilder, Op, Paint, PaintStyle};
 use valo_geometry::{Color, Point, Rect, Stroke};
 use valo_paragraph::{
-    Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, Paragraph, ParagraphBuilder,
-    ParagraphStyle, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline, TextStyle,
+    Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, LeadingDistribution, Paragraph,
+    ParagraphBuilder, ParagraphStyle, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline,
+    TextStyle,
 };
 use valo_text::FontCollection;
 
@@ -259,6 +260,24 @@ fn the_background_box_follows_the_height_multiplier() {
     assert!(near(tall_box.height, 40.0), "{tall_box:?}");
     assert!(near(tall_box.y, 0.0), "the line's ascent holds the box");
     assert!(near(tall_box.bottom(), tall.height()));
+
+    // With an even leading, the box is the same height, its top half the leading above
+    // the font's ascent.
+    let even = laid_out(&[(
+        "Box",
+        TextStyle {
+            height: Some(2.0),
+            leading_distribution: LeadingDistribution::Even,
+            ..with_background(style(RED), GRAY)
+        },
+    )]);
+    let even_box = rects(&drawn_paragraph(&even))[0];
+    let line = &even.lines()[0];
+    assert!(near(even_box.height, 40.0), "{even_box:?}");
+    assert!(
+        near(even_box.y, line.baseline - line.ascent),
+        "{even_box:?}"
+    );
 }
 
 /// A placeholder keeps its style's background (Skia's

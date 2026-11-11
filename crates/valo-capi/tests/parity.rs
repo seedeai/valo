@@ -512,6 +512,7 @@ fn render_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes: &[u8
         preserve_trailing_whitespace: false,
         max_lines: None,
         ellipsis: None,
+        text_height_behavior: valo::TextHeightBehavior::default(),
     });
     let mut style = valo::TextStyle::new("", 18.0, valo::Color::rgb(1.0, 1.0, 1.0));
     style.families = vec!["Fira Sans".to_owned()];
@@ -608,6 +609,7 @@ fn stroked_text_matches_the_rust_route(paragraph: *mut ValoParagraph, font_bytes
         preserve_trailing_whitespace: false,
         max_lines: None,
         ellipsis: None,
+        text_height_behavior: valo::TextHeightBehavior::default(),
     });
     let mut style = valo::TextStyle::new("", 18.0, valo::Color::rgb(1.0, 1.0, 1.0));
     style.families = vec!["Fira Sans".to_owned()];

@@ -8,7 +8,8 @@ use valo_text::{
 };
 
 use crate::style::{
-    Decoration, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline, TextStyle,
+    Decoration, LeadingDistribution, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline,
+    TextStyle,
 };
 
 /// A maximal stretch of text sharing style, resolved font, and bidi level —
@@ -28,6 +29,8 @@ pub struct ShapedRun {
     pub background: Option<Paint>,
     /// Line-height multiplier from the style (`None` = font metrics).
     pub height: Option<f32>,
+    /// How a `height` shares its leading above and below the text.
+    pub leading_distribution: LeadingDistribution,
     pub decoration: Option<Decoration>,
     pub shadows: Vec<Shadow>,
     /// Unpositioned glyphs, advances and offsets in px, each `cluster` a byte
@@ -220,6 +223,7 @@ fn shape_segment(
         foreground: style.foreground.clone(),
         background: style.background.clone(),
         height: style.height,
+        leading_distribution: style.leading_distribution,
         decoration: style.decoration,
         shadows: style.shadows.clone(),
         glyphs,
@@ -261,6 +265,7 @@ fn placeholder_run(
         foreground: None,
         background: style.background.clone(),
         height: None,
+        leading_distribution: LeadingDistribution::Proportional,
         decoration: None,
         shadows: Vec::new(),
         placeholder: Some(ShapedPlaceholder {
@@ -315,6 +320,7 @@ pub(crate) fn shape_ellipsis(collection: &FaceSet, tail: &ShapedRun, text: &str)
         foreground: tail.foreground.clone(),
         background: tail.background.clone(),
         height: tail.height,
+        leading_distribution: tail.leading_distribution,
         decoration: None,
         shadows: Vec::new(),
         glyphs,

@@ -45,6 +45,9 @@ pub struct PlacedRun {
     /// `height` is the span's line-height multiplier, which scales the box a
     /// background fills; `None` uses the font's metrics.
     pub height: Option<f32>,
+    /// `leading_distribution` is how `height` shares its leading above and
+    /// below the text.
+    pub leading_distribution: crate::style::LeadingDistribution,
     /// `decoration` optionally adds a line relative to the run.
     pub decoration: Option<crate::style::Decoration>,
     /// `shadows` are painted back-to-front beneath the glyphs.
@@ -131,7 +134,7 @@ pub struct Paragraph {
     layout: Option<Layout>,
     /// Precomputed at build (glyphless lines measure by the first span's
     /// style) — the paragraph needs no collection afterwards.
-    empty_metrics: Option<(f32, f32, f32)>,
+    empty_metrics: Option<crate::wrap::LineHeights>,
     /// What THIS text could not resolve, even after the collection asked
     /// its sources — the per-paragraph half of the async loop.
     demand: FontDemand,
@@ -198,7 +201,7 @@ impl Paragraph {
 
     /// skparagraph's computeEmptyMetrics: glyphless lines (blank first line,
     /// trailing newline, empty paragraph) measure as the FIRST span's style.
-    fn empty_line_metrics(&self) -> Option<(f32, f32, f32)> {
+    fn empty_line_metrics(&self) -> Option<crate::wrap::LineHeights> {
         self.empty_metrics
     }
 
@@ -761,7 +764,7 @@ fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
 fn empty_line_metrics(
     faces: &FaceSet,
     first_span: Option<&(std::ops::Range<usize>, TextStyle)>,
-) -> Option<(f32, f32, f32)> {
+) -> Option<crate::wrap::LineHeights> {
     let (_, style) = first_span?;
     if faces.is_empty() {
         return None;
@@ -772,5 +775,6 @@ fn empty_line_metrics(
         faces.get(id),
         style.size,
         style.height,
+        style.leading_distribution,
     ))
 }

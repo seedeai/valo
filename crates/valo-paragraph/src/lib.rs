@@ -19,6 +19,7 @@ pub use paragraph::{
     PositionWithAffinity,
 };
 pub use style::{
-    Decoration, DecorationKind, ParagraphStyle, PlaceholderAlignment, PlaceholderStyle, Shadow,
-    TextAlign, TextBaseline, TextDirection, TextStyle, VariantCaps,
+    Decoration, DecorationKind, LeadingDistribution, ParagraphStyle, PlaceholderAlignment,
+    PlaceholderStyle, Shadow, TextAlign, TextBaseline, TextDirection, TextHeightBehavior,
+    TextStyle, VariantCaps,
 };

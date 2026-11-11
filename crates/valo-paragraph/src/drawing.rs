@@ -170,12 +170,12 @@ fn background_box(paragraph: &Paragraph, line: &Line, run: &PlacedRun) -> Rect {
         return run.bounds;
     }
     let font = paragraph.faces().get(run.font);
-    let (ascent, descent, _) = style_heights(font, run.size, run.height);
+    let heights = style_heights(font, run.size, run.height, run.leading_distribution);
     Rect::from_ltrb(
         run.bounds.x,
-        line.baseline - ascent,
+        line.baseline - heights.ascent,
         run.bounds.right(),
-        line.baseline + descent,
+        line.baseline + heights.descent,
     )
 }
 
@@ -190,6 +190,7 @@ fn shares_box(before: &PlacedRun, run: &PlacedRun) -> bool {
         && before.size == run.size
         && before.synthesis == run.synthesis
         && before.height == run.height
+        && before.leading_distribution == run.leading_distribution
         && before.rtl == run.rtl
 }
 

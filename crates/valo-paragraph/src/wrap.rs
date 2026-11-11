@@ -6,7 +6,7 @@ use valo_text::{FaceSet, Font};
 
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
 use crate::shape::{shape_ellipsis, ShapedPlaceholder, ShapedRun};
-use crate::style::{ParagraphStyle, TextAlign};
+use crate::style::{LeadingDistribution, ParagraphStyle, TextAlign};
 
 /// The wrap tier's output: chosen line ranges, truncation, and the
 /// intrinsic widths accumulated during the walk (Skia's TextWrapper carries
@@ -212,7 +212,7 @@ pub fn place_lines(
     wrapped: Wrapped,
     max_width: f32,
     style: &ParagraphStyle,
-    empty_metrics: Option<(f32, f32, f32)>,
+    empty_metrics: Option<LineHeights>,
 ) -> Layout {
     let mut lines = Vec::new();
     let mut y = 0.0f32;
@@ -220,7 +220,7 @@ pub fn place_lines(
     // Lines with no glyphs (blank first line, trailing newline, empty
     // paragraph) take the paragraph style's metrics — skparagraph's
     // computeEmptyMetrics — not invented constants.
-    let mut last_heights = empty_metrics.unwrap_or((16.0f32, 4.0, 24.0));
+    let mut last_heights = empty_metrics.unwrap_or(LineHeights::FALLBACK);
     let count = wrapped.ranges.len();
     for (index, range) in wrapped.ranges.iter().cloned().enumerate() {
         let overlapping: Vec<&ShapedRun> = runs
@@ -236,14 +236,17 @@ pub fn place_lines(
         if let Some(h) = text_heights {
             last_heights = h;
         }
-        let text_descent = text_heights.map_or(0.0, |(_, descent, _)| descent);
+        let text_descent = text_heights.map_or(0.0, |heights| heights.descent);
         let cap_height = text_runs
             .iter()
             .map(|run| collection.get(run.font).cap_height_px(run.size))
             .fold(0.0, f32::max);
-        let (ascent, _descent, height) =
+        let heights =
             fit_placeholders(text_heights, &overlapping, text_descent).unwrap_or(last_heights);
-        let baseline = y + ascent;
+        let heights = style
+            .text_height_behavior
+            .applied(heights, index == 0, index + 1 == count);
+        let baseline = y + heights.ascent;
         let ellipsis = ellipsis_for(
             collection,
             style,
@@ -266,14 +269,14 @@ pub fn place_lines(
         lines.push(Line {
             runs: placed.runs,
             baseline,
-            ascent,
-            descent: _descent,
+            ascent: heights.ascent,
+            descent: heights.descent,
             cap_height,
             left: placed.left,
             width: placed.width,
             range: line.range,
         });
-        y += height;
+        y += heights.height();
     }
     Layout {
         max_width,
@@ -565,6 +568,7 @@ fn place_slice(
         foreground: run.foreground.clone(),
         background: run.background.clone(),
         height: run.height,
+        leading_distribution: run.leading_distribution,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
@@ -604,6 +608,7 @@ fn place_placeholder(
         foreground: run.foreground.clone(),
         background: run.background.clone(),
         height: run.height,
+        leading_distribution: run.leading_distribution,
         decoration: None,
         shadows: Vec::new(),
         glyphs: vec![PlacedGlyph {
@@ -685,6 +690,7 @@ fn place_isolated(
         foreground: run.foreground.clone(),
         background: run.background.clone(),
         height: run.height,
+        leading_distribution: run.leading_distribution,
         decoration: run.decoration,
         shadows: run.shadows.clone(),
         glyphs,
@@ -701,68 +707,114 @@ fn place_isolated(
     });
 }
 
-/// A line's (ascent, descent, height) grown to hold its placeholders: the text's metrics,
-/// each side raised to the tallest placeholder's, or the placeholders' alone on a line with no
-/// text, as Skia's line metrics add placeholder runs. `None` when the line has neither.
+/// A line's room grown to hold its placeholders: the text's, each side raised to the tallest
+/// placeholder's, or the placeholders' alone on a line with no text, as Skia's line metrics add
+/// placeholder runs to both their sets. `None` when the line has neither.
 fn fit_placeholders(
-    text: Option<(f32, f32, f32)>,
+    text: Option<LineHeights>,
     runs: &[&ShapedRun],
     text_descent: f32,
-) -> Option<(f32, f32, f32)> {
-    let mut extents = runs
-        .iter()
+) -> Option<LineHeights> {
+    runs.iter()
         .filter_map(|run| run.placeholder.as_ref())
-        .map(|placeholder| placeholder.extent(text_descent));
-    let Some(first) = extents.next() else {
-        return text;
-    };
-    let (ascent, descent) = extents.fold(first, |(a, d), (pa, pd)| (a.max(pa), d.max(pd)));
-    Some(match text {
-        Some((text_ascent, text_descent, height)) => {
-            let (ascent, descent) = (ascent.max(text_ascent), descent.max(text_descent));
-            (
+        .map(|placeholder| {
+            let (ascent, descent) = placeholder.extent(text_descent);
+            LineHeights {
                 ascent,
                 descent,
-                height + (ascent - text_ascent) + (descent - text_descent),
-            )
-        }
-        None => (ascent, descent, ascent + descent),
-    })
+                raw_ascent: ascent,
+                raw_descent: descent,
+            }
+        })
+        .chain(text)
+        .reduce(LineHeights::max)
 }
 
 /// Max-over-runs line metrics (the strut-free rule).
-fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<(f32, f32, f32)> {
-    let mut out: Option<(f32, f32, f32)> = None;
-    for run in runs {
-        let font = collection.get(run.font);
-        let candidate = style_heights(font, run.size, run.height);
-        out = Some(match out {
-            None => candidate,
-            Some(cur) => (
-                cur.0.max(candidate.0),
-                cur.1.max(candidate.1),
-                cur.2.max(candidate.2),
-            ),
-        });
-    }
-    out
+fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<LineHeights> {
+    runs.iter()
+        .map(|run| {
+            let font = collection.get(run.font);
+            style_heights(font, run.size, run.height, run.leading_distribution)
+        })
+        .reduce(LineHeights::max)
 }
 
-/// One style's (ascent, descent, height) at `size`. A `height` multiplier
-/// rescales to `height × size`, ascent/descent proportional (skparagraph's
-/// heightOverride). Also seeds empty-line metrics from the paragraph style.
-pub(crate) fn style_heights(font: &Font, size: f32, height: Option<f32>) -> (f32, f32, f32) {
-    let mut candidate = (
-        font.ascent_px(size),
-        font.descent_px(size),
-        font.line_height_px(size),
-    );
-    if let Some(multiplier) = height {
-        let target = multiplier * size;
-        let k = target / (candidate.0 + candidate.1).max(1e-3);
-        candidate = (candidate.0 * k, candidate.1 * k, target);
+/// `LineHeights` is a line's room above and below its baseline, as its text asks for it
+/// (`ascent`, `descent`) and as its fonts alone have it, at no height multiplier and with no
+/// line gap (`raw_ascent`, `raw_descent`): skparagraph's `InternalLineMetrics`, its correct and
+/// raw sets. A line is `ascent + descent` tall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LineHeights {
+    pub ascent: f32,
+    pub descent: f32,
+    pub raw_ascent: f32,
+    pub raw_descent: f32,
+}
+
+impl LineHeights {
+    /// `FALLBACK` is a glyphless line's room when no font is there to measure: a 24 px line.
+    const FALLBACK: LineHeights = LineHeights {
+        ascent: 18.0,
+        descent: 6.0,
+        raw_ascent: 16.0,
+        raw_descent: 4.0,
+    };
+
+    /// `height` is how tall the line is.
+    pub fn height(&self) -> f32 {
+        self.ascent + self.descent
     }
-    candidate
+
+    /// `max` is room for both: each side the larger of the two, as a line takes its runs'.
+    fn max(self, other: LineHeights) -> LineHeights {
+        LineHeights {
+            ascent: self.ascent.max(other.ascent),
+            descent: self.descent.max(other.descent),
+            raw_ascent: self.raw_ascent.max(other.raw_ascent),
+            raw_descent: self.raw_descent.max(other.raw_descent),
+        }
+    }
+}
+
+/// One style's room above and below the baseline at `size`: skparagraph's
+/// `Run::calculateMetrics`. The font's line gap is shared half above and half
+/// below. A `height` multiplier makes the line `height × size` tall (its
+/// heightOverride), sharing the difference from the font's own height as
+/// `distribution` says: scaling the room above and below alike, or adding half
+/// of it to each (its half leading, where the line gap cancels out). Also seeds
+/// empty-line metrics from the paragraph style.
+pub(crate) fn style_heights(
+    font: &Font,
+    size: f32,
+    height: Option<f32>,
+    distribution: LeadingDistribution,
+) -> LineHeights {
+    let (raw_ascent, raw_descent) = (font.ascent_px(size), font.descent_px(size));
+    let half_gap = (font.line_height_px(size) - raw_ascent - raw_descent) / 2.0;
+    let (ascent, descent) = (raw_ascent + half_gap, raw_descent + half_gap);
+    let (ascent, descent) = match height.filter(|multiplier| multiplier.abs() > f32::EPSILON) {
+        None => (ascent, descent),
+        Some(multiplier) => {
+            let target = multiplier * size;
+            match distribution {
+                LeadingDistribution::Proportional => {
+                    let k = target / (ascent + descent).max(1e-3);
+                    (ascent * k, descent * k)
+                }
+                LeadingDistribution::Even => {
+                    let half_leading = (target - (ascent + descent)) / 2.0;
+                    (ascent + half_leading, descent + half_leading)
+                }
+            }
+        }
+    };
+    LineHeights {
+        ascent,
+        descent,
+        raw_ascent,
+        raw_descent,
+    }
 }
 
 /// Hard-break characters (UAX #14 BK/CR/LF/NL) — a paragraph ending in one
