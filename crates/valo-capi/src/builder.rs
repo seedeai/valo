@@ -174,21 +174,39 @@ pub unsafe extern "C" fn valo_builder_transform_matrix(
 builder_op!(
     /// `valo_builder_clip_rect` applies a rectangular clip until the current scope ends.
     ///
-    /// `operation`: 0 intersect, 1 difference.
-    valo_builder_clip_rect(rect: ValoRect, operation: i32),
-    |b| b.clip_rect(rect, clip_op(operation))
+    /// `operation`: 0 intersect, 1 difference. `anti_alias`: whether the
+    /// clip's edge is anti-aliased; an intersect clip that is not, under a
+    /// transform that only scales and moves, cuts at the nearest whole
+    /// pixels and costs the renderer nothing.
+    valo_builder_clip_rect(rect: ValoRect, operation: i32, anti_alias: bool),
+    |b| b.clip_rect(rect, clip_op(operation), anti_alias)
 );
 builder_op!(
     /// `valo_builder_clip_rounded_rect` applies a rounded-rectangle clip until the current scope ends.
     ///
-    /// `operation`: 0 intersect, 1 difference.
-    valo_builder_clip_rounded_rect(rect: ValoRect, radii: ValoCornerRadii, operation: i32),
-    |b| b.clip_rrect_radii_elliptical(rect, radii.to_elliptical(), clip_op(operation))
+    /// `operation`: 0 intersect, 1 difference. `anti_alias` is recorded and,
+    /// for now, changes nothing: a rounded rectangle's edge is anti-aliased
+    /// either way.
+    valo_builder_clip_rounded_rect(
+        rect: ValoRect,
+        radii: ValoCornerRadii,
+        operation: i32,
+        anti_alias: bool
+    ),
+    |b| b.clip_rrect_radii_elliptical(
+        rect,
+        radii.to_elliptical(),
+        clip_op(operation),
+        anti_alias
+    )
 );
 
 /// `valo_builder_clip_path` applies a path clip until the current scope ends.
 ///
 /// `rule`: 0 non-zero, 1 even-odd; `operation`: 0 intersect, 1 difference.
+/// `anti_alias` changes what is drawn only for a path that is an
+/// axis-aligned rectangle, as [`valo_builder_clip_rect`] says; any other
+/// shape's edge is anti-aliased either way, for now.
 ///
 /// # Safety
 /// `builder` and `path` must be live handles (or null, a no-op).
@@ -198,14 +216,18 @@ pub unsafe extern "C" fn valo_builder_clip_path(
     path: *mut ValoPath,
     rule: i32,
     operation: i32,
+    anti_alias: bool,
 ) {
     let (Some(handle), Some(path)) = (unsafe { borrow_mut(builder) }, unsafe { borrow_mut(path) })
     else {
         return;
     };
-    handle
-        .builder
-        .clip_path(&path.built(), fill_rule(rule), clip_op(operation));
+    handle.builder.clip_path(
+        &path.built(),
+        fill_rule(rule),
+        clip_op(operation),
+        anti_alias,
+    );
 }
 
 // ── draws ───────────────────────────────────────────────────────────────

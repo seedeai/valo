@@ -57,7 +57,11 @@ fn scene() -> valo::DisplayList {
     b.save();
     b.translate(320.0, 350.0);
     b.rotate(0.25);
-    b.clip_rect(Rect::new(-140.0, -45.0, 280.0, 90.0), ClipOp::Intersect);
+    b.clip_rect(
+        Rect::new(-140.0, -45.0, 280.0, 90.0),
+        ClipOp::Intersect,
+        true,
+    );
     b.rotate(-0.25);
     b.translate(-320.0, -350.0);
     for i in 0..8 {

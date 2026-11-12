@@ -89,8 +89,8 @@ impl<T: Clone> Shelf<T> {
 /// `LayerTarget` is one offscreen layer's attachments.
 ///
 /// Content renders into its multisample scratch, `msaa` and `depth` (4
-/// samples, discarded after every pass), and resolves to `resolve`. `resolve_texture` is also the copy source when a destination
-/// read or a backdrop inside the layer copies what it holds.
+/// samples, discarded after every pass), and resolves to `resolve`, a view
+/// of `resolve_texture`.
 #[derive(Clone)]
 pub struct LayerTarget {
     pub msaa: wgpu::TextureView,
@@ -99,9 +99,9 @@ pub struct LayerTarget {
     pub depth: wgpu::TextureView,
 }
 
-/// `CopyTexture` is a texture the size of a target that the target is
-/// copied into when it is split: drawn back by its next pass, and read by a
-/// destination read or a backdrop.
+/// `CopyTexture` is a texture the size of a target that the pixels of a
+/// target drawn over without clearing are copied into, for its first pass
+/// to draw back.
 ///
 /// `view` is sampleable; `texture` is the copy destination.
 #[derive(Clone)]
@@ -132,7 +132,9 @@ impl Attachments {
     }
 }
 
-/// `FilterTarget` is a single-sample color target for a gaussian filter pass.
+/// `FilterTarget` is a single-sample color target that one pass writes
+/// whole: a gaussian filter pass, or the pass of a target that a split
+/// ends, which resolves into it.
 ///
 /// It has no depth buffer. After the pass it is sampled by the next pass or
 /// the composite.
@@ -209,7 +211,8 @@ impl TargetPool {
 
     /// `take_filter` returns a pooled single-sample filter target of `size` and `format`.
     ///
-    /// Exact-size match: a filter stage's texture is exactly what it holds.
+    /// Exact-size match: a filter stage's texture, or the texture a split
+    /// target's pass resolves into, is exactly what it holds.
     /// The returned view must not be used after [`Self::end_frame`].
     pub fn take_filter(&mut self, size: [u32; 2], format: wgpu::TextureFormat) -> FilterTarget {
         let key = PoolKey { size, format };

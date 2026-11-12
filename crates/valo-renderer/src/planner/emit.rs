@@ -1,6 +1,7 @@
 //! The last step every draw takes: an [`Entity`] — what it covers, how it is
-//! shaded, how it blends, its depth, and the stencil its cover tests,
-//! Impeller's `Entity` — placed in a draw context's texels as one [`Draw`].
+//! shaded, how it blends, its depth, the clip coverage it shows in, and the
+//! stencil its cover tests, Impeller's `Entity` — placed in a draw context's
+//! texels as one [`Draw`].
 //! [`StepEmitter`] owns the GPU-facing services this needs — and nothing
 //! else, so the compiler guarantees emission cannot reach the context
 //! stack, the pass list, or the walk's scopes: the context a draw goes into
@@ -10,7 +11,7 @@
 use valo_dl::{GradientStop, Image, RuntimeShader, Sampling, TileMode};
 use valo_geometry::{FillRule, Matrix, Rect};
 
-use crate::frame::{Bindings, Draw, Geometry, Mesh, Stencil};
+use crate::frame::{Bindings, Draw, Geometry, Mesh, Scissor, Stencil};
 use crate::glyphs::{GlyphStore, PageRef};
 use crate::host_buffer::{HostBuffer, UniformSlot};
 use crate::images::ImageStore;
@@ -21,6 +22,7 @@ use crate::pipelines::{
 use crate::ramps::RampCache;
 use crate::shader_abi::{slot, UniformRecord};
 
+use super::clip_coverage::ClipCoverage;
 use super::draw_context::DrawContext;
 use super::gaussian::MAX_KERNEL_SAMPLES;
 use super::shading::Shading;
@@ -102,6 +104,9 @@ pub(super) struct Entity {
     pub blend: PipelineBlend,
     /// Its depth on the context's line.
     pub z: f32,
+    /// Where the clips around it let it show: what its scissor is made
+    /// from.
+    pub clip: ClipCoverage,
 }
 
 /// `StencilWrite` is a mesh marked into the stencil: a fill's fan, wound by
@@ -128,7 +133,9 @@ pub(super) enum Cover {
     Mesh { transform: Matrix, mesh: Mesh },
     /// The context's whole texture in its own texels, past its area's
     /// origin, so a clip's ceiling reaches the texels the area's rounding
-    /// added.
+    /// added. The entity's scissor cuts it to the clip's coverage, as
+    /// Impeller's intersect clip covers its render target under the pass's
+    /// scissor.
     Texels,
 }
 
@@ -204,24 +211,28 @@ impl<'a> StepEmitter<'a> {
     }
 
     /// `push` places `entity` in `context` and appends it to the context's
-    /// draws.
+    /// draws, unless its clips leave it nowhere to show.
     pub fn push(&mut self, context: &mut DrawContext, entity: Entity) {
-        let draw = self.place(context, entity);
-        context.draws.push(draw);
+        if let Some(draw) = self.place(context, entity) {
+            context.draws.push(draw);
+        }
     }
 
     /// `push_clip` places a clip's `entity` in `context`, appends it, and
-    /// keeps it for a fresh pass to replay.
+    /// keeps it for a fresh pass to replay, unless the clips around it
+    /// leave it nowhere to clip.
     pub fn push_clip(&mut self, context: &mut DrawContext, entity: Entity) {
-        let draw = self.place(context, entity);
-        context.clips.push(draw.clone());
-        context.draws.push(draw);
+        if let Some(draw) = self.place(context, entity) {
+            context.clips.push(draw.clone());
+            context.draws.push(draw);
+        }
     }
 
-    /// `place` is `entity` placed in `context`'s texels: its record's
-    /// transform written, its record and its stencil's allocated, its
-    /// pipeline keyed.
-    fn place(&mut self, context: &DrawContext, entity: Entity) -> Draw {
+    /// `place` is `entity` placed in `context`'s texels: its scissor cut
+    /// from its clip coverage, its record's transform written, its record
+    /// and its stencil's allocated, its pipeline keyed. `None` when its
+    /// clips leave it no texel.
+    fn place(&mut self, context: &DrawContext, entity: Entity) -> Option<Draw> {
         let Entity {
             stencil,
             cover,
@@ -229,7 +240,9 @@ impl<'a> StepEmitter<'a> {
             mut shading,
             blend,
             z,
+            clip,
         } = entity;
+        let scissor = clip.scissor(&context.area)?;
         let stencil = stencil.map(|stencil| self.stencil(context, stencil));
         let geometry = match cover {
             Cover::Quad { transform, rect } => {
@@ -255,14 +268,15 @@ impl<'a> StepEmitter<'a> {
         // have covered it anyway.
         let opaque = shading.opaque && matches!(blend, PipelineBlend::SrcOver | PipelineBlend::Src);
         let kind = role.kind(shading.frag, opaque);
-        Draw {
+        Some(Draw {
+            scissor,
             stencil,
             key: PipelineKey::new(self.format, blend, kind),
             uniforms: self.host.alloc_uniform(shading.record.bytes()),
             bindings: shading.bindings,
             geometry,
             z,
-        }
+        })
     }
 
     /// `stencil` is a stencil write placed in `context`'s texels, at depth
@@ -298,6 +312,7 @@ impl<'a> StepEmitter<'a> {
             .record
             .set_mvp(ortho_mvp(&rect_to_unit(quad), extent, 0.0));
         Draw {
+            scissor: Scissor::whole(extent),
             stencil: None,
             key: PipelineKey::new(
                 format,

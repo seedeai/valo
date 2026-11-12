@@ -3,7 +3,8 @@
 //! replays the clips still active, so a split layer inside a split target
 //! leaves the target's pixels alone, a clip holds past a split, and a draw's
 //! stencil lands in the same pass as its cover, where nothing the next pass
-//! draws first can read it.
+//! draws first can read it. The pass a split ends resolves into a texture of
+//! its own, so nothing is copied out of the target.
 
 use valo::{BlendMode, Color, Context, DisplayListBuilder, Offscreen, Paint, Rect};
 
@@ -142,7 +143,11 @@ fn a_clip_holds_past_a_split() {
     let mut builder = DisplayListBuilder::new();
     builder.draw_rect(Rect::new(0.0, 0.0, 64.0, 32.0), &Paint::from_color(RED));
     builder.save();
-    builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+    builder.clip_rect(
+        Rect::new(0.0, 0.0, 32.0, 32.0),
+        valo::ClipOp::Intersect,
+        true,
+    );
     let (rect, paint) = multiply(Rect::new(4.0, 4.0, 8.0, 8.0));
     builder.draw_rect(rect, &paint);
     builder.draw_rect(Rect::new(0.0, 16.0, 64.0, 16.0), &Paint::from_color(BLUE));
@@ -156,4 +161,61 @@ fn a_clip_holds_past_a_split() {
         [128, 0, 0, 255],
         "the multiplied rect"
     );
+}
+
+/// A texture that can be drawn into and sampled, and not copied from.
+fn target_no_copy_reads(device: &wgpu::Device) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("split_targets.no_copy_source"),
+        size: wgpu::Extent3d {
+            width: SIZE[0],
+            height: SIZE[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: Offscreen::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
+/// The pass a split ends resolves into a texture of its own, which the next
+/// pass draws back and the reader samples: the target is written by its last
+/// pass alone and never copied from, so it needs no `COPY_SRC` usage for a
+/// destination read or a backdrop.
+#[test]
+fn a_split_copies_nothing_out_of_its_target() {
+    let Some((device, queue)) = valo_harness::headless_device() else {
+        eprintln!("SKIP a_split_copies_nothing_out_of_its_target");
+        return;
+    };
+    let mut context = Context::new(device.clone(), queue);
+    let texture = target_no_copy_reads(&device);
+    let view = texture.create_view(&Default::default());
+    let target = valo::RenderTarget {
+        view: &view,
+        texture: &texture,
+        format: Offscreen::FORMAT,
+        size: SIZE,
+        clear: Some(Color::WHITE),
+    };
+    let mut builder = DisplayListBuilder::new();
+    builder.draw_rect(Rect::new(0.0, 0.0, 32.0, 32.0), &Paint::from_color(RED));
+    let (rect, paint) = multiply(Rect::new(8.0, 8.0, 8.0, 8.0));
+    builder.draw_rect(rect, &paint);
+    builder.save_layer_backdrop(
+        Some(Rect::new(32.0, 0.0, 16.0, 16.0)),
+        &Paint::default(),
+        valo::Backdrop::blur(2.0),
+    );
+    builder.restore();
+
+    let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let stats = context.render(&builder.build(), &target);
+    let error = pollster::block_on(errors.pop());
+
+    assert_eq!(stats.snapshots, 2, "the destination read and the backdrop");
+    assert!(error.is_none(), "{error:?}");
 }

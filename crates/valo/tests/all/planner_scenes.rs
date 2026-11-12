@@ -493,6 +493,7 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
         &star(Point::new(95.0, 855.0), 55.0),
         FillRule::NonZero,
         ClipOp::Intersect,
+        true,
     );
     b.draw_rect(
         Rect::new(30.0, 795.0, 130.0, 120.0),
@@ -500,7 +501,11 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
     );
     b.restore();
     b.save();
-    b.clip_rect(Rect::new(200.0, 825.0, 60.0, 60.0), ClipOp::Difference);
+    b.clip_rect(
+        Rect::new(200.0, 825.0, 60.0, 60.0),
+        ClipOp::Difference,
+        true,
+    );
     b.draw_rect(
         Rect::new(175.0, 795.0, 130.0, 120.0),
         &Paint::from_color(Color::rgb(0.3, 0.8, 0.9)),
@@ -592,7 +597,11 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
     // visible: the ceiling is skipped entirely and the rect under it draws
     // whole.
     b.save();
-    b.clip_rect(Rect::new(7000.0, 7000.0, 50.0, 50.0), ClipOp::Difference);
+    b.clip_rect(
+        Rect::new(7000.0, 7000.0, 50.0, 50.0),
+        ClipOp::Difference,
+        true,
+    );
     b.draw_rect(
         Rect::new(30.0, 938.0, 120.0, 10.0),
         &Paint::from_color(Color::rgb(0.6, 0.9, 0.4)),
@@ -803,7 +812,12 @@ fn backdrop_under_opacity_with_clip_golden() {
         b.save();
         let mut clip = valo::PathBuilder::new();
         clip.rrect(Rect::new(55.0, 72.0, 210.0, 91.0), 24.0);
-        b.clip_path(&clip.build(), valo::FillRule::NonZero, ClipOp::Intersect);
+        b.clip_path(
+            &clip.build(),
+            valo::FillRule::NonZero,
+            ClipOp::Intersect,
+            true,
+        );
         b.save_layer_backdrop(Some(glass), &Paint::default(), Backdrop::blur(8.0));
         b.draw_rect(
             Rect::new(70.0, 90.0, 90.0, 30.0),

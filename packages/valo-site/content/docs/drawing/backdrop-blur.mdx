@@ -14,7 +14,7 @@ use valo::{Backdrop, ClipOp, Paint, Rect};
 
 let panel = Rect::new(48.0, 40.0, 240.0, 160.0);
 builder.save();
-builder.clip_rrect(panel, 18.0, ClipOp::Intersect);
+builder.clip_rrect(panel, 18.0, ClipOp::Intersect, true);
 builder.save_layer_backdrop(Some(panel), &Paint::default(), Backdrop::blur(14.0));
 builder.restore();
 builder.restore();
@@ -26,7 +26,7 @@ closes it — a glass panel with nothing painted on it. Canvas2D
 
 ```ts
 builder.save();
-builder.clipRoundedRect(x, y, w, h, new Float32Array([18]), ClipOp.Intersect);
+builder.clipRoundedRect(x, y, w, h, new Float32Array([18]), ClipOp.Intersect, true);
 builder.backdropBlur(x, y, w, h, 14);
 builder.restore();
 ```

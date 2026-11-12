@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use valo_geometry::{FillRule, Matrix, Path, PathBuilder, Rect};
+use valo_geometry::{FillRule, Matrix, Path, PathBuilder, PathElement, Point, Rect};
 
 use crate::list::Recording;
 use crate::{Backdrop, Bounds, ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling};
@@ -354,46 +354,70 @@ impl DisplayListBuilder {
     // ── clips (depth slots; expiry backpatched when the scope closes) ──────
 
     /// `clip_rect` applies a rectangular clip until the current scope ends.
-    pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp) {
+    ///
+    /// `anti_alias` says whether the clip's edge is anti-aliased, as Skia's
+    /// and Flutter's `doAntiAlias`. An Intersect clip that is not, under a
+    /// transform that only scales and moves, cuts at the nearest whole
+    /// pixels wherever the rectangle lies, and costs the renderer nothing:
+    /// what a scroll view's or a page's clip wants. An anti-aliased one
+    /// covers the pixels its edges cross in part.
+    pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
-        self.clip_path(&rect_path(rect), FillRule::NonZero, op);
+        self.clip_path(&rect_path(rect), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_rrect` applies a rounded-rectangle clip with one corner radius.
-    pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp) {
+    ///
+    /// `anti_alias` is recorded and, for now, changes nothing: a rounded
+    /// rectangle's edge is anti-aliased either way, as in Impeller.
+    pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
-        self.clip_rrect_radii(rect, [radius; 4], op);
+        self.clip_rrect_radii(rect, [radius; 4], op, anti_alias);
     }
 
     /// `clip_rrect_radii` applies a rounded-rectangle clip with per-corner radii.
     ///
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
-    pub fn clip_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], op: ClipOp) {
+    /// `anti_alias` is as [`Self::clip_rrect`]'s.
+    pub fn clip_rrect_radii(
+        &mut self,
+        rect: impl Into<Rect>,
+        radii: [f32; 4],
+        op: ClipOp,
+        anti_alias: bool,
+    ) {
         let rect = positive_rect(rect.into());
         let mut p = PathBuilder::new();
         p.rrect_radii(rect, radii);
-        self.clip_path(&p.build(), FillRule::NonZero, op);
+        self.clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_rrect_radii_elliptical` applies per-corner elliptical radii.
     ///
     /// Each clockwise corner is `[x_radius, y_radius]`, starting at the top-left.
+    /// `anti_alias` is as [`Self::clip_rrect`]'s.
     pub fn clip_rrect_radii_elliptical(
         &mut self,
         rect: impl Into<Rect>,
         radii: [[f32; 2]; 4],
         op: ClipOp,
+        anti_alias: bool,
     ) {
         let rect = positive_rect(rect.into());
         if let Some(circular) = circular_radii(radii) {
-            return self.clip_rrect_radii(rect, circular, op);
+            return self.clip_rrect_radii(rect, circular, op, anti_alias);
         }
         let mut p = PathBuilder::new();
         p.rrect_radii_elliptical(rect, radii);
-        self.clip_path(&p.build(), FillRule::NonZero, op);
+        self.clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_path` applies a path clip until the current scope ends.
+    ///
+    /// `anti_alias` says whether the clip's edge is anti-aliased. It changes
+    /// what is drawn only for a path that is an axis-aligned rectangle, as
+    /// [`Self::clip_rect`] says; any other shape's edge is anti-aliased
+    /// either way, for now, as in Impeller.
     ///
     /// Clips do NOT forfeit an enclosing layer's elision (Flutter's
     /// opacity distribution ignores clips too): a depth clip records its
@@ -402,12 +426,18 @@ impl DisplayListBuilder {
     /// clip-cropped when the disjointness check reads them. The Cupertino
     /// dialog depends on this — fade → clip → backdrop must keep the fade
     /// elidable or the glass snapshots a cleared offscreen.
-    pub fn clip_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, op: ClipOp) {
+    pub fn clip_path(
+        &mut self,
+        path: &Arc<Path>,
+        fill_rule: FillRule,
+        op: ClipOp,
+        anti_alias: bool,
+    ) {
         if self.top().clip.is_nop() {
             return;
         }
-        let bounds = Bounds::of(path.bounds()).map(&self.top().transform);
-        self.shrink_clip(op, bounds);
+        let transform = self.top().transform;
+        self.shrink_clip(op, Bounds::of(path.bounds()).map(&transform));
         if self.top().clip.is_nop() {
             // The clip leaves the scope nothing, so the scope records
             // nothing more, this clip included (Flutter's `is_nop`).
@@ -419,6 +449,9 @@ impl DisplayListBuilder {
             path: Arc::clone(path),
             fill_rule,
             op,
+            anti_alias,
+            bounds: transform.map_rect(&path.bounds()),
+            is_axis_aligned_rect: is_rect(path) && scales_and_moves(&transform),
             expiry_slot: 0, // backpatched by expire_clips
         });
     }
@@ -640,8 +673,9 @@ impl DisplayListBuilder {
                 path,
                 fill_rule,
                 op,
+                anti_alias,
                 ..
-            } => self.clip_path(path, *fill_rule, *op),
+            } => self.clip_path(path, *fill_rule, *op, *anti_alias),
             Op::DrawImage {
                 image,
                 src,
@@ -972,6 +1006,40 @@ fn rect_path(r: Rect) -> Arc<Path> {
     p.build()
 }
 
+/// `is_rect` reports whether `path` is one closed contour of four corners
+/// with every side along an axis, as [`PathBuilder::rect`] builds: its shape
+/// is its bounds (Flutter's builder asks a clip path the same, `IsRect`).
+fn is_rect(path: &Path) -> bool {
+    let mut elements = path.elements();
+    let mut corners = [Point::default(); 4];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        *corner = match (index, elements.next()) {
+            (0, Some(PathElement::MoveTo(point))) => point,
+            (1.., Some(PathElement::LineTo(point))) => point,
+            _ => return false,
+        };
+    }
+    let closed = elements.next() == Some(PathElement::Close) && elements.next().is_none();
+    closed && sides_follow_axes(&corners)
+}
+
+/// `sides_follow_axes` reports whether the closed polygon through `corners`
+/// has every side along an axis, starting with either one.
+fn sides_follow_axes(corners: &[Point; 4]) -> bool {
+    let [a, b, c, d] = corners;
+    let starts_along_x = a.y == b.y && b.x == c.x && c.y == d.y && d.x == a.x;
+    let starts_along_y = a.x == b.x && b.y == c.y && c.x == d.x && d.y == a.y;
+    starts_along_x || starts_along_y
+}
+
+/// `scales_and_moves` reports whether `transform` only scales and moves, so
+/// a rectangle's sides stay along the axes under it: Impeller's
+/// `IsTranslationScaleOnly`, a mirror included.
+fn scales_and_moves(transform: &Matrix) -> bool {
+    let [scale_x, shear_y, shear_x, scale_y, ..] = transform.to_affine();
+    transform.is_affine() && shear_y == 0.0 && shear_x == 0.0 && scale_x != 0.0 && scale_y != 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,6 +1087,75 @@ mod tests {
 
     fn alpha_layer(a: f32) -> Paint {
         Paint::from_color(Color::rgba(0.0, 0.0, 0.0, a))
+    }
+
+    /// What the one clip `record` records says of its shape: its bounds,
+    /// whether it is a rectangle along the list's axes, and whether its
+    /// edge is anti-aliased.
+    fn recorded_clip(record: impl FnOnce(&mut DisplayListBuilder)) -> (Rect, bool, bool) {
+        let mut b = DisplayListBuilder::new();
+        record(&mut b);
+        let dl = b.build();
+        match find_clip(&dl).0 {
+            Op::ClipPath {
+                anti_alias,
+                bounds,
+                is_axis_aligned_rect,
+                ..
+            } => (*bounds, *is_axis_aligned_rect, *anti_alias),
+            other => unreachable!("find_clip finds clips, not {other:?}"),
+        }
+    }
+
+    /// A clip records its shape's bounds in the list's space, with its
+    /// edge's flag, and that it is a rectangle along the list's axes when
+    /// it is one under a transform that only scales and moves, a mirror
+    /// included: the facts the renderer plans the clip from.
+    #[test]
+    fn a_clip_records_its_bounds_its_edge_and_whether_it_is_an_axis_aligned_rect() {
+        let rect = Rect::new(1.0, 2.0, 3.0, 4.0);
+        let placed = recorded_clip(|b| {
+            b.translate(10.0, 20.0);
+            b.scale(2.0, 3.0);
+            b.clip_rect(rect, ClipOp::Intersect, false);
+        });
+        assert_eq!(placed, (Rect::new(12.0, 26.0, 6.0, 12.0), true, false));
+
+        let mirrored = recorded_clip(|b| {
+            b.scale(-1.0, 1.0);
+            b.clip_rect(rect, ClipOp::Intersect, true);
+        });
+        assert_eq!(mirrored, (Rect::new(-4.0, 2.0, 3.0, 4.0), true, true));
+
+        let (_, turned_is_rect, _) = recorded_clip(|b| {
+            b.rotate(0.5);
+            b.clip_rect(rect, ClipOp::Intersect, true);
+        });
+        assert!(!turned_is_rect, "a turned rectangle's sides leave the axes");
+
+        let rounded = recorded_clip(|b| b.clip_rrect(rect, 1.0, ClipOp::Intersect, false));
+        assert_eq!(rounded, (rect, false, false));
+
+        let as_a_path = recorded_clip(|b| {
+            b.clip_path(
+                &rect_path(rect),
+                FillRule::EvenOdd,
+                ClipOp::Difference,
+                true,
+            )
+        });
+        assert_eq!(as_a_path, (rect, true, true), "a path that is a rectangle");
+    }
+
+    /// Replaying a clip's op records the clip as its call did, its edge's
+    /// flag with it.
+    #[test]
+    fn replaying_a_clip_keeps_its_edge() {
+        let mut first = DisplayListBuilder::new();
+        first.clip_rect(Rect::new(0.5, 0.5, 8.0, 8.0), ClipOp::Intersect, false);
+        let first = first.build();
+        let replayed = recorded_clip(|b| b.replay(find_clip(&first).0));
+        assert_eq!(replayed, (Rect::new(0.5, 0.5, 8.0, 8.0), true, false));
     }
 
     fn find_clip(dl: &DisplayList) -> (&Op, u32) {
@@ -1083,7 +1220,7 @@ mod tests {
     fn clip_shrinks_recorded_draw_bounds() {
         let mut b = DisplayListBuilder::new();
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(25.0, 25.0, 100.0, 100.0), &red());
         b.restore();
         let dl = b.build();
@@ -1097,7 +1234,7 @@ mod tests {
     fn fully_clipped_draw_is_dropped() {
         let mut b = DisplayListBuilder::new();
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(500.0, 500.0, 10.0, 10.0), &red());
         b.restore();
         let dl = b.build();
@@ -1109,7 +1246,7 @@ mod tests {
         let mut b = DisplayListBuilder::new();
         b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red()); // slot 1
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red()); // slot 2
         b.restore(); // slot 3 = expiry
         b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red()); // slot 4
@@ -1122,7 +1259,7 @@ mod tests {
     #[test]
     fn root_clip_expires_at_end_of_list() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 10.0, 10.0), &red()); // slot 1
         let dl = b.build();
         let (_, expiry) = find_clip(&dl);
@@ -1134,7 +1271,7 @@ mod tests {
     fn difference_clip_keeps_bounds_conservative() {
         let mut b = DisplayListBuilder::new();
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Difference);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Difference, true);
         b.draw_rect(Rect::new(0.0, 0.0, 100.0, 100.0), &red());
         b.restore();
         let dl = b.build();
@@ -1230,7 +1367,7 @@ mod tests {
     fn a_layer_records_unbounded_content_and_clip() {
         let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect, true);
         b.save_layer(None, &alpha_layer(0.5));
         b.draw_rect(
             Rect::new(4.0, 4.0, 4.0, 4.0),
@@ -1301,10 +1438,10 @@ mod tests {
     fn a_clip_that_leaves_nothing_makes_its_scope_a_nop() {
         let mut b = DisplayListBuilder::new();
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
-        b.clip_rect(Rect::new(20.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect, true);
+        b.clip_rect(Rect::new(20.0, 0.0, 10.0, 10.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
-        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Difference);
+        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Difference, true);
         b.save_layer(
             None,
             &Paint {
@@ -1336,7 +1473,7 @@ mod tests {
     #[test]
     fn a_mask_whose_hint_misses_the_clip_is_recorded_with_an_empty_clip() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 10.0, 10.0), ClipOp::Intersect, true);
         b.save_layer_mask(Some(Rect::new(20.0, 0.0, 10.0, 10.0)), MaskKind::Alpha);
         b.draw_rect(Rect::new(20.0, 0.0, 10.0, 10.0), &red());
         b.restore();
@@ -1493,7 +1630,7 @@ mod tests {
         let fill_red = crate::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
         let bounds = |paint: Paint| {
             let mut b = DisplayListBuilder::new();
-            b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect);
+            b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect, true);
             b.draw_rect(Rect::new(4.0, 4.0, 4.0, 4.0), &paint);
             b.build().bounds()
         };
@@ -1516,7 +1653,7 @@ mod tests {
     #[test]
     fn destructive_layer_composite_floods_the_active_clip() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(4.0, 6.0, 80.0, 60.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(4.0, 6.0, 80.0, 60.0), ClipOp::Intersect, true);
         b.save_layer(
             None,
             &Paint {
@@ -1549,7 +1686,7 @@ mod tests {
     #[test]
     fn a_clip_around_a_layer_does_not_crop_its_content() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.save_layer(
             None,
             &Paint {
@@ -1574,7 +1711,7 @@ mod tests {
     #[test]
     fn a_blurred_layer_keeps_children_its_blur_reaches_across_the_clip() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.save_layer(
             None,
             &Paint {
@@ -1598,7 +1735,7 @@ mod tests {
     #[test]
     fn a_save_layer_drops_its_mask_blur() {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.save_layer(
             None,
             &Paint {
@@ -1623,7 +1760,7 @@ mod tests {
     fn a_clip_inside_a_layer_crops_its_content() {
         let mut b = DisplayListBuilder::new();
         b.save_layer(None, &alpha_layer(0.5));
-        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 30.0, 30.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(20.0, 20.0, 30.0, 30.0), &red());
         b.restore();
         let dl = b.build();
@@ -1663,7 +1800,7 @@ mod tests {
     fn clip_inside_layer_keeps_elision() {
         let mut b = DisplayListBuilder::new();
         b.save_layer(None, &alpha_layer(0.5));
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red());
         b.restore();
         let (_, _, _, can_elide) = find_layer(&b.build());
@@ -1759,7 +1896,7 @@ mod tests {
         let mut b = DisplayListBuilder::new();
         b.save_layer(None, &alpha_layer(0.5)); // base_slot = 0
         b.save();
-        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 30.0, 30.0), &red()); // slot 1
         b.restore(); // slot 2 = expiry
         b.restore(); // composite = slot 3
@@ -1902,7 +2039,7 @@ mod tests {
         b.save();
         let mut clip = PathBuilder::new();
         clip.rect(Rect::new(0.0, 0.0, 60.0, 60.0));
-        b.clip_path(&clip.build(), FillRule::NonZero, ClipOp::Intersect);
+        b.clip_path(&clip.build(), FillRule::NonZero, ClipOp::Intersect, true);
         glass(&mut b, Rect::new(0.0, 0.0, 50.0, 50.0), 4.0, None);
         b.restore();
         b.restore();
@@ -1949,7 +2086,7 @@ mod tests {
         let mut b = DisplayListBuilder::new();
         b.save();
         b.translate(10.0, 5.0);
-        b.clip_rect(Rect::new(0.0, 0.0, 80.0, 60.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 80.0, 60.0), ClipOp::Intersect, true);
         b.save_layer(
             Some(Rect::new(0.0, 0.0, 40.0, 40.0)),
             &Paint {

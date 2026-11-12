@@ -35,7 +35,7 @@ fn swap_red_and_green() -> ImageFilter {
 /// and `hint`, under a clip of most of the target.
 fn layered(filter: ImageFilter, hint: Option<Rect>, square: Rect) -> valo::DisplayList {
     let mut b = DisplayListBuilder::new();
-    b.clip_rect(Rect::new(8.0, 8.0, 144.0, 144.0), ClipOp::Intersect);
+    b.clip_rect(Rect::new(8.0, 8.0, 144.0, 144.0), ClipOp::Intersect, true);
     b.save_layer(
         hint,
         &Paint {
@@ -136,7 +136,7 @@ fn a_filtered_draws_composed_blur_is_unchanged() {
     };
     let drawn = |context: &mut Context, blur: ImageFilter| {
         let mut b = DisplayListBuilder::new();
-        b.clip_rect(Rect::new(8.0, 8.0, 144.0, 144.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(8.0, 8.0, 144.0, 144.0), ClipOp::Intersect, true);
         b.draw_rect(
             square(),
             &Paint {

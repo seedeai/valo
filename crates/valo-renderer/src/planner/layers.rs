@@ -232,7 +232,7 @@ pub(super) enum Opened {
     Elided(f32),
     /// A real offscreen, the top context now: the restore closes it and
     /// draws it into the parent as this says.
-    Layer(LayerComposite),
+    Layer(Box<LayerComposite>),
 }
 
 impl Planner<'_> {
@@ -247,7 +247,7 @@ impl Planner<'_> {
         match LayerPlan::of(&layer, &self.contexts.top().area) {
             LayerPlan::Skip { erase } => {
                 if erase {
-                    self.drawing().erase_alpha(layer.at.z);
+                    self.drawing().erase_alpha(&layer.at);
                 }
                 Opened::Skip
             }
@@ -267,7 +267,7 @@ impl Planner<'_> {
                 if let Some(seed) = seed {
                     self.draw_backdrop_seed(&seed);
                 }
-                Opened::Layer(*composite)
+                Opened::Layer(composite)
             }
         }
     }
@@ -411,22 +411,24 @@ impl Planner<'_> {
 
 impl Drawing<'_, '_> {
     /// `draw_mask_composite` samples the `mask` layer across the WHOLE
-    /// enclosing context and multiplies it in via DstIn — outside the
-    /// mask's rect the fragment forces coverage 0, which is what erases
-    /// unmasked content.
+    /// enclosing context, inside the clips at `at`, and multiplies it in
+    /// via DstIn — outside the mask's rect the fragment forces coverage 0,
+    /// which is what erases unmasked content.
     fn draw_mask_composite(&mut self, mask: &Snapshot, kind: MaskKind, at: &DrawState) {
         let shading = self.emit.mask_composite_shading(mask, kind, at.alpha);
-        self.erase_by(shading, at.z);
+        self.erase_by(shading, at);
     }
 
     /// `erase_alpha` composites DstIn with zero source alpha over the whole
-    /// context — the "mask never rendered" result (coverage 0 everywhere).
-    fn erase_alpha(&mut self, z: f32) {
-        self.erase_by(Shading::solid([0.0; 4]), z);
+    /// context, inside the clips at `at` — the "mask never rendered" result
+    /// (coverage 0 everywhere).
+    fn erase_alpha(&mut self, at: &DrawState) {
+        self.erase_by(Shading::solid([0.0; 4]), at);
     }
 
-    /// `erase_by` multiplies the whole context by `shading`'s alpha, DstIn.
-    fn erase_by(&mut self, shading: Shading, z: f32) {
+    /// `erase_by` multiplies the whole context by `shading`'s alpha, DstIn,
+    /// at `at`'s depth and inside its clips.
+    fn erase_by(&mut self, shading: Shading, at: &DrawState) {
         let entity = Entity {
             stencil: None,
             cover: Cover::Quad {
@@ -436,7 +438,8 @@ impl Drawing<'_, '_> {
             role: Role::Fill,
             shading,
             blend: PipelineBlend::DstIn,
-            z,
+            z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -575,6 +578,7 @@ mod tests {
                 transform: Matrix::translation(3.0, 4.0),
                 z: 0.5,
                 alpha: 0.5,
+                clip: ClipCoverage::Unclipped,
             },
             ..layer(&paint, Rect::new(12.0, 34.0, 2.0, 2.0))
         };
@@ -624,6 +628,7 @@ mod tests {
         );
     }
 
+    use crate::planner::clip_coverage::ClipCoverage;
     use crate::planner::filter_tree::FilterInput;
     use crate::planner::gaussian::sigma_for_blur_radius;
     use valo_dl::{ImageFilter, TileMode};

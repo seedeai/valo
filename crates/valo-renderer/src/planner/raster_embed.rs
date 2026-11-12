@@ -112,6 +112,7 @@ impl Drawing<'_, '_> {
             shading: self.emit.raster_shading(&source.view, &sampled, at.alpha),
             blend: PipelineBlend::SrcOver,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }

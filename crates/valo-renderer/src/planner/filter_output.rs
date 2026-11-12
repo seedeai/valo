@@ -140,7 +140,7 @@ impl Planner<'_> {
     fn composite_blended(&mut self, output: FilterOutput<'_>, mode: AdvancedBlend, at: &DrawState) {
         let quad = output.coverage();
         let (source, alpha) = self.materialize_for_blend(output, at.alpha);
-        let destination = self.split_for_copy(at.z);
+        let destination = self.split_for_read(at.z);
         let composite = DrawState { alpha, ..*at };
         self.drawing()
             .draw_blended_snapshot(&source, &quad, &destination.view, mode, &composite);
@@ -216,8 +216,8 @@ impl Drawing<'_, '_> {
             }
             FilterOutput::Clipped { blur, clip } => {
                 let shape_at = at.with_transform(at.transform.then(&clip.transform));
-                self.clip_to_shape(&clip.shape, clip.op, &shape_at);
-                self.draw_snapshot(blur, blend, at);
+                let coverage = self.clip_to_shape(&clip.shape, clip.op, &shape_at);
+                self.draw_snapshot(blur, blend, &at.clipped_to(coverage));
             }
             FilterOutput::Solid { sharp, blur } => {
                 self.draw_snapshot(sharp, blend, at);
@@ -262,6 +262,7 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }

@@ -194,7 +194,13 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
 
         // A stroked, rotated path with round caps under a rrect clip.
         valo_builder_save(builder);
-        valo_builder_clip_rounded_rect(builder, rect(20.0, 110.0, 150.0, 100.0), circular(20.0), 0);
+        valo_builder_clip_rounded_rect(
+            builder,
+            rect(20.0, 110.0, 150.0, 100.0),
+            circular(20.0),
+            0,
+            true,
+        );
         valo_builder_translate(builder, 30.0, 120.0);
         valo_builder_rotate(builder, FRAC_PI_8);
         let path = valo_path_new();
@@ -296,6 +302,7 @@ fn c_scene_matches_the_rust_scene_byte_for_byte() {
         valo::Rect::new(20.0, 110.0, 150.0, 100.0),
         [[20.0; 2]; 4],
         valo::ClipOp::Intersect,
+        true,
     );
     b.translate(30.0, 120.0);
     b.rotate(FRAC_PI_8);

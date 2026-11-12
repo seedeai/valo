@@ -1,9 +1,9 @@
 //! Backdrops: a save layer that opens pre-filled with the filtered scene
 //! beneath it, the glass its children paint over (Flutter's `saveLayer`
-//! with a backdrop). The parent is copied BEFORE the layer's texture opens —
-//! the whole point of backdrop-as-a-layer-property: the glass shows the real
-//! scene, not a fresh offscreen — and the backdrop's filter tree renders
-//! over that copy. Keyed tiles of one group share the first tile's result
+//! with a backdrop). The parent is split and read BEFORE the layer's texture
+//! opens — the whole point of backdrop-as-a-layer-property: the glass shows
+//! the real scene, not a fresh offscreen — and the backdrop's filter tree
+//! renders over what the parent held. Keyed tiles of one group share the first tile's result
 //! (Impeller's `shared_filter_snapshot`).
 
 use rustc_hash::FxHashMap;
@@ -159,8 +159,8 @@ impl Planner<'_> {
         );
     }
 
-    /// `render_backdrop` copies the parent before the layer opens, then
-    /// renders the backdrop's filter tree over that copy. `hint` is what the
+    /// `render_backdrop` splits the parent before the layer opens, then
+    /// renders the backdrop's filter tree over what it held. `hint` is what the
     /// backdrop has to cover, in replay coordinates (Impeller's coverage
     /// hint: the new layer); `composite`'s transform maps the filter's local
     /// coordinates into replay coordinates, and the parent draws on after
@@ -172,7 +172,7 @@ impl Planner<'_> {
         composite: &DrawState,
     ) -> Option<FilterOutput<'static>> {
         let local_to_target = &composite.transform;
-        let parent = self.split_for_copy(composite.z);
+        let parent = self.split_for_read(composite.z);
         // An unspecified blur on a backdrop mirrors, as dart:ui's
         // `pushBackdropFilter` gives it.
         let tree = FilterInput::Source.with_image_filter(Some(filter), TileMode::Mirror);

@@ -1,7 +1,8 @@
 //! The encoder: a [`FramePlan`] replayed into one command encoder, blindly —
 //! every decision is the planner's. Each pass runs its copies, begins its
 //! render pass with the load and store ops its kind gives its attachments,
-//! and draws its draws, a draw's stencil right before it.
+//! and draws its draws, each inside its scissor, a draw's stencil right
+//! before it.
 //!
 //! The encoder draws with the pipelines [`PipelineCache::compile`] compiled
 //! for the plan: a render pass borrows them for as long as it records.
@@ -9,7 +10,7 @@
 //! [`PipelineCache::compile`]: crate::PipelineCache::compile
 
 use crate::frame::{
-    Bindings, ContextAttachments, Draw, FramePlan, Geometry, Mesh, PassTarget, TextureCopy,
+    Bindings, ContextAttachments, Draw, FramePlan, Geometry, Mesh, PassTarget, Scissor, TextureCopy,
 };
 use crate::gpu_timer::GpuTimer;
 use crate::host_buffer::{HostBuffer, UniformSlot};
@@ -46,6 +47,7 @@ impl Encoder<'_> {
                 host: self.host,
                 pipelines: self.pipelines,
                 bound: None,
+                scissor: None,
                 stats: &mut stats,
             };
             for draw in pass.target.draws() {
@@ -56,19 +58,23 @@ impl Encoder<'_> {
     }
 }
 
-/// `DrawRecorder` records one pass's draws, switching pipelines only where
-/// the key changes.
+/// `DrawRecorder` records one pass's draws, switching pipelines and
+/// scissors only where they change.
 struct DrawRecorder<'e, 'r> {
     pass: wgpu::RenderPass<'e>,
     host: &'r HostBuffer,
     pipelines: &'r CompiledPipelines<'r>,
     bound: Option<PipelineKey>,
+    /// The scissor the pass was last told; `None` before its first draw.
+    scissor: Option<Scissor>,
     stats: &'r mut EncodeStats,
 }
 
 impl DrawRecorder<'_, '_> {
-    /// `draw` records one draw: its stencil, then the draw itself.
+    /// `draw` records one draw inside its scissor: its stencil, then the
+    /// draw itself.
     fn draw(&mut self, draw: &Draw) {
+        self.use_scissor(draw.scissor);
         if let Some(stencil) = &draw.stencil {
             self.use_pipeline(stencil.key);
             self.bind_uniforms(stencil.uniforms);
@@ -83,6 +89,14 @@ impl DrawRecorder<'_, '_> {
                 self.stats.draw_calls += 1;
             }
             Geometry::Mesh(mesh) => self.draw_mesh(mesh),
+        }
+    }
+
+    fn use_scissor(&mut self, scissor: Scissor) {
+        if self.scissor != Some(scissor) {
+            self.pass
+                .set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+            self.scissor = Some(scissor);
         }
     }
 

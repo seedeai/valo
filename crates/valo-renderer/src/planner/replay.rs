@@ -4,10 +4,11 @@
 //! culls a draw and routes it.
 //!
 //! [`ReplayState`] keeps the per-list walk state in ONE place — a scope
-//! entry holds the transform, the depth base and the group alpha together
-//! with what its `Restore` must undo, because they push and pop at the same
-//! moments (Skia's `MCRec`, Impeller's `CanvasStackEntry` with its
-//! `distributed_opacity`). A materialized layer's composite rides its scope
+//! entry holds the transform, the depth base, the clip coverage and the
+//! group alpha together with what its `Restore` must undo, because they
+//! push and pop at the same moments (Skia's `MCRec`, Impeller's
+//! `CanvasStackEntry` with its `distributed_opacity`, and the layer of its
+//! clip coverage stack that a restore pops). A materialized layer's composite rides its scope
 //! entry until the restore closes it (Impeller's `SaveLayerState`). A nested
 //! list gets a child state of its own, so nothing about the parent's walk
 //! has to be saved and put back — including the keyed backdrop-blur cache,
@@ -21,6 +22,7 @@ use valo_dl::{DisplayList, MaskBlur, Op, Paint};
 use valo_geometry::{Matrix, Rect};
 
 use super::backdrop::SharedBackdrop;
+use super::clip_coverage::{scales_and_moves, ClipCoverage, ClipShape};
 use super::draw_state::DrawState;
 use super::layers::{LayerComposite, Opened, ResolvedLayer};
 use super::source::{DrawSource, GlyphRun, Shape};
@@ -55,6 +57,11 @@ struct ScopeEntry {
     /// materialized layer's children start again at 1: its composite takes
     /// the value of the scope around it.
     group_alpha: f32,
+    /// Where the clips made so far in this scope and around it let its
+    /// draws show (Impeller's current clip coverage). A materialized
+    /// layer's children start unclipped: the clips around the layer are in
+    /// its parent, where its composite meets them.
+    clip: ClipCoverage,
     on_restore: RestoreAction,
 }
 
@@ -65,42 +72,50 @@ pub(super) enum RestoreAction {
     /// A plain `save` or an elided layer: popping the entry is all of it.
     None,
     /// A materialized layer: close its target and draw it into the parent.
-    CloseLayer(LayerComposite),
+    CloseLayer(Box<LayerComposite>),
 }
 
 impl ReplayState {
     /// `root` is the outermost list's state: identity base, slots from zero,
-    /// no group alpha.
+    /// no group alpha, no clip.
     pub fn root() -> Self {
-        Self::rooted_at(Matrix::IDENTITY, 0, 1.0, false)
+        Self::rooted_at(Matrix::IDENTITY, 0, 1.0, ClipCoverage::Unclipped, false)
     }
 
     /// `embedded` is the state of a list embedded in the current scope with
     /// its slots from `base_slot`: rooted at the scope's transform, its
     /// slots placed on the same depth line, drawn at the scope's group
-    /// alpha.
+    /// alpha, inside the scope's clips.
     pub fn embedded(&self, base_slot: u32) -> Self {
         let top = self.top();
         Self::rooted_at(
             top.transform,
             top.slot_offset + base_slot,
             top.group_alpha,
+            top.clip,
             self.filling_raster,
         )
     }
 
     /// `raster_fill` is the state of a list replayed into its cache texture
-    /// under `base`: slots from zero, no group alpha.
+    /// under `base`: slots from zero, no group alpha, no clip.
     pub fn raster_fill(base: Matrix) -> Self {
-        Self::rooted_at(base, 0, 1.0, true)
+        Self::rooted_at(base, 0, 1.0, ClipCoverage::Unclipped, true)
     }
 
-    fn rooted_at(base: Matrix, slot_offset: u32, group_alpha: f32, filling_raster: bool) -> Self {
+    fn rooted_at(
+        base: Matrix,
+        slot_offset: u32,
+        group_alpha: f32,
+        clip: ClipCoverage,
+        filling_raster: bool,
+    ) -> Self {
         Self {
             scopes: vec![ScopeEntry {
                 transform: base,
                 slot_offset,
                 group_alpha,
+                clip,
                 on_restore: RestoreAction::None,
             }],
             base,
@@ -124,6 +139,27 @@ impl ReplayState {
         self.base.map_rect(bounds)
     }
 
+    /// `clip_shape` is what the plan of `clip`, a recorded `ClipPath`,
+    /// reads of its shape in this replay: its recorded bounds in the
+    /// target's coordinates, and its rectangle still along the pixel grid
+    /// when what the list is drawn under only scales and moves it.
+    pub fn clip_shape(&self, clip: &Op) -> ClipShape {
+        let Op::ClipPath {
+            anti_alias,
+            bounds,
+            is_axis_aligned_rect,
+            ..
+        } = clip
+        else {
+            unreachable!("replay asks the shape of ClipPath ops only, not {clip:?}");
+        };
+        ClipShape {
+            bounds: self.device_bounds(bounds),
+            is_rect: *is_axis_aligned_rect && scales_and_moves(&self.base),
+            anti_alias: *anti_alias,
+        }
+    }
+
     /// `absolute` places a slot the list recorded on the target's depth
     /// line.
     pub fn absolute(&self, slot: u32) -> u32 {
@@ -136,31 +172,33 @@ impl ReplayState {
         top.transform = top.transform.then(local);
     }
 
+    /// `clip_to` leaves the current scope's draws `coverage` from here on:
+    /// what a clip made in it returned. The scope's restore ends it.
+    fn clip_to(&mut self, coverage: ClipCoverage) {
+        let top = self.scopes.last_mut().expect("builder balances scopes");
+        top.clip = coverage;
+    }
+
     /// `save` opens a plain scope.
     fn save(&mut self) {
         let top = self.top();
-        self.push_scope(top.slot_offset, top.group_alpha, RestoreAction::None);
+        self.push_scope(top.group_alpha, top.clip, RestoreAction::None);
     }
 
     /// `save_elided` opens an elided opacity layer's scope: its children are
     /// drawn in the parent at the group alpha times `alpha` (Impeller's
-    /// opacity peephole).
+    /// opacity peephole), inside the parent's clips.
     fn save_elided(&mut self, alpha: f32) {
         let top = self.top();
-        self.push_scope(
-            top.slot_offset,
-            top.group_alpha * alpha,
-            RestoreAction::None,
-        );
+        self.push_scope(top.group_alpha * alpha, top.clip, RestoreAction::None);
     }
 
     /// `save_layer` opens a materialized layer's scope: its children are
-    /// drawn into the layer at no group alpha, and its restore draws
-    /// `composite`.
-    fn save_layer(&mut self, composite: LayerComposite) {
-        let top = self.top();
+    /// drawn into the layer at no group alpha and under no clip, and its
+    /// restore draws `composite`.
+    fn save_layer(&mut self, composite: Box<LayerComposite>) {
         let on_restore = RestoreAction::CloseLayer(composite);
-        self.push_scope(top.slot_offset, 1.0, on_restore);
+        self.push_scope(1.0, ClipCoverage::Unclipped, on_restore);
     }
 
     /// `restore` closes the innermost scope and returns what it leaves to do.
@@ -169,11 +207,15 @@ impl ReplayState {
         entry.on_restore
     }
 
-    fn push_scope(&mut self, slot_offset: u32, group_alpha: f32, on_restore: RestoreAction) {
+    /// `push_scope` opens a scope at the current one's transform and
+    /// slots.
+    fn push_scope(&mut self, group_alpha: f32, clip: ClipCoverage, on_restore: RestoreAction) {
+        let top = self.top();
         self.scopes.push(ScopeEntry {
-            transform: self.top().transform,
-            slot_offset,
+            transform: top.transform,
+            slot_offset: top.slot_offset,
             group_alpha,
+            clip,
             on_restore,
         });
     }
@@ -202,7 +244,7 @@ impl Planner<'_> {
                 }
                 Op::Restore => {
                     if let RestoreAction::CloseLayer(composite) = state.restore() {
-                        self.close_layer(composite);
+                        self.close_layer(*composite);
                     }
                 }
                 Op::ClipPath {
@@ -210,11 +252,12 @@ impl Planner<'_> {
                     fill_rule,
                     op: clip_op,
                     expiry_slot,
+                    ..
                 } => {
-                    // Never bounds-culled: an Intersect ceiling covers the
-                    // whole target MINUS the shape.
                     let at = self.draw_state(state, *expiry_slot);
-                    self.drawing().clip(path, *fill_rule, *clip_op, &at);
+                    let shape = state.clip_shape(op);
+                    let coverage = self.drawing().clip(path, *fill_rule, *clip_op, &shape, &at);
+                    state.clip_to(coverage);
                 }
                 Op::DrawDisplayList {
                     list,
@@ -275,8 +318,8 @@ impl Planner<'_> {
     }
 
     /// `draw_state` is what a draw the list recorded at `slot` is handed:
-    /// the scope's transform and group alpha, and the slot's depth. The
-    /// depth buffer clears to zero and draws test `GreaterEqual`.
+    /// the scope's transform, clip coverage and group alpha, and the slot's
+    /// depth. The depth buffer clears to zero and draws test `GreaterEqual`.
     pub(super) fn draw_state(&self, state: &ReplayState, slot: u32) -> DrawState {
         self.at_slot(state, state.absolute(slot))
     }
@@ -289,6 +332,7 @@ impl Planner<'_> {
             transform: top.transform,
             z: self.contexts.top().depth.z(slot),
             alpha: top.group_alpha,
+            clip: top.clip,
         }
     }
 }

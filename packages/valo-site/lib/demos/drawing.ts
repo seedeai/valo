@@ -75,8 +75,8 @@ export default function draw({ builder, width, height }) {
   const x = width * 0.58;
   const y = height * 0.5 - 58;
   builder.save();
-  builder.clipRoundedRect(x, y, 116, 116, new Float32Array([18]), ClipOp.Intersect);
-  builder.clipRect(x + 34, y + 34, 48, 48, ClipOp.Difference);
+  builder.clipRoundedRect(x, y, 116, 116, new Float32Array([18]), ClipOp.Intersect, true);
+  builder.clipRect(x + 34, y + 34, 48, 48, ClipOp.Difference, true);
   builder.drawRect(x, y, 116, 116, lime);
   builder.restore();
 
@@ -249,7 +249,7 @@ export default function draw({ builder, width, height }) {
 
   const paint = new Paint(1, 1, 1, 1);
   builder.save();
-  builder.clipRoundedRect(dx, dy, dw, dh, new Float32Array([18]), ClipOp.Intersect);
+  builder.clipRoundedRect(dx, dy, dw, dh, new Float32Array([18]), ClipOp.Intersect, true);
   builder.drawImageRect(
     cat,
     0, 0, cat.width, cat.height,
@@ -324,7 +324,7 @@ export default function draw({ builder, width, height, time }) {
     h: height * 0.58,
   };
   builder.save();
-  builder.clipRoundedRect(glass.x, glass.y, glass.w, glass.h, new Float32Array([18]), ClipOp.Intersect);
+  builder.clipRoundedRect(glass.x, glass.y, glass.w, glass.h, new Float32Array([18]), ClipOp.Intersect, true);
   builder.backdropBlur(glass.x, glass.y, glass.w, glass.h, 14);
   builder.restore();
 

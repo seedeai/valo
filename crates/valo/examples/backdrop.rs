@@ -44,7 +44,7 @@ fn busy_background(b: &mut DisplayListBuilder) {
 
 fn glass_panel(b: &mut DisplayListBuilder, rect: Rect, sigma: f32, shared: Option<u64>) {
     b.save();
-    b.clip_rrect(rect, 18.0, ClipOp::Intersect);
+    b.clip_rrect(rect, 18.0, ClipOp::Intersect, true);
     b.save_layer_backdrop(
         Some(rect),
         &Paint::default(),

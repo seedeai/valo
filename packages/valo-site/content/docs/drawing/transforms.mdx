@@ -13,8 +13,8 @@ builder.translate(160.0, 110.0);
 builder.rotate(0.2);
 builder.scale(1.2, 1.2);
 builder.concat(&Matrix::from_affine(1.0, 0.0, 0.2, 1.0, 0.0, 0.0));
-builder.clip_rect(rect, ClipOp::Intersect);
-builder.clip_rrect(rect, 16.0, ClipOp::Difference);
+builder.clip_rect(rect, ClipOp::Intersect, true);
+builder.clip_rrect(rect, 16.0, ClipOp::Difference, true);
 builder.restore();
 ```
 
@@ -24,10 +24,17 @@ builder.translate(160, 110);
 builder.rotate(0.2);
 builder.scale(1.2, 1.2);
 builder.transform(new Float32Array([1, 0, 0.2, 1, 0, 0]));
-builder.clipRect(x, y, w, h, ClipOp.Intersect);
-builder.clipRoundedRect(x, y, w, h, new Float32Array([16]), ClipOp.Difference);
+builder.clipRect(x, y, w, h, ClipOp.Intersect, true);
+builder.clipRoundedRect(x, y, w, h, new Float32Array([16]), ClipOp.Difference, true);
 builder.restore();
 ```
+
+The last argument of a clip says whether its edge is anti-aliased. A
+rectangle clip that is not, under a transform that only scales and moves, cuts
+at the nearest whole pixels and costs the renderer nothing: what a scroll
+view's clip wants. On any other shape the flag changes nothing for now. In
+JavaScript the argument is optional: leave it out, or pass `undefined`, and the
+clip is anti-aliased.
 
 Left: a rotated rounded rect. Right: the same shape with a `Difference` hole.
 

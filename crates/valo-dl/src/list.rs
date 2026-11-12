@@ -156,15 +156,33 @@ pub enum Op {
         bounds: Rect,
         slot: u32,
     },
-    /// Depth-buffer clip (Impeller's "new clips"): the renderer
-    /// stencils the shape, then writes a depth CEILING at `expiry_slot` —
-    /// Intersect ceilings the exterior, Difference the interior. Draws below
-    /// the ceiling fail the depth test there; draws after the scope's restore
-    /// sit above it. Expiry is auto — restore renders nothing.
+    /// A clip to a path's shape, or to outside it, until its scope's
+    /// restore. The renderer cuts every draw in the scope to the bounds the
+    /// clips around it leave, with a scissor, and inside those bounds clips
+    /// by depth (Impeller's clips): it stencils the shape, then writes a
+    /// depth CEILING at `expiry_slot`, over the shape's exterior for
+    /// Intersect and its interior for Difference. Draws below the ceiling
+    /// fail the depth test there; draws after the scope's restore sit above
+    /// it, so restore renders nothing. An Intersect clip to a rectangle
+    /// along the pixel grid needs no ceiling when the scissor states it: one
+    /// that is not anti-aliased, wherever it lies, or one whose edges lie on
+    /// whole pixels.
     ClipPath {
         path: Arc<Path>,
         fill_rule: FillRule,
         op: ClipOp,
+        /// Whether the clip's edge is anti-aliased. An Intersect clip to an
+        /// axis-aligned rectangle that is not goes to the nearest whole
+        /// pixels; on any other clip the flag changes nothing.
+        anti_alias: bool,
+        /// The shape's bounds, list-root space, cropped by nothing.
+        bounds: Rect,
+        /// The shape is exactly `bounds`: a rectangle that the transform at
+        /// the clip only scales and moves, so its sides lie along the axes
+        /// of list-root space. Whether they lie along the target's pixel
+        /// grid is the replay's to say, which knows what the list is drawn
+        /// under.
+        is_axis_aligned_rect: bool,
         /// The slot of the restore that ends this clip's scope (backpatched
         /// by the builder when the scope closes — still record-time).
         expiry_slot: u32,

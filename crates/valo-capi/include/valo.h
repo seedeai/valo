@@ -305,18 +305,25 @@ void valo_builder_transform_matrix(ValoDisplayListBuilder *builder,
                                    const float *matrix);
 
 /* valo_builder_clip_rect applies a rectangular clip until the current
- * scope ends. operation: 0 intersect · 1 difference. */
+ * scope ends. operation: 0 intersect · 1 difference. anti_alias: whether
+ * the clip's edge is anti-aliased; an intersect clip that is not, under a
+ * transform that only scales and moves, cuts at the nearest whole pixels
+ * and costs the renderer nothing. */
 void valo_builder_clip_rect(ValoDisplayListBuilder *builder, ValoRect rect,
-                            int32_t operation);
+                            int32_t operation, bool anti_alias);
 /* valo_builder_clip_rounded_rect applies a rounded-rectangle clip until
- * the current scope ends. operation: 0 intersect · 1 difference. */
+ * the current scope ends. operation: 0 intersect · 1 difference.
+ * anti_alias is recorded and, for now, changes nothing: a rounded
+ * rectangle's edge is anti-aliased either way. */
 void valo_builder_clip_rounded_rect(ValoDisplayListBuilder *builder,
                                     ValoRect rect, ValoCornerRadii radii,
-                                    int32_t operation);
+                                    int32_t operation, bool anti_alias);
 /* valo_builder_clip_path applies a path clip until the current scope
- * ends. rule: 0 nonZero · 1 evenOdd. operation: 0 intersect · 1 difference. */
+ * ends. rule: 0 nonZero · 1 evenOdd. operation: 0 intersect · 1 difference.
+ * anti_alias changes what is drawn only for a path that is an axis-aligned
+ * rectangle, as valo_builder_clip_rect says. */
 void valo_builder_clip_path(ValoDisplayListBuilder *builder, ValoPath *path,
-                            int32_t rule, int32_t operation);
+                            int32_t rule, int32_t operation, bool anti_alias);
 
 /* valo_builder_draw_rect fills or strokes an axis-aligned rectangle. */
 void valo_builder_draw_rect(ValoDisplayListBuilder *builder, ValoRect rect,

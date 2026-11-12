@@ -16,6 +16,7 @@ mod backdrop_background;
 mod blur_placement;
 mod blur_tile_modes;
 mod bounded_blur;
+mod clip_coverage;
 mod drawn_over_targets;
 mod golden;
 mod gradient_endpoints;

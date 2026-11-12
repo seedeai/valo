@@ -5,10 +5,13 @@
 //!
 //! Clips live here as well, because a depth clip is geometry and nothing
 //! else: the same stencil-then-cover a fill uses, with the cover writing
-//! the scope's expiry depth instead of colour. It never routes, and it
-//! leaves nothing for the matching `Restore` to undo — the recorder already
-//! baked the expiry slot into the op. A mask blur's style clip is the same
-//! clip expiring right after the one draw it clips.
+//! the scope's expiry depth instead of colour, inside the coverage the clip
+//! leaves; a rectangle the scissor states is not even that
+//! (`clip_coverage`). It never routes, and it leaves nothing for the
+//! matching `Restore` to draw — the recorder already baked the expiry slot
+//! into the op, and the coverage a clip returns ends with the scope it is
+//! kept in. A mask blur's style clip is the same clip expiring right after
+//! the one draw it clips.
 
 use std::sync::Arc;
 
@@ -20,6 +23,7 @@ use valo_geometry::{
 use crate::frame::Mesh;
 use crate::pipelines::{AdvancedBlend, PipelineBlend};
 
+use super::clip_coverage::{ClipCoverage, ClipPlan, ClipShape};
 use super::draw_state::DrawState;
 use super::drawing::Drawing;
 use super::emit::{Cover, Entity, Marking, Role, StencilWrite};
@@ -68,6 +72,7 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -100,6 +105,7 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -132,6 +138,7 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -185,6 +192,7 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -227,6 +235,7 @@ impl Drawing<'_, '_> {
             shading,
             blend: PipelineBlend::SrcOver,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
@@ -253,41 +262,57 @@ impl Drawing<'_, '_> {
             shading,
             blend,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push(self.context, entity);
     }
 
-    /// `clip` stencils the shape and writes a depth CEILING at the clip's
-    /// expiry z, `at`'s depth: an Intersect ceiling covers the shape's
-    /// exterior, a Difference ceiling its interior. Draws under a ceiling
-    /// fail the depth test, and draws recorded after the scope's restore sit
-    /// above it — so the clip expires on its own and `Restore` renders
-    /// nothing.
-    pub fn clip(&mut self, path: &Arc<Path>, rule: FillRule, op: ClipOp, at: &DrawState) {
-        if self.excludes_nothing_visible(&path.bounds(), op, &at.transform) {
-            self.stats.culled += 1;
-            return;
-        }
-        let stencil = self.fan_mesh(path, &at.transform).map(|mesh| StencilWrite {
-            transform: at.transform,
-            mesh,
-            marking: Marking::Fan(rule),
-        });
-        self.push_stencil_clip(stencil, &path.bounds(), op, at);
+    /// `clip` clips what is drawn at `at` from here on to the path's
+    /// shape, or to outside it, until the depth `at` carries, the clip's
+    /// expiry: an Intersect ceiling covers the shape's exterior, a
+    /// Difference ceiling its interior. Draws under a ceiling fail the
+    /// depth test, and draws recorded after the scope's restore sit above
+    /// it — so the clip expires on its own and `Restore` renders nothing.
+    /// `shape` is what the clip's plan reads of the path where it lands.
+    /// It returns the coverage the clip leaves, which every draw it clips
+    /// must be handed.
+    pub fn clip(
+        &mut self,
+        path: &Arc<Path>,
+        rule: FillRule,
+        op: ClipOp,
+        shape: &ClipShape,
+        at: &DrawState,
+    ) -> ClipCoverage {
+        self.clip_by(&path.bounds(), shape, op, at, |drawing| {
+            let mesh = drawing.fan_mesh(path, &at.transform)?;
+            Some(StencilWrite {
+                transform: at.transform,
+                mesh,
+                marking: Marking::Fan(rule),
+            })
+        })
     }
 
     /// `clip_to_shape` clips the next draw, and only it, to `shape` or to
     /// outside it: Impeller's `ApplyClippedBlurStyle`, whose clip takes the
-    /// depth of the blur it clips, `at`'s. The ceiling sits half a slot
-    /// above it, where the next draw is already past it.
-    pub fn clip_to_shape(&mut self, shape: &Shape<'_>, op: ClipOp, at: &DrawState) {
+    /// depth of the blur it clips, `at`'s, and is always drawn, whatever its
+    /// shape. The ceiling sits half a slot above it, where the next draw is
+    /// already past it. It returns the coverage that draw must be handed.
+    pub fn clip_to_shape(&mut self, shape: &Shape<'_>, op: ClipOp, at: &DrawState) -> ClipCoverage {
         let expiry = DrawState {
             z: self.context.depth.half_slot_above(at.z),
             ..*at
         };
         match *shape {
-            Shape::Rect(rect) => self.clip(&rect_path(&rect), FillRule::NonZero, op, &expiry),
-            Shape::Path { path, rule } => self.clip(path, rule, op, &expiry),
+            Shape::Rect(rect) => {
+                let lands = style_clip_shape(&rect, at);
+                self.clip(&rect_path(&rect), FillRule::NonZero, op, &lands, &expiry)
+            }
+            Shape::Path { path, rule } => {
+                let lands = style_clip_shape(&path.bounds(), at);
+                self.clip(path, rule, op, &lands, &expiry)
+            }
             Shape::Stroke { path, stroke } => self.clip_stroke(path, stroke, op, &expiry),
         }
     }
@@ -295,33 +320,66 @@ impl Drawing<'_, '_> {
     /// `clip_stroke` is `clip` for a stroke's geometry: its strip, each
     /// triangle counting into the stencil wherever it lands, as Impeller's
     /// clip counts geometry that may overlap itself (`kStencilIncrementAll`).
-    fn clip_stroke(&mut self, path: &Arc<Path>, stroke: &Stroke, op: ClipOp, at: &DrawState) {
+    fn clip_stroke(
+        &mut self,
+        path: &Arc<Path>,
+        stroke: &Stroke,
+        op: ClipOp,
+        at: &DrawState,
+    ) -> ClipCoverage {
         let vertices = self.stroke_vertices(path, stroke, &at.transform);
         let bounds = vertex_bounds(&vertices);
-        if self.excludes_nothing_visible(&bounds, op, &at.transform) {
+        let lands = style_clip_shape(&bounds, at);
+        self.clip_by(&bounds, &lands, op, at, |drawing| {
+            (!vertices.is_empty()).then(|| StencilWrite {
+                transform: at.transform,
+                mesh: drawing.emit.alloc_mesh(&vertices),
+                marking: Marking::Strip,
+            })
+        })
+    }
+
+    /// `clip_by` clips to a shape of local `bounds`, which lands as `shape`
+    /// says, the way its [`ClipPlan`] says: by the scissor alone, or by the
+    /// stencil `mark` makes of the shape and a ceiling over it. It returns
+    /// the coverage the clip leaves.
+    fn clip_by(
+        &mut self,
+        bounds: &Rect,
+        shape: &ClipShape,
+        op: ClipOp,
+        at: &DrawState,
+        mark: impl FnOnce(&mut Self) -> Option<StencilWrite>,
+    ) -> ClipCoverage {
+        if self.excludes_nothing_visible(bounds, op, &at.transform) {
             self.stats.culled += 1;
-            return;
+            return at.clip;
         }
-        let stencil = (!vertices.is_empty()).then(|| StencilWrite {
-            transform: at.transform,
-            mesh: self.emit.alloc_mesh(&vertices),
-            marking: Marking::Strip,
-        });
-        self.push_stencil_clip(stencil, &bounds, op, at);
+        match at.clip.plan_clip(op, shape, &self.context.area) {
+            ClipPlan::Scissor(coverage) => {
+                self.stats.clips += 1;
+                coverage
+            }
+            ClipPlan::Draw(coverage) => {
+                let stencil = mark(self);
+                self.push_stencil_clip(stencil, bounds, op, &at.clipped_to(coverage));
+                coverage
+            }
+        }
     }
 
     /// `excludes_nothing_visible` reports whether a clip can be skipped: a
     /// Difference ceiling covers the shape's INTERIOR, so an interior that
-    /// lands off-viewport excludes nothing visible. An Intersect ceiling
-    /// covers the exterior and can never be culled.
+    /// lands off-viewport excludes nothing visible. An Intersect clip is
+    /// never skipped here: what it leaves is its plan's to say.
     fn excludes_nothing_visible(&self, bounds: &Rect, op: ClipOp, current: &Matrix) -> bool {
         op == ClipOp::Difference && self.context.area.culls(&current.map_rect(bounds))
     }
 
     /// `push_stencil_clip` marks the clip's shape in the stencil and writes
-    /// its ceiling at `at`'s depth, over the shape's exterior for Intersect
-    /// or its interior, `bounds`, for Difference: one draw, which the
-    /// context keeps to replay after a split.
+    /// its ceiling at `at`'s depth, inside `at`'s coverage: over the shape's
+    /// exterior for Intersect, or its interior, `bounds`, for Difference.
+    /// One draw, which the context keeps to replay after a split.
     fn push_stencil_clip(
         &mut self,
         stencil: Option<StencilWrite>,
@@ -331,7 +389,7 @@ impl Drawing<'_, '_> {
     ) {
         // A zero-AREA shape (a rect collapsed to a line) marks nothing.
         // Intersecting with nothing clips EVERYTHING: with no interior
-        // marked, the whole-context ceiling covers the whole scope. An
+        // marked, the ceiling covers all the coverage the scope has. An
         // empty Difference excludes nothing — skip.
         if stencil.is_none() && op == ClipOp::Difference {
             return;
@@ -356,6 +414,7 @@ impl Drawing<'_, '_> {
             shading: Shading::none(),
             blend: PipelineBlend::SrcOver,
             z: at.z,
+            clip: at.clip,
         };
         self.emit.push_clip(self.context, entity);
     }
@@ -381,6 +440,18 @@ fn rect_path(rect: &Rect) -> Arc<Path> {
     let mut builder = PathBuilder::new();
     builder.rect(*rect);
     builder.build()
+}
+
+/// `style_clip_shape` is what the plan of a blur style's clip reads of its
+/// shape, of local `bounds` and drawn at `at`: where it lands, and that no
+/// scissor states it, so it is drawn (Impeller makes its `ClipContents`
+/// with `is_axis_aligned_rect` false).
+fn style_clip_shape(bounds: &Rect, at: &DrawState) -> ClipShape {
+    ClipShape {
+        bounds: at.transform.map_rect(bounds),
+        is_rect: false,
+        anti_alias: true,
+    }
 }
 
 /// `vertex_bounds` is the rect holding a mesh's `x, y` vertices; empty for

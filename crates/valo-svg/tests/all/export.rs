@@ -124,7 +124,7 @@ fn shapes_and_text_read_back_as_they_were_drawn() {
     b.save();
     b.translate(60.0, 90.0);
     b.rotate(0.3);
-    b.clip_rect(Rect::new(-20.0, -10.0, 40.0, 20.0), ClipOp::Intersect);
+    b.clip_rect(Rect::new(-20.0, -10.0, 40.0, 20.0), ClipOp::Intersect, true);
     b.draw_rect(Rect::new(-40.0, -40.0, 80.0, 80.0), &solid(0.9, 0.2, 0.2));
     b.restore();
     b.save_layer(

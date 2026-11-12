@@ -88,8 +88,8 @@ export default function draw({ builder, width, height, time }) {
   const cy = height * 0.5;
 
   builder.save();
-  builder.clipRoundedRect(cx - 110, cy - 80, 220, 160, new Float32Array([24]), ClipOp.Intersect);
-  builder.clipRect(cx - 28, cy - 28, 56, 56, ClipOp.Difference);
+  builder.clipRoundedRect(cx - 110, cy - 80, 220, 160, new Float32Array([24]), ClipOp.Intersect, true);
+  builder.clipRect(cx - 28, cy - 28, 56, 56, ClipOp.Difference, true);
 
   for (let i = 0; i < 8; i += 1) {
     builder.save();
@@ -426,7 +426,7 @@ export default function draw({ builder, width, height, time }) {
 
   function glass(x, y, w, h, sigma) {
     builder.save();
-    builder.clipRoundedRect(x, y, w, h, new Float32Array([16]), ClipOp.Intersect);
+    builder.clipRoundedRect(x, y, w, h, new Float32Array([16]), ClipOp.Intersect, true);
     builder.backdropBlur(x, y, w, h, sigma);
     builder.restore();
     const tint = new Paint(1, 1, 1, 0.1);

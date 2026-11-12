@@ -12,7 +12,7 @@
 use valo_dl::DisplayList;
 use valo_geometry::{Color, Matrix, Point, Rect};
 
-use crate::frame::{ContextAttachments, Draw};
+use crate::frame::{ContextAttachments, Draw, Scissor};
 use crate::pool::{Attachments, LayerTarget};
 use crate::raster::FillTarget;
 use crate::renderer::RenderTarget;
@@ -79,6 +79,46 @@ impl PixelArea {
     pub fn culls(&self, bounds: &Rect) -> bool {
         !bounds.intersects(&self.rect)
     }
+
+    /// `texels` is the whole texture in the space beneath it: the area's
+    /// rect, with the texels its rounding added.
+    pub fn texels(&self) -> Rect {
+        let [width, height] = self.size;
+        Rect::new(self.rect.x, self.rect.y, width as f32, height as f32)
+    }
+
+    /// `scissor` is the whole texels that hold `rect`, a rect of the space
+    /// beneath, cut to the texture; `None` when the texture holds none of
+    /// it.
+    pub fn scissor(&self, rect: &Rect) -> Option<Scissor> {
+        let [width, height] = self.size.map(|extent| extent as f32);
+        let left = (rect.x - self.rect.x).floor().max(0.0);
+        let top = (rect.y - self.rect.y).floor().max(0.0);
+        let right = (rect.right() - self.rect.x).ceil().min(width);
+        let bottom = (rect.bottom() - self.rect.y).ceil().min(height);
+        (left < right && top < bottom).then_some(Scissor {
+            x: left as u32,
+            y: top as u32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        })
+    }
+
+    /// `snapped` is `rect`, a rect of the space beneath, with each edge
+    /// moved to the texel edge nearest it; `None` when an edge lies further
+    /// than `tolerance` from one.
+    pub fn snapped(&self, rect: &Rect, tolerance: f32) -> Option<Rect> {
+        let snap = |edge: f32, origin: f32| {
+            let texel = (edge - origin).round();
+            ((edge - origin - texel).abs() <= tolerance).then_some(origin + texel)
+        };
+        Some(Rect::from_ltrb(
+            snap(rect.x, self.rect.x)?,
+            snap(rect.y, self.rect.y)?,
+            snap(rect.right(), self.rect.x)?,
+            snap(rect.bottom(), self.rect.y)?,
+        ))
+    }
 }
 
 /// `DepthRange` is the slots of the depth line a texture hosts: `slots` of
@@ -128,8 +168,9 @@ impl DepthRange {
 /// instead, so children land in the texture's texels.
 pub(super) struct DrawContext {
     pub attachments: ContextAttachments,
-    /// The texture the colour resolves into, copied from when the context
-    /// is split.
+    /// The texture the context's last pass resolves into: what names the
+    /// context to a shared backdrop, and what a target drawn over without
+    /// clearing has its pixels copied out of.
     pub src_texture: wgpu::Texture,
     pub area: PixelArea,
     pub depth: DepthRange,
@@ -266,6 +307,39 @@ mod tests {
         assert_eq!(area.origin(), Point::new(10.0, -4.0));
         assert!(area.culls(&Rect::new(40.0, 0.0, 5.0, 5.0)));
         assert!(!area.culls(&Rect::new(25.0, -10.0, 5.0, 7.0)));
+    }
+
+    /// A rect's scissor is the whole texels holding it, from the area's
+    /// origin and cut to the texture; a rect goes to the texel edges only
+    /// when all its edges are near them.
+    #[test]
+    fn an_area_finds_the_texels_of_a_rect() {
+        let area = PixelArea::over(Rect::new(10.0, 20.0, 30.5, 8.0));
+        assert_eq!(area.texels(), Rect::new(10.0, 20.0, 31.0, 8.0));
+        assert_eq!(
+            area.scissor(&Rect::from_ltrb(12.25, 0.0, 100.0, 23.5)),
+            Some(Scissor {
+                x: 2,
+                y: 0,
+                width: 29,
+                height: 4,
+            })
+        );
+        assert_eq!(area.scissor(&Rect::new(50.0, 20.0, 5.0, 5.0)), None);
+        assert_eq!(
+            area.snapped(&Rect::from_ltrb(12.1, 21.9, 20.0, 25.0), 0.124),
+            Some(Rect::from_ltrb(12.0, 22.0, 20.0, 25.0))
+        );
+        assert_eq!(
+            area.snapped(&Rect::from_ltrb(12.5, 22.0, 20.0, 25.0), 0.124),
+            None
+        );
+        let between_pixels = PixelArea::over(Rect::new(0.5, 0.0, 10.0, 10.0));
+        assert_eq!(
+            between_pixels.snapped(&Rect::from_ltrb(2.5, 1.0, 4.5, 3.0), 0.124),
+            Some(Rect::from_ltrb(2.5, 1.0, 4.5, 3.0)),
+            "the texel edges are the area's, not the space's"
+        );
     }
 
     /// A layer hosts the slots after its base up to its composite's; its

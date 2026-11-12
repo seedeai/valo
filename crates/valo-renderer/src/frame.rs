@@ -5,9 +5,11 @@
 //! Every pass starts fresh, as in Skia Graphite and Impeller: a context's
 //! pass clears its multisample colour and its depth and stencil and
 //! discards them at its end, keeping only what resolves. A context that is
-//! split for a copy of what it holds draws that copy back as the first draw
-//! of its next pass and replays its active clips after it, so nothing has
-//! to survive a pass in the multisample attachments.
+//! split, for something to read what it holds, resolves the pass the split
+//! ends into a texture of that pass's own, draws that texture back as the
+//! first draw of its next pass and replays its active clips after it, so
+//! nothing has to survive a pass in the multisample attachments and nothing
+//! is copied.
 
 use valo_geometry::Color;
 
@@ -49,8 +51,8 @@ impl PassTarget {
 
 /// `PlannedPass` is one render pass and the copies that run before it.
 pub(crate) struct PlannedPass {
-    /// Copies that must complete before this pass runs: what a context held
-    /// when it was split, for its draw-back and for whatever reads it.
+    /// Copies that must complete before this pass runs: the pixels of a
+    /// target drawn over without clearing, for its first pass to draw back.
     pub pre_copies: Vec<TextureCopy>,
     pub target: PassTarget,
 }
@@ -71,8 +73,9 @@ pub(crate) enum PassTarget {
 }
 
 /// `ContextAttachments` are a context's 4-sample colour and depth/stencil,
-/// tile-only, and the single-sample texture its colour resolves into: a
-/// layer's own, a cache texture, or the caller's.
+/// tile-only, and the single-sample texture a pass's colour resolves into:
+/// a layer's own, a cache texture, or the caller's, and for a pass that a
+/// split ends a texture of the pass's own.
 #[derive(Clone)]
 pub(crate) struct ContextAttachments {
     pub msaa: wgpu::TextureView,
@@ -87,11 +90,37 @@ pub(crate) struct TextureCopy {
     pub size: [u32; 2],
 }
 
+/// `Scissor` is the texels of its target a draw may write, its stencil
+/// too: what the clips around the draw leave it, in whole texels, the whole
+/// target where nothing clips it (Impeller's `SetClipScissor`). It is never
+/// empty: a draw with nowhere to show is not planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Scissor {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Scissor {
+    /// `whole` is every texel of a target of `size`.
+    pub fn whole(size: [u32; 2]) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: size[0],
+            height: size[1],
+        }
+    }
+}
+
 /// `Draw` is one draw as the encoder runs it, built whole and moved whole,
 /// Impeller's `Entity`: the stencil its cover tests, if it has one, drawn
 /// right before it, then the draw itself.
 #[derive(Clone)]
 pub(crate) struct Draw {
+    /// The texels the draw and its stencil may write.
+    pub scissor: Scissor,
     /// The stencil half of stencil-then-cover: a path's fan wound by its
     /// rule, or a stroke's strip counted.
     pub stencil: Option<Stencil>,

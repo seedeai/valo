@@ -135,7 +135,11 @@ impl WebDisplayListBuilder {
     /// `clipRect` applies a rectangular clip until the current scope ends.
     ///
     /// `operation` is `0` intersect or `1` difference; any other value uses
-    /// intersect.
+    /// intersect. `antiAlias` says whether the clip's edge is anti-aliased,
+    /// and is optional: omitted or `undefined`, it is. An intersect clip
+    /// that is not, under a transform that only scales and moves, cuts at
+    /// the nearest whole pixels and costs the renderer nothing.
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = clipRect)]
     pub fn clip_rect(
         &mut self,
@@ -144,9 +148,13 @@ impl WebDisplayListBuilder {
         width: f32,
         height: f32,
         operation: u32,
+        anti_alias: Option<bool>,
     ) -> Result<(), JsValue> {
-        self.builder()?
-            .clip_rect(Rect::new(x, y, width, height), types::clip_op(operation));
+        self.builder()?.clip_rect(
+            Rect::new(x, y, width, height),
+            types::clip_op(operation),
+            types::anti_alias(anti_alias),
+        );
         Ok(())
     }
 
@@ -154,18 +162,23 @@ impl WebDisplayListBuilder {
     ///
     /// `fillRule` is `0` nonzero (and any value other than `1`) or `1` even-odd.
     /// `operation` is `0` intersect or `1` difference; any other value uses
-    /// intersect.
+    /// intersect. `antiAlias` is optional, and anti-aliased when omitted
+    /// or `undefined`; it changes what is drawn only for a path that is an
+    /// axis-aligned rectangle, as [`Self::clip_rect`] says; any other
+    /// shape's edge is anti-aliased either way, for now.
     #[wasm_bindgen(js_name = clipPath)]
     pub fn clip_path(
         &mut self,
         path: &mut WebPath,
         fill_rule: u32,
         operation: u32,
+        anti_alias: Option<bool>,
     ) -> Result<(), JsValue> {
         self.builder()?.clip_path(
             &path.built(),
             types::fill_rule(fill_rule),
             types::clip_op(operation),
+            types::anti_alias(anti_alias),
         );
         Ok(())
     }
@@ -173,7 +186,10 @@ impl WebDisplayListBuilder {
     /// `clipRoundedRect` applies a rounded-rectangle clip until the current scope ends.
     ///
     /// `radii` follows [`Self::draw_rounded_rect`]. `operation` is `0` intersect
-    /// or `1` difference; any other value uses intersect.
+    /// or `1` difference; any other value uses intersect. `antiAlias` is
+    /// optional, anti-aliased when omitted or `undefined`; it is recorded
+    /// and, for now, changes nothing: a rounded rectangle's edge is
+    /// anti-aliased either way.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = clipRoundedRect)]
     pub fn clip_rounded_rect(
@@ -184,11 +200,13 @@ impl WebDisplayListBuilder {
         height: f32,
         radii: &[f32],
         operation: u32,
+        anti_alias: Option<bool>,
     ) -> Result<(), JsValue> {
         self.builder()?.clip_rrect_radii_elliptical(
             Rect::new(x, y, width, height),
             elliptical_radii(radii)?,
             types::clip_op(operation),
+            types::anti_alias(anti_alias),
         );
         Ok(())
     }

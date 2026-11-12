@@ -1,15 +1,17 @@
 //! What every draw is handed instead of reading it off the planner: where it
-//! lands — its transform and its depth — and how much of it shows, the group
-//! alpha of the elided opacity layers around it (Impeller's
-//! `distributed_opacity`). The walk makes one from its scope stack for each
-//! recorded draw.
+//! lands — its transform and its depth — where it may show, the coverage of
+//! the clips around it, and how much of it shows, the group alpha of the
+//! elided opacity layers around it (Impeller's `distributed_opacity`). The
+//! walk makes one from its scope stack for each recorded draw.
 //!
 //! A draw that a layer of its own holds — an implicit layer, an effect layer,
-//! a snapshot — is handed alpha 1: the layer's composite carries the group
-//! alpha, and taking it twice would fade the draw twice.
+//! a snapshot — is handed alpha 1 and no clip: the layer's composite carries
+//! the group alpha, and taking it twice would fade the draw twice; and the
+//! clips around the layer are in its parent, where the composite meets them.
 
 use valo_geometry::Matrix;
 
+use super::clip_coverage::ClipCoverage;
 use super::draw_context::DepthRange;
 
 /// `ONE_DRAW_LAYER` is the depth line of a layer that holds one draw (an
@@ -25,16 +27,20 @@ pub(super) struct DrawState {
     pub z: f32,
     /// The group alpha the draw is drawn at.
     pub alpha: f32,
+    /// Where the clips around the draw let it show.
+    pub clip: ClipCoverage,
 }
 
 impl DrawState {
     /// `in_layer` is a draw at `z` under `transform` inside a layer whose
-    /// composite takes the group alpha, so the draw takes none: alpha 1.
+    /// composite takes the group alpha and meets the clips, so the draw
+    /// takes neither: alpha 1, anywhere in the layer.
     pub fn in_layer(transform: Matrix, z: f32) -> Self {
         Self {
             transform,
             z,
             alpha: 1.0,
+            clip: ClipCoverage::Unclipped,
         }
     }
 
@@ -47,6 +53,14 @@ impl DrawState {
     /// `with_transform` is this state with `transform` in place of its own.
     pub fn with_transform(&self, transform: Matrix) -> Self {
         Self { transform, ..*self }
+    }
+
+    /// `clipped_to` is this state under a clip that leaves it `coverage`.
+    pub fn clipped_to(&self, coverage: ClipCoverage) -> Self {
+        Self {
+            clip: coverage,
+            ..*self
+        }
     }
 
     /// `faded` is this state drawn at `alpha` times its group alpha: a

@@ -432,12 +432,14 @@ impl PipelineBlend {
     }
 
     /// `state` is the blend unit's factors for this blend, over
-    /// premultiplied colour.
-    fn state(self) -> wgpu::BlendState {
+    /// premultiplied colour; `None` for `Src`, which replaces the
+    /// destination with the blend unit off, as Impeller turns blending off
+    /// for `kSrc`.
+    fn state(self) -> Option<wgpu::BlendState> {
         use wgpu::BlendFactor as F;
         let (src, dst) = match self {
             Self::Clear => (F::Zero, F::Zero),
-            Self::Src => (F::One, F::Zero),
+            Self::Src => return None,
             Self::Dst => (F::Zero, F::One),
             Self::SrcOver => (F::One, F::OneMinusSrcAlpha),
             Self::DstOver => (F::OneMinusDstAlpha, F::One),
@@ -457,10 +459,10 @@ impl PipelineBlend {
             dst_factor: dst,
             operation: wgpu::BlendOperation::Add,
         };
-        wgpu::BlendState {
+        Some(wgpu::BlendState {
             color: component,
             alpha: component,
-        }
+        })
     }
 }
 
@@ -851,7 +853,7 @@ fn color_target(key: PipelineKey) -> wgpu::ColorTargetState {
     let writes_color = key.kind.writes_color();
     wgpu::ColorTargetState {
         format: key.format,
-        blend: key.kind.blends().then(|| key.blend.state()),
+        blend: key.kind.blends().then(|| key.blend.state()).flatten(),
         write_mask: if writes_color {
             wgpu::ColorWrites::ALL
         } else {

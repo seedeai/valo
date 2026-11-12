@@ -373,7 +373,7 @@ mod tests {
         let mut b = DisplayListBuilder::new();
         b.save();
         b.translate(10.0, 0.0);
-        b.clip_rect(Rect::new(0.0, 0.0, 4.0, 4.0), ClipOp::Intersect);
+        b.clip_rect(Rect::new(0.0, 0.0, 4.0, 4.0), ClipOp::Intersect, true);
         b.draw_rect(Rect::new(0.0, 0.0, 8.0, 8.0), &red());
         b.draw_rect(Rect::new(20.0, 0.0, 8.0, 8.0), &red());
         b.restore();

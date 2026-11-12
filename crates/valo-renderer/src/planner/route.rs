@@ -300,7 +300,7 @@ impl Planner<'_> {
         at: &DrawState,
         mode: AdvancedBlend,
     ) {
-        let destination = self.split_for_copy(at.z);
+        let destination = self.split_for_read(at.z);
         self.drawing()
             .draw_blended_solid(solid, paint, at, mode, &destination.view);
     }

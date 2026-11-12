@@ -77,7 +77,7 @@ fn group(g: &usvg::Group, b: &mut DisplayListBuilder, cx: &mut Ctx) {
     b.concat(&convert::transform(g.transform()));
     if let Some(region) = filter_region(g, &filter) {
         // SVG crops a filtered element's RESULT to the filter region.
-        b.clip_rect(region, ClipOp::Intersect);
+        b.clip_rect(region, ClipOp::Intersect, true);
     }
     let mut clip_masks = Vec::new();
     if let Some(clip) = g.clip_path() {
@@ -322,7 +322,7 @@ fn plan_clips<'a>(
         [] => false,
         [(transform, path)] => {
             let baked = convert::path(path.data(), *transform);
-            b.clip_path(&baked, clip_rule(path), ClipOp::Intersect);
+            b.clip_path(&baked, clip_rule(path), ClipOp::Intersect, true);
             true
         }
         _ => {
@@ -385,6 +385,7 @@ fn push_mask(mask: &usvg::Mask, b: &mut DisplayListBuilder, cx: &mut Ctx) {
     b.clip_rect(
         Rect::new(r.x(), r.y(), r.width(), r.height()),
         ClipOp::Intersect,
+        true,
     );
     group(mask.root(), b, cx);
     if let Some(inner) = mask.mask() {
@@ -519,7 +520,7 @@ impl TileGrid {
                 b.save();
                 b.translate(x0 + ix as f32 * w, y0 + iy as f32 * h);
                 // Tile overflow is hidden (SVG pattern default).
-                b.clip_rect(Rect::new(0.0, 0.0, w, h), ClipOp::Intersect);
+                b.clip_rect(Rect::new(0.0, 0.0, w, h), ClipOp::Intersect, true);
                 b.draw_display_list(&self.tile);
                 b.restore();
             }
@@ -543,7 +544,7 @@ fn pattern_fill(
     if opacity < 1.0 {
         b.save_layer(None, &alpha_paint(opacity));
     }
-    b.clip_path(geometry, rule, ClipOp::Intersect);
+    b.clip_path(geometry, rule, ClipOp::Intersect, true);
     grid.emit(b);
     if opacity < 1.0 {
         b.restore();
@@ -568,7 +569,7 @@ fn pattern_stroke(
     };
     b.save_layer(None, &alpha_paint(stroke.opacity().get()));
     b.save();
-    b.clip_rect(bounds, ClipOp::Intersect);
+    b.clip_rect(bounds, ClipOp::Intersect, true);
     grid.emit(b);
     b.restore();
     b.save_layer_mask(None, MaskKind::Alpha);

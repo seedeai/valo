@@ -348,8 +348,9 @@ fn alpha_mode_for(
 }
 
 /// The usages a surface is configured with: `RENDER_ATTACHMENT`, and `COPY_SRC` where the
-/// platform allows it, since advanced blends snapshot the resolved target mid-frame when
-/// rendering direct to the swapchain.
+/// platform allows it, which a frame drawn over without clearing (`clear: None`) needs: its
+/// pixels are copied out and drawn back first. An advanced blend or a backdrop copies nothing
+/// out of the target.
 ///
 /// WebGL2's default framebuffer cannot be a copy source, and never needs to be: on that path
 /// every frame blits from the persistent backing, which carries its own `COPY_SRC`. A WebGPU

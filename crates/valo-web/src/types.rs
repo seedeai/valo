@@ -70,6 +70,13 @@ pub(crate) fn fill_rule(value: u32) -> FillRule {
     }
 }
 
+/// `anti_alias` is a clip's `antiAlias` argument: anti-aliased when
+/// JavaScript omits it or passes `undefined`, as a clip is by default in
+/// Canvas2D, Skia and Flutter.
+pub(crate) fn anti_alias(value: Option<bool>) -> bool {
+    value.unwrap_or(true)
+}
+
 pub(crate) fn clip_op(value: u32) -> ClipOp {
     if value == 1 {
         ClipOp::Difference

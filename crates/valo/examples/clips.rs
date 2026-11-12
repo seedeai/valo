@@ -28,10 +28,11 @@ fn scene() -> valo::DisplayList {
         Rect::new(-140.0, -90.0, 280.0, 180.0),
         36.0,
         ClipOp::Intersect,
+        true,
     );
     b.rotate(-0.3);
     b.translate(-200.0, -180.0);
-    b.clip_rect(Rect::new(50.0, 60.0, 300.0, 260.0), ClipOp::Intersect);
+    b.clip_rect(Rect::new(50.0, 60.0, 300.0, 260.0), ClipOp::Intersect, true);
     for row in 0..9 {
         for col in 0..11 {
             let color = [
@@ -56,7 +57,7 @@ fn scene() -> valo::DisplayList {
     b.save();
     let mut hole = PathBuilder::new();
     hole.circle((510.0, 180.0), 60.0);
-    b.clip_path(&hole.build(), FillRule::NonZero, ClipOp::Difference);
+    b.clip_path(&hole.build(), FillRule::NonZero, ClipOp::Difference, true);
     b.draw_rect(
         Rect::new(410.0, 90.0, 200.0, 180.0),
         &Paint::from_color(Color::rgb(0.55, 0.4, 0.9)),

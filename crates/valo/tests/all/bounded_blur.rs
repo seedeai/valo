@@ -40,7 +40,7 @@ impl TwoColours {
         let mut builder = DisplayListBuilder::new();
         builder.concat(&self.transform);
         self.draw_colours(&mut builder);
-        builder.clip_rect(PANEL, ClipOp::Intersect);
+        builder.clip_rect(PANEL, ClipOp::Intersect, true);
         builder.save_layer_backdrop(None, &Paint::default(), Backdrop::new(filter));
         builder.restore();
         builder.build()
@@ -267,7 +267,7 @@ fn keyed_bounded_backdrops_at_different_places_read_their_own_bounds() {
             builder.save();
             builder.translate(origin.x, origin.y);
             builder.draw_rect(tile, &Paint::from_color(BLUE));
-            builder.clip_rect(tile, ClipOp::Intersect);
+            builder.clip_rect(tile, ClipOp::Intersect, true);
             builder.save_layer_backdrop(
                 None,
                 &Paint::default(),
@@ -348,7 +348,7 @@ fn bounded_backdrop_blur_golden() {
         builder.save();
         builder.translate(origin.x, origin.y);
         builder.rotate(rotation);
-        builder.clip_rect(panel, ClipOp::Intersect);
+        builder.clip_rect(panel, ClipOp::Intersect, true);
         builder.save_layer_backdrop(None, &Paint::default(), Backdrop::new(filter));
         builder.draw_rect(panel, &frosting);
         builder.restore();

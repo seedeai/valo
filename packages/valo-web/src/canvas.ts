@@ -514,7 +514,7 @@ export class ValoCanvasRenderingContext2D {
       transform: [...this.#state.transform] as Affine,
     };
     this.#state.clips = [...this.#state.clips, record];
-    this.#builder.clipPath(record.path, record.rule, 0);
+    this.#builder.clipPath(record.path, record.rule, 0, true);
   }
 
   fillRect(x: number, y: number, width: number, height: number): void {
@@ -1421,7 +1421,7 @@ function replayState(
   let transform = currentTransform;
   for (const clip of state.clips.slice(currentClipCount)) {
     transform = setBuilderTransform(builder, transform, clip.transform);
-    builder.clipPath(clip.path, clip.rule, 0);
+    builder.clipPath(clip.path, clip.rule, 0, true);
   }
   transform = setBuilderTransform(builder, transform, state.transform);
   return [transform, state.clips.length];

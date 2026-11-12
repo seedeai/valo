@@ -274,6 +274,7 @@ impl Drawing<'_, '_> {
                 shading: glyph_shading(frag, paint, at.alpha, page),
                 blend,
                 z: at.z,
+                clip: at.clip,
             };
             self.emit.push(self.context, entity);
         }

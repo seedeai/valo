@@ -1,17 +1,22 @@
 //! Segments: a context's pending draws becoming a pass, and the split that
-//! ends a pass so what the context holds so far can be copied — for a
+//! ends a pass so what the context holds so far can be read — by a
 //! destination read or a backdrop — before the next pass draws over it.
 //!
 //! Every pass starts fresh (Skia Graphite, Impeller): its multisample
 //! colour, depth and stencil are cleared, and nothing of them survives the
-//! pass. So a split copies the whole of what the context resolved, and the
-//! next pass draws that copy back first and replays the clips still active,
-//! as Impeller's `FlipBackdrop` draws its backdrop back and replays its clip
-//! stack's entities. The pass list itself is the plan writer's.
+//! pass. So the pass a split ends resolves into a texture of its own, which
+//! is what the context holds so far; the next pass draws that texture back
+//! first and replays the clips still active, each inside its own scissor,
+//! as Impeller's `FlipBackdrop` flips its pass target to another texture,
+//! draws its backdrop back and replays its clip stack's entities under
+//! their clip coverage. A clip the scissor alone states left nothing to
+//! replay: the draws it clips carry it. Only a context's last pass writes
+//! its own texture, so a split copies nothing. The pass list itself is the
+//! plan writer's.
 
 use valo_geometry::{Color, Matrix};
 
-use crate::frame::{Draw, TextureCopy};
+use crate::frame::{ContextAttachments, Draw, TextureCopy};
 use crate::pipelines::{PipelineBlend, PipelineKind};
 
 use super::draw_state::DrawState;
@@ -20,37 +25,30 @@ use super::snapshot::Snapshot;
 use super::Planner;
 
 impl Planner<'_> {
-    /// `emit_segment` flushes the top context's pending draws into a pass.
-    /// A context's first pass clears to its clear colour, whatever it
+    /// `emit_segment` flushes the top context's pending draws into a pass
+    /// that resolves into the context's own texture: its only pass, or its
+    /// last. A context's first pass clears to its clear colour, whatever it
     /// draws; a later one clears to transparent, under the draw-back that
     /// opens it, and is skipped when it draws nothing.
     pub(super) fn emit_segment(&mut self) {
-        let context = self.contexts.top_mut();
-        let first = !context.first_pass_emitted;
-        if !first && context.draws.is_empty() {
+        let context = self.contexts.top();
+        if context.first_pass_emitted && context.draws.is_empty() {
             return;
         }
-        context.first_pass_emitted = true;
-        let clear = if first {
-            context.clear
-        } else {
-            Color::TRANSPARENT
-        };
-        let draws = std::mem::take(&mut context.draws);
-        let attachments = context.attachments.clone();
-        self.plan.push_context_pass(attachments, clear, draws);
+        let resolve = context.attachments.resolve.clone();
+        self.emit_pass(resolve);
     }
 
-    /// `split_for_copy` ends the top context's pass and returns a copy of
-    /// what it holds, for a reader at depth `reader_z` to sample: the next
-    /// pass starts with the copy drawn back and the clips that still hold
-    /// past `reader_z` replayed.
-    pub(super) fn split_for_copy(&mut self, reader_z: f32) -> Snapshot {
+    /// `split_for_read` ends the top context's pass and returns what the
+    /// context holds, for a reader at depth `reader_z` to sample: the next
+    /// pass starts with that drawn back and the clips that still hold past
+    /// `reader_z` replayed.
+    pub(super) fn split_for_read(&mut self, reader_z: f32) -> Snapshot {
         self.plan.stats.snapshots += 1;
-        self.emit_segment();
-        let copy = self.draw_back();
+        let held = self.emit_segment_aside();
+        self.draw_back(&held);
         self.replay_clips(reader_z);
-        copy
+        held
     }
 
     /// `start_from_existing_pixels` starts the top context from what its
@@ -60,14 +58,49 @@ impl Planner<'_> {
     /// drawn over without clearing keeps its pixels: Skia's load from
     /// resolve, and Impeller's draw-back of a target it resumes.
     pub(super) fn start_from_existing_pixels(&mut self) {
-        self.draw_back();
+        let existing = self.copy_out();
+        self.draw_back(&existing);
     }
 
-    /// `draw_back` copies the whole of what the top context's texture holds
-    /// before the next pass, and draws the copy back as that pass's first
-    /// draw, at the depth floor; it returns the copy, which lies where the
+    /// `emit_segment_aside` flushes the top context's pending draws into a
+    /// pass that resolves into a texture of its own, not the context's, and
+    /// returns that texture: what the context holds so far, lying where its
+    /// texels do. Nothing is copied, and the context's own texture is
+    /// written by its last pass alone: Impeller's `EntityPassTarget::Flip`,
+    /// which swaps a split pass's resolve texture for another.
+    fn emit_segment_aside(&mut self) -> Snapshot {
+        let area = self.contexts.top().area;
+        let aside = self.tools.pool.take_filter(area.size(), self.tools.format);
+        self.emit_pass(aside.view.clone());
+        Snapshot {
+            view: aside.view,
+            placement: area.placement(),
+        }
+        .placed_where_drawn(true)
+    }
+
+    /// `emit_pass` makes the top context's pending draws a pass whose
+    /// colour resolves into `resolve`.
+    fn emit_pass(&mut self, resolve: wgpu::TextureView) {
+        let context = self.contexts.top_mut();
+        let clear = if context.first_pass_emitted {
+            Color::TRANSPARENT
+        } else {
+            context.clear
+        };
+        context.first_pass_emitted = true;
+        let draws = std::mem::take(&mut context.draws);
+        let attachments = ContextAttachments {
+            resolve,
+            ..context.attachments.clone()
+        };
+        self.plan.push_context_pass(attachments, clear, draws);
+    }
+
+    /// `copy_out` copies the whole of what the top context's texture holds
+    /// before its next pass, and returns the copy, which lies where the
     /// context's texels do.
-    fn draw_back(&mut self) -> Snapshot {
+    fn copy_out(&mut self) -> Snapshot {
         let context = self.contexts.top();
         let copy = self
             .tools
@@ -78,18 +111,24 @@ impl Planner<'_> {
             dst: copy.texture,
             size: context.area.size(),
         });
-        let picture = Snapshot {
+        Snapshot {
             view: copy.view,
             placement: context.area.placement(),
         }
-        .placed_where_drawn(true);
-        let floor = context.depth.floor();
+        .placed_where_drawn(true)
+    }
+
+    /// `draw_back` draws `picture`, what the top context held before its
+    /// next pass, as that pass's first draw, at the depth floor. It
+    /// replaces what the pass cleared to, which is transparent, so nothing
+    /// is blended: Impeller draws its backdrop back with `kSrc`.
+    fn draw_back(&mut self, picture: &Snapshot) {
+        let floor = self.contexts.top().depth.floor();
         self.drawing().draw_filter_output(
             &FilterOutput::Snapshot(picture.clone()),
-            PipelineBlend::SrcOver,
+            PipelineBlend::Src,
             &DrawState::in_layer(Matrix::IDENTITY, floor),
         );
-        picture
     }
 
     /// `replay_clips` draws again the top context's clips whose ceilings
@@ -157,7 +196,7 @@ fn flush_chunk(chunk: &mut Vec<Draw>, out: &mut Vec<Draw>, hoisted: &mut u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{Bindings, Geometry, Mesh, Stencil};
+    use crate::frame::{Bindings, Geometry, Mesh, Scissor, Stencil};
     use crate::host_buffer::{UniformSlot, VertexSlot};
     use crate::pipelines::{Frag, PipelineBlend, PipelineKey};
 
@@ -185,6 +224,7 @@ mod tests {
             },
         });
         Draw {
+            scissor: Scissor::whole([1, 1]),
             stencil,
             key: PipelineKey::new(FORMAT, PipelineBlend::SrcOver, kind),
             uniforms,

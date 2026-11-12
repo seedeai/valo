@@ -172,12 +172,14 @@ fn m2_scene() -> valo::DisplayList {
         Rect::new(-110.0, -70.0, 220.0, 140.0),
         30.0,
         valo::ClipOp::Intersect,
+        true,
     );
     b.rotate(-0.3);
     b.translate(-160.0, -320.0);
     b.clip_rect(
         Rect::new(40.0, 240.0, 250.0, 220.0),
         valo::ClipOp::Intersect,
+        true,
     ); // nested
     for row in 0..6 {
         for col in 0..8 {
@@ -204,7 +206,12 @@ fn m2_scene() -> valo::DisplayList {
     b.save();
     let mut hole = valo::PathBuilder::new();
     hole.circle((470.0, 330.0), 55.0);
-    b.clip_path(&hole.build(), FillRule::NonZero, valo::ClipOp::Difference);
+    b.clip_path(
+        &hole.build(),
+        FillRule::NonZero,
+        valo::ClipOp::Difference,
+        true,
+    );
     b.draw_rect(
         Rect::new(380.0, 250.0, 180.0, 160.0),
         &Paint::from_color(Color::rgb(0.55, 0.4, 0.9)),
@@ -1806,7 +1813,11 @@ fn m4_layers_scene() -> valo::DisplayList {
     b.save();
     b.translate(320.0, 350.0);
     b.rotate(0.25);
-    b.clip_rect(Rect::new(-140.0, -45.0, 280.0, 90.0), ClipOp::Intersect);
+    b.clip_rect(
+        Rect::new(-140.0, -45.0, 280.0, 90.0),
+        ClipOp::Intersect,
+        true,
+    );
     b.rotate(-0.25);
     b.translate(-320.0, -350.0);
     for i in 0..8 {
@@ -2079,7 +2090,7 @@ fn m5_backdrop_scene() -> valo::DisplayList {
     }
     let panel = |b: &mut DisplayListBuilder, rect: Rect, sigma: f32, shared: Option<u64>| {
         b.save();
-        b.clip_rrect(rect, 18.0, ClipOp::Intersect);
+        b.clip_rrect(rect, 18.0, ClipOp::Intersect, true);
         b.save_layer_backdrop(
             Some(rect),
             &Paint::default(),
@@ -2472,11 +2483,15 @@ fn m7_scene() -> valo::DisplayList {
         valo::FillRule::NonZero,
         &Paint::from_color(Color::rgb(0.2, 0.8, 0.55)),
     );
-    // A clip scope: its opaques hoist within the scope, never across it.
+    // A clip scope. Its clip is a rectangle on whole pixels, which the
+    // scissor states: no ceiling stands between its draws and the rest, so
+    // its opaque hoists like any other, inside its scissor. (A drawn clip is
+    // a barrier no draw crosses: the planner's `nothing_crosses_a_clip`.)
     b.save();
     b.clip_rect(
         Rect::new(400.0, 240.0, 200.0, 180.0),
         valo::ClipOp::Intersect,
+        true,
     );
     b.draw_rect(
         Rect::new(380.0, 220.0, 240.0, 220.0),
@@ -2495,6 +2510,7 @@ fn m7_scene() -> valo::DisplayList {
         &far.build(),
         valo::FillRule::NonZero,
         valo::ClipOp::Difference,
+        true,
     );
     b.draw_rect(
         Rect::new(40.0, 430.0, 200.0, 30.0),
@@ -2517,10 +2533,10 @@ fn m7_reorder_golden() {
     let stats = ctx.render(&dl, &offscreen.target(Some(Color::rgb(0.07, 0.07, 0.09))));
 
     // 4 root-level occluders sit above 6 translucent washes; the clipped
-    // opaque hoists within its scope (past the wash recorded before it).
+    // opaque hoists too, past the washes recorded before it.
     assert_eq!(stats.opaque_reordered, 5, "hoisted occluders");
     assert_eq!(stats.culled, 1, "the off-viewport Difference clip");
-    assert_eq!(stats.clips, 1, "only the Intersect clip renders");
+    assert_eq!(stats.clips, 1, "only the Intersect clip applies");
 
     let rgba = valo_harness::read_texture_rgba(&device, &queue, offscreen.texture(), size);
     valo_harness::assert_golden(goldens_dir(), "m7_reorder", size, &rgba);
@@ -3336,6 +3352,7 @@ fn elliptical_rrect_scene() -> valo::DisplayList {
         Rect::new(20.0, 150.0, 180.0, 100.0),
         [[70.0, 25.0]; 4],
         ClipOp::Intersect,
+        true,
     );
     for i in 0..9 {
         b.draw_rect(
@@ -3824,7 +3841,11 @@ fn image_filter_that_changes_transparent_black_floods_layer_clip() {
     let mut context = Context::new(device, queue);
     let mut outside_the_child = |paint: Paint| {
         let mut builder = DisplayListBuilder::new();
-        builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+        builder.clip_rect(
+            Rect::new(0.0, 0.0, 32.0, 32.0),
+            valo::ClipOp::Intersect,
+            true,
+        );
         builder.save_layer(None, &paint);
         builder.draw_rect(
             Rect::new(0.0, 0.0, 4.0, 4.0),
@@ -3877,7 +3898,11 @@ fn a_draws_image_filter_that_colours_transparent_pixels_fills_its_clip() {
     let red = valo::ColorFilter::Blend(Color::rgb(1.0, 0.0, 0.0), BlendMode::Src);
     let mut render = |draw: &dyn Fn(&mut DisplayListBuilder)| {
         let mut builder = DisplayListBuilder::new();
-        builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+        builder.clip_rect(
+            Rect::new(0.0, 0.0, 32.0, 32.0),
+            valo::ClipOp::Intersect,
+            true,
+        );
         draw(&mut builder);
         let pixels = valo_harness::render_to_rgba(
             &mut context,
@@ -4023,7 +4048,11 @@ fn an_opacity_group_keeps_its_alpha_off_a_colour_filtered_layer() {
     };
     let mut context = Context::new(device, queue);
     let mut builder = DisplayListBuilder::new();
-    builder.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), valo::ClipOp::Intersect);
+    builder.clip_rect(
+        Rect::new(0.0, 0.0, 32.0, 32.0),
+        valo::ClipOp::Intersect,
+        true,
+    );
     builder.save_layer(None, &Paint::from_color(Color::rgba(0.0, 0.0, 0.0, 0.5)));
     builder.save_layer(
         None,

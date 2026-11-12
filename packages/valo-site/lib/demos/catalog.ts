@@ -418,7 +418,7 @@ export default function draw(scene) {
   const lens = new Path();
   lens.roundRect(0.16 * W, 0.31 * H, 0.70 * W, 0.46 * H, new Float32Array([18, 42, 18, 42]), false);
   builder.save();
-  builder.clipPath(lens, FillRule.NonZero, ClipOp.Intersect);
+  builder.clipPath(lens, FillRule.NonZero, ClipOp.Intersect, true);
   builder.backdropBlur(0.16 * W, 0.31 * H, 0.70 * W, 0.46 * H, 17);
   const tint = new Paint(0.067, 0.075, 0.090, 0.30);
   builder.drawRect(0.16 * W, 0.31 * H, 0.70 * W, 0.46 * H, tint);
@@ -556,14 +556,14 @@ export default function draw(scene) {
   arch.arc(0.5 * W, 0.48 * H, 0.32 * W, Math.PI, Math.PI);
   arch.lineTo(0.82 * W, 0.87 * H);
   arch.close();
-  builder.clipPath(arch, FillRule.NonZero, ClipOp.Intersect);
+  builder.clipPath(arch, FillRule.NonZero, ClipOp.Intersect, true);
 
   const hx = 0.54 * W + 0.13 * W * Math.sin((Math.PI * 2 * time) / 2.8);
   const hy = 0.53 * H + 0.075 * H * Math.cos((Math.PI * 2 * time) / 2.8);
   const hr = 0.155 * W + 0.012 * W * Math.sin((Math.PI * 4 * time) / 2.8);
   const hole = new Path();
   hole.arc(hx, hy, hr, 0, Math.PI * 2);
-  builder.clipPath(hole, FillRule.NonZero, ClipOp.Difference);
+  builder.clipPath(hole, FillRule.NonZero, ClipOp.Difference, true);
 
   const satin = Shader.linearGradient(
     0.12 * W, 0.88 * H, 0.78 * W, 0.22 * H,
@@ -1147,7 +1147,7 @@ export default function draw(scene) {
   builder.save();
   builder.translate(width * 0.5, height * 0.5);
   builder.rotate(Math.sin(time * 0.5) * 0.4);
-  builder.clipRect(-width * 0.36, -46, width * 0.72, 92, ClipOp.Intersect);
+  builder.clipRect(-width * 0.36, -46, width * 0.72, 92, ClipOp.Intersect, true);
   builder.rotate(-Math.sin(time * 0.5) * 0.4);
   builder.translate(-width * 0.5, -height * 0.5);
 

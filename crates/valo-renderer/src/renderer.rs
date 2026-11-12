@@ -15,8 +15,8 @@ use crate::pool::TargetPool;
 /// `RenderTarget` is the destination for one render operation.
 ///
 /// `texture` must be the resource behind `view` and match `format` and `size`.
-/// Advanced blends, backdrop filters and keeping the target's pixels
-/// (`clear: None`) require `COPY_SRC` texture usage.
+/// Keeping the target's pixels (`clear: None`) requires `COPY_SRC` texture
+/// usage.
 pub struct RenderTarget<'a> {
     /// `view` is the attachment into which Valo renders.
     pub view: &'a wgpu::TextureView,
@@ -53,7 +53,8 @@ pub struct RenderStats {
     pub ops: u32,
     /// `draws` is the number of logical draws remaining after culling.
     pub draws: u32,
-    /// `clips` is the number of encoded clip operations.
+    /// `clips` is the number of clips applied: drawn into the depth buffer,
+    /// or stated by the scissor alone.
     pub clips: u32,
     /// `culled` is the number of draws skipped because their bounds miss the target.
     pub culled: u32,
@@ -61,7 +62,8 @@ pub struct RenderStats {
     pub layers_rendered: u32,
     /// `layers_elided` is the number of save layers applied without an offscreen target.
     pub layers_elided: u32,
-    /// `snapshots` is the number of target-region copies used by destination reads.
+    /// `snapshots` is the number of times a target's pass was ended for a
+    /// destination read or a backdrop to read what it held.
     pub snapshots: u32,
     /// `backdrops` is the number of backdrop regions that ran a blur chain.
     pub backdrops: u32,

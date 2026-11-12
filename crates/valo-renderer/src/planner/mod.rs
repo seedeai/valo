@@ -4,8 +4,10 @@
 //! - [`replay`]: walking one list — the ONLY place that matches on `Op`.
 //! - [`raster_embed`]: an embed the host hinted as cacheable, drawn from
 //!   its cached raster.
-//! - [`draw_state`]: what every draw is handed — transform, depth, group
-//!   alpha.
+//! - [`draw_state`]: what every draw is handed — transform, depth, clip
+//!   coverage, group alpha.
+//! - [`clip_coverage`]: where the clips around a draw let it show, which
+//!   its scissor cuts it to, and what becomes of a clip.
 //! - [`source`]: what a draw draws — its shape, or an image, the analytic
 //!   blurred rrect, a glyph run — and the paints its parts take.
 //! - [`route`]: the ONE per-draw decision (direct / effect layer / dst-read).
@@ -44,6 +46,7 @@
 //!   services, and scene state reaches it only as arguments.
 
 mod backdrop;
+mod clip_coverage;
 mod draw_context;
 mod draw_state;
 mod drawing;
