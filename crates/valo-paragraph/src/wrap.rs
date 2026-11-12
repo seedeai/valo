@@ -63,19 +63,21 @@ impl Measure {
 /// break opportunities, commit a line at the last one that still fit.
 /// Trailing whitespace rides the line and normally does not count toward its
 /// width. Canvas-style callers can preserve its advance.
-/// Min/max intrinsic widths ride the same walk.
+/// Min/max intrinsic widths ride the same walk, which goes on over the text
+/// the line limit cut off: skparagraph's TextWrapper scans that rest for them too,
+/// so a truncated paragraph still reports the width its whole text asks for.
 pub fn wrap_lines(
     text: &str,
     runs: &[ShapedRun],
     max_width: f32,
-    max_lines: Option<u32>,
+    limit: LineLimit,
     preserve_trailing_whitespace: bool,
 ) -> Wrapped {
     let measure = Measure::new(runs);
-    let cap = max_lines.map_or(usize::MAX, |n| n.max(1) as usize);
     let mut ranges = Vec::new();
     let mut start = 0usize;
     let mut committed = 0usize; // last opportunity that fit
+    let mut full = false;
     let mut intrinsics = Intrinsics::default();
     for (at, kind) in unicode_linebreak::linebreaks(text) {
         intrinsics.segment(
@@ -86,34 +88,30 @@ pub fn wrap_lines(
             kind,
             preserve_trailing_whitespace,
         );
-        if ranges.len() >= cap {
-            return Wrapped {
-                ranges,
-                truncated: true,
-                min_intrinsic: intrinsics.min,
-                max_intrinsic: intrinsics.max,
-            };
-        }
-        if measured_width(text, &measure, start..at, preserve_trailing_whitespace) > max_width
-            && committed > start
-        {
-            ranges.push(start..committed);
-            start = committed;
+        if !full {
+            if measured_width(text, &measure, start..at, preserve_trailing_whitespace) > max_width
+                && committed > start
+            {
+                ranges.push(start..committed);
+                start = committed;
+                full = limit.is_reached(ranges.len(), LineEnd::Soft);
+            }
+            // Re-check the limit: the overflow push above may have just reached it
+            // (one iteration can otherwise push TWICE and overshoot max_lines).
+            if kind == unicode_linebreak::BreakOpportunity::Mandatory && !full {
+                ranges.push(start..at);
+                start = at;
+                full = limit.is_reached(ranges.len(), LineEnd::Hard);
+            }
         }
         committed = at;
-        // Re-check the cap: the overflow push above may have just filled it
-        // (one iteration can otherwise push TWICE and overshoot max_lines).
-        if kind == unicode_linebreak::BreakOpportunity::Mandatory && ranges.len() < cap {
-            ranges.push(start..at);
-            start = at;
-        }
     }
-    if start < text.len() && ranges.len() < cap {
+    if start < text.len() && !full {
         ranges.push(start..text.len());
     }
     // A trailing hard break opens one more, EMPTY line (skparagraph emits
     // it with fEmptyMetrics) — the caret after "hi\n" lives there.
-    if ranges.len() < cap
+    if !full
         && text.chars().last().is_some_and(is_hard_break)
         && ranges.last().is_some_and(|r| r.end == text.len())
     {
@@ -123,13 +121,56 @@ pub fn wrap_lines(
     if ranges.is_empty() {
         ranges.push(0..0);
     }
+    let (min_intrinsic, max_intrinsic) = intrinsics.reported(limit);
     Wrapped {
-        truncated: start < text.len()
-            && ranges.len() >= cap
-            && ranges.last().is_none_or(|l| l.end < text.len()),
+        truncated: full && start < text.len(),
         ranges,
-        min_intrinsic: intrinsics.min,
-        max_intrinsic: intrinsics.max,
+        min_intrinsic,
+        max_intrinsic,
+    }
+}
+
+/// `LineLimit` is where wrapping stops laying out lines, as skparagraph's TextWrapper
+/// decides it: after `max_lines` lines, or, for a paragraph with an ellipsis and no
+/// `max_lines`, after the first line that overflows the width (Flutter's `ellipsis` contract).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineLimit {
+    /// At most this many lines; `usize::MAX` for no limit.
+    Lines(usize),
+    /// Lines a hard break ends go on; the first one a soft break ends is the last.
+    FirstOverflow,
+}
+
+/// How a committed line ended: at a hard break, or wrapped at a soft one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineEnd {
+    Hard,
+    Soft,
+}
+
+impl LineLimit {
+    /// `of` is the limit `style` sets. An empty ellipsis ellipsizes nothing, as
+    /// skparagraph's `ParagraphStyle::ellipsized` says.
+    pub fn of(style: &ParagraphStyle) -> Self {
+        let ellipsized = style.ellipsis.as_deref().is_some_and(|e| !e.is_empty());
+        match style.max_lines {
+            Some(lines) => Self::Lines(lines.max(1) as usize),
+            None if ellipsized => Self::FirstOverflow,
+            None => Self::Lines(usize::MAX),
+        }
+    }
+
+    fn is_reached(self, lines: usize, end: LineEnd) -> bool {
+        match self {
+            Self::Lines(limit) => lines >= limit,
+            Self::FirstOverflow => end == LineEnd::Soft,
+        }
+    }
+
+    /// `never_soft_wraps` is whether a soft break always ends the paragraph rather than
+    /// starting a line, as on a single line or at an ellipsis without `max_lines`.
+    fn never_soft_wraps(self) -> bool {
+        matches!(self, Self::Lines(1) | Self::FirstOverflow)
     }
 }
 
@@ -169,6 +210,19 @@ impl Intrinsics {
             self.max = self.max.max(self.line);
             self.line_start = to;
         }
+    }
+
+    /// `reported` is the (min, max) pair a paragraph under `limit` reports, as
+    /// skparagraph's `ParagraphImpl::layout` settles the walk's: a paragraph that never
+    /// soft-wraps (one line, or an ellipsis without `max_lines`) has its max as its min
+    /// (Flutter's rule), and max is never below min.
+    fn reported(&self, limit: LineLimit) -> (f32, f32) {
+        let min = if limit.never_soft_wraps() {
+            self.max
+        } else {
+            self.min
+        };
+        (min, self.max.max(min))
     }
 }
 

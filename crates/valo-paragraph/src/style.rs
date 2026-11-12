@@ -314,6 +314,13 @@ pub struct ParagraphStyle {
     /// `max_lines` limits the number of laid-out lines.
     pub max_lines: Option<u32>,
     /// `ellipsis` replaces omitted content at the visual end of a truncated paragraph.
+    ///
+    /// With `max_lines` set, it ends the last line when text is left over. Without it,
+    /// the paragraph stops at the first line that overflows the layout width, and that
+    /// line ends with the ellipsis; lines that end at a hard break before it are kept.
+    /// Either way the paragraph reports itself [`crate::Paragraph::truncated`], and
+    /// without `max_lines` its minimum intrinsic width is its maximum, as Flutter's
+    /// `TextPainter.ellipsis` does. An empty string ellipsizes nothing.
     pub ellipsis: Option<String>,
     /// `text_height_behavior` says whether the first line's top and the last
     /// line's bottom take the room a height multiplier gives them, or only the

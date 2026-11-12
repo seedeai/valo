@@ -652,6 +652,146 @@ fn max_lines_never_overshoots() {
     );
 }
 
+/// A paragraph cut to one line with an ellipsis still reports the width its whole text asks
+/// for: hosts size a loosely constrained title by it.
+#[test]
+fn one_ellipsized_line_reports_its_whole_text_as_max_intrinsic_width() {
+    const TEXT: &str = "the quick brown fox jumps over the lazy dog";
+    let one_line = ParagraphStyle {
+        max_lines: Some(1),
+        ellipsis: Some("…".into()),
+        ..Default::default()
+    };
+    let truncated = monospace(TEXT, one_line, 60.0);
+    let unbounded = monospace(TEXT, ParagraphStyle::default(), f32::INFINITY);
+    assert!(truncated.truncated());
+    assert_close(
+        truncated.max_intrinsic_width(),
+        unbounded.max_intrinsic_width(),
+    );
+    assert_close(
+        truncated.min_intrinsic_width(),
+        truncated.max_intrinsic_width(),
+    );
+}
+
+/// skparagraph's `SkParagraph_Ellipsis`, in a monospace font for its Ahem: the text
+/// `max_lines` or an ellipsis cuts off still counts toward both intrinsic widths, and the min
+/// of one line, or of an ellipsis without `max_lines`, is its max.
+#[test]
+fn intrinsic_widths_count_the_text_max_lines_cuts_off() {
+    const TEXT: &str = "This\nis a wrapping test. It should wrap at manual newlines, and if softWrap is true, also at spaces.";
+    let advance = monospace("X", ParagraphStyle::default(), f32::INFINITY).max_intrinsic_width();
+    // (max_lines, ellipsis, min and max in characters): the longest word is "newlines,",
+    // the longest hard line the second.
+    let rows = [
+        (Some(1), false, 95.0, 95.0),
+        (Some(3), false, 9.0, 95.0),
+        (None, false, 9.0, 95.0),
+        (Some(1), true, 95.0, 95.0),
+        (Some(3), true, 9.0, 95.0),
+        (None, true, 95.0, 95.0),
+    ];
+    for (max_lines, ellipsized, min, max) in rows {
+        let style = ParagraphStyle {
+            max_lines,
+            ellipsis: ellipsized.then(|| "\u{2026}".to_owned()),
+            ..Default::default()
+        };
+        let p = monospace(TEXT, style, 50.0);
+        assert_close(p.min_intrinsic_width(), min * advance);
+        assert_close(p.max_intrinsic_width(), max * advance);
+    }
+}
+
+/// The row of skparagraph's `SkParagraph_Ellipsis` with an ellipsis and no `max_lines`: the
+/// line a hard break ends is kept, the first line that overflows ends with the ellipsis, and
+/// nothing is laid out after it (Skia's height there is two lines).
+#[test]
+fn ellipsis_without_max_lines_cuts_at_the_first_overflowing_line() {
+    const TEXT: &str = "This\nis a wrapping test. It should wrap at manual newlines, and if softWrap is true, also at spaces.";
+    let style = ParagraphStyle {
+        ellipsis: Some("\u{2026}".to_owned()),
+        ..Default::default()
+    };
+    let p = monospace(TEXT, style, 50.0);
+    assert!(p.truncated());
+    let lines = p.lines();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].range, 0..5, "the hard line is kept whole");
+    let ellipsized = &lines[1];
+    let ellipsis = ellipsized.runs.last().expect("the ellipsis run");
+    assert!(ellipsis.glyphs.iter().all(|g| g.cluster >= 5));
+    assert!(ellipsized.width <= 50.0, "{} fits", ellipsized.width);
+    let line_height = |line: &valo_paragraph::Line| line.ascent + line.descent;
+    assert_close(p.height(), line_height(&lines[0]) + line_height(ellipsized));
+}
+
+/// Without a width to overflow, an ellipsis cuts nothing: Flutter's `TextPainter intrinsic
+/// dimensions` lays out "X X X" with an ellipsis unconstrained and gets one whole line whose
+/// min intrinsic width is its max.
+#[test]
+fn ellipsis_without_max_lines_cuts_nothing_at_unbounded_width() {
+    let style = ParagraphStyle {
+        ellipsis: Some("e".to_owned()),
+        ..Default::default()
+    };
+    let p = monospace("X X X", style, f32::INFINITY);
+    let advance = monospace("X", ParagraphStyle::default(), f32::INFINITY).max_intrinsic_width();
+    assert!(!p.truncated());
+    assert_eq!(p.lines().len(), 1);
+    assert_close(p.width(), 5.0 * advance);
+    assert_close(p.min_intrinsic_width(), 5.0 * advance);
+    assert_close(p.max_intrinsic_width(), 5.0 * advance);
+}
+
+/// Lines that fit and end at hard breaks are all kept: only an overflowing line is cut.
+#[test]
+fn ellipsis_without_max_lines_keeps_hard_lines_that_fit() {
+    let style = ParagraphStyle {
+        ellipsis: Some("\u{2026}".to_owned()),
+        ..Default::default()
+    };
+    let p = monospace("one\ntwo\nthree", style, 50.0);
+    assert!(!p.truncated());
+    assert_eq!(p.lines().len(), 3);
+}
+
+/// An empty ellipsis ellipsizes nothing, as skparagraph's `ParagraphStyle::ellipsized` says:
+/// without `max_lines` the text wraps as if there were none.
+#[test]
+fn empty_ellipsis_without_max_lines_wraps() {
+    const TEXT: &str = "the quick brown fox jumps over the lazy dog";
+    let with_empty = ParagraphStyle {
+        ellipsis: Some(String::new()),
+        ..Default::default()
+    };
+    let p = monospace(TEXT, with_empty, 60.0);
+    let plain = monospace(TEXT, ParagraphStyle::default(), 60.0);
+    assert!(!p.truncated());
+    assert_eq!(p.lines().len(), plain.lines().len());
+}
+
+fn monospace(text: &str, paragraph_style: ParagraphStyle, max_width: f32) -> Paragraph {
+    let mut fonts = FontCollection::new();
+    fonts
+        .register("JetBrains Mono", super::asset("jetbrains_mono.ttf"))
+        .unwrap();
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.style(paragraph_style);
+    b.add_text(text, &TextStyle::new("JetBrains Mono", 10.0, Color::BLACK));
+    let mut p = b.build();
+    p.layout(max_width);
+    p
+}
+
+fn assert_close(actual: f32, expected: f32) {
+    assert!(
+        (actual - expected).abs() < 0.01,
+        "{actual} is not {expected}"
+    );
+}
+
 /// C2: a trailing newline opens an empty final line — the caret after
 /// typing Enter lives there, not after the previous word.
 #[test]

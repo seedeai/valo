@@ -9,7 +9,7 @@ use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis
 
 use crate::shape::{shape_runs, ShapedRun};
 use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
-use crate::wrap::{place_lines, wrap_lines, Wrapped};
+use crate::wrap::{place_lines, wrap_lines, LineLimit, Wrapped};
 
 /// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
 #[derive(Clone, Copy, Debug)]
@@ -111,7 +111,7 @@ pub(crate) struct Layout {
     pub lines: Vec<Line>,
     pub width: f32,
     pub height: f32,
-    /// `max_lines` cut content off (the ellipsis case).
+    /// The line limit cut content off (the ellipsis case).
     pub truncated: bool,
     /// The chosen line ranges — re-placing (recolor) skips re-wrapping.
     pub wrapped: Wrapped,
@@ -160,7 +160,7 @@ impl Paragraph {
             &self.text,
             &self.shaped,
             max_width,
-            self.style.max_lines,
+            LineLimit::of(&self.style),
             self.style.preserve_trailing_whitespace,
         );
         self.layout = Some(self.place(&bidi, wrapped, max_width));
@@ -214,7 +214,7 @@ impl Paragraph {
 
     /// `placeholder_boxes` returns where each placeholder landed, in the order they were added.
     ///
-    /// A placeholder cut off by `max_lines` has no box, so the list can be shorter than the
+    /// A placeholder cut off by `max_lines` or an ellipsis has no box, so the list can be shorter than the
     /// number added. It is empty before [`Self::layout`] is called.
     pub fn placeholder_boxes(&self) -> Vec<PlaceholderBox> {
         let mut boxes: Vec<(usize, PlaceholderBox)> = self
