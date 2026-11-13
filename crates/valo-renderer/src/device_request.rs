@@ -96,7 +96,10 @@ pub async fn request_device(
     let mut refused = Vec::new();
     for &index in &ranking.order {
         let adapter = &adapters[index];
-        match adapter.request_device(&device_descriptor(adapter)).await {
+        match adapter
+            .request_device(&device_descriptor(adapter.features(), adapter.limits()))
+            .await
+        {
             Ok((device, queue)) => return Ok((adapter.clone(), device, queue)),
             Err(error) => refused.push(RefusedAdapter {
                 adapter: adapter.get_info(),
@@ -169,14 +172,38 @@ impl Found {
     }
 }
 
-/// `device_descriptor` is what [`request_device`] asks of `adapter`: its own
-/// limits, and the features valo uses when it offers them.
-fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
+/// `MEMORY_BLOCK_BYTES` is the size of the blocks a device valo opens takes
+/// memory from the system in: what Impeller asks of its Vulkan allocator
+/// (`allocator_vk.cc`, `preferredLargeHeapBlockSize`).
+const MEMORY_BLOCK_BYTES: u64 = 4 * 1024 * 1024;
+
+/// `DEVICE_MEMORY_HINTS` is how a device valo opens takes GPU memory from
+/// the system: in 4 MiB blocks, and a block of its own for anything larger.
+///
+/// So a texture that comes and goes costs an allocation of its size. wgpu's
+/// default takes 128 to 256 MB at a time on Vulkan and D3D12 and gives a
+/// block back as it empties: where a device's lasting textures happened to
+/// fill the first block, a 15 MB texture that came and went with a backdrop
+/// blur cost a Pixel 2 XL a 256 MB allocation, 134 to 225 ms, each time.
+/// Metal and GL ignore the hint. A host that opens its own device can pass
+/// it too.
+pub const DEVICE_MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: MEMORY_BLOCK_BYTES..MEMORY_BLOCK_BYTES,
+};
+
+/// `device_descriptor` is what [`request_device`] asks of an adapter that
+/// offers `features` and `limits`: those limits, the features valo uses
+/// among those offered, and [`DEVICE_MEMORY_HINTS`].
+fn device_descriptor(
+    features: wgpu::Features,
+    limits: wgpu::Limits,
+) -> wgpu::DeviceDescriptor<'static> {
     let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
     wgpu::DeviceDescriptor {
         label: Some("valo"),
-        required_features: adapter.features() & wanted,
-        required_limits: adapter.limits(),
+        required_features: features & wanted,
+        required_limits: limits,
+        memory_hints: DEVICE_MEMORY_HINTS,
         ..Default::default()
     }
 }
@@ -286,7 +313,7 @@ pub(crate) fn test_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)
         pollster::block_on(request_device(&instance, &options, FeatureLevel::Core)).ok()?;
     let within_default_limits = wgpu::DeviceDescriptor {
         required_limits: wgpu::Limits::default(),
-        ..device_descriptor(&adapter)
+        ..device_descriptor(adapter.features(), adapter.limits())
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&within_default_limits))
         .expect("a core adapter supports WebGPU's default limits");
@@ -447,6 +474,18 @@ mod tests {
         assert!(matches!(
             ranking.unqualified[..],
             [(0, Refusal::SurfaceUnsupported)]
+        ));
+    }
+
+    /// wgpu's default, which a descriptor filled in from `Default` carries,
+    /// takes memory 128 to 256 MB at a time on Vulkan and D3D12.
+    #[test]
+    fn a_device_takes_memory_in_small_blocks() {
+        let descriptor = device_descriptor(wgpu::Features::empty(), wgpu::Limits::default());
+        assert!(matches!(
+            descriptor.memory_hints,
+            wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: blocks }
+                if blocks == (MEMORY_BLOCK_BYTES..MEMORY_BLOCK_BYTES)
         ));
     }
 

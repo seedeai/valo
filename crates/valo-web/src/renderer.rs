@@ -291,6 +291,7 @@ async fn create_renderer_fallback(
             // actually offers.
             required_limits: wgpu::Limits::downlevel_webgl2_defaults()
                 .using_resolution(adapter.limits()),
+            memory_hints: valo::DEVICE_MEMORY_HINTS,
             ..Default::default()
         })
         .await

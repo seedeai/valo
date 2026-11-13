@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use valo::{
     Color, Decoration, DecorationKind, Font, FontCollection, Paragraph, ParagraphBuilder,
-    ParagraphStyle, Point, Shadow, TextAlign, TextDirection, TextStyle, VariantCaps,
+    ParagraphStyle, Point, Shadow, TextAlign, TextDirection, TextHeightBehavior, TextStyle,
+    VariantCaps,
 };
 use wasm_bindgen::prelude::*;
 
@@ -481,6 +482,7 @@ impl WebParagraph {
             preserve_trailing_whitespace,
             max_lines: (max_lines > 0).then_some(max_lines),
             ellipsis: (!ellipsis.is_empty()).then(|| ellipsis.to_owned()),
+            text_height_behavior: TextHeightBehavior::default(),
         };
         let mut paragraph = shape_spans(fonts, &paragraph_style, &[(text.to_owned(), style)])?;
         paragraph.layout(max_width);

@@ -61,6 +61,7 @@ pub use valo_paragraph::{
 pub use valo_renderer::{
     request_device, AtlasReport, FeatureLevel, ImageDesc, MemoryReport, NoDevice, PoolReport,
     Refusal, RefusedAdapter, RenderStats, RenderTarget, TextTiers, WgpuCounters,
+    DEVICE_MEMORY_HINTS,
 };
 pub use valo_text::{
     match_style, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId,

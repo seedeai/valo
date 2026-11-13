@@ -32,7 +32,9 @@ mod report;
 mod runtime;
 mod shader_abi;
 
-pub use device_request::{request_device, FeatureLevel, NoDevice, Refusal, RefusedAdapter};
+pub use device_request::{
+    request_device, FeatureLevel, NoDevice, Refusal, RefusedAdapter, DEVICE_MEMORY_HINTS,
+};
 pub use glyphs::TextTiers;
 pub use host_buffer::HostBuffer;
 pub use image_context::ImageContext;

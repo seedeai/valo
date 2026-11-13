@@ -81,6 +81,7 @@ async fn open_within_default_limits(
         label: Some("valo"),
         required_features: features,
         required_limits: wgpu::Limits::default(),
+        memory_hints: valo::DEVICE_MEMORY_HINTS,
         ..Default::default()
     };
     adapter
