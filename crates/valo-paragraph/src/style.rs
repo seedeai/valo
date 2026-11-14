@@ -309,7 +309,12 @@ pub struct ParagraphStyle {
     /// `None` infers it from the first strong character. Set it explicitly for
     /// neutral text such as digits and punctuation.
     pub direction: Option<TextDirection>,
-    /// `preserve_trailing_whitespace` includes trailing spaces in line widths.
+    /// `preserve_trailing_whitespace` makes a line's trailing whitespace part of the content
+    /// it draws and measures, as Canvas2D needs: it counts in the line's width and alignment.
+    ///
+    /// Without it, trailing whitespace is a ghost of its line, as in skparagraph: placed for
+    /// carets, selection and hit testing, outside the width. A hard line break stays a ghost
+    /// either way: never drawn, never wide.
     pub preserve_trailing_whitespace: bool,
     /// `max_lines` limits the number of laid-out lines.
     pub max_lines: Option<u32>,

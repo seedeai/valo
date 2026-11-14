@@ -11,6 +11,7 @@ use crate::style::{
     Decoration, LeadingDistribution, PlaceholderAlignment, PlaceholderStyle, Shadow, TextBaseline,
     TextStyle,
 };
+use crate::wrap::is_hard_break;
 
 /// A maximal stretch of text sharing style, resolved font, and bidi level —
 /// shaped as one harfrust call on the "endless line" (width-free; wrapping
@@ -39,6 +40,10 @@ pub struct ShapedRun {
     /// The placeholder this run stands for: its one glyph is the box's advance, and it has
     /// nothing to draw.
     pub placeholder: Option<ShapedPlaceholder>,
+    /// The run is one hard line break, a cluster of the line it ends (skparagraph's
+    /// `Cluster::isHardBreak`). Its glyphs have no advance and its metrics do not size a
+    /// line that has text.
+    pub hard_break: bool,
 }
 
 /// `ShapedPlaceholder` is a placeholder's box in place of glyphs: its index in the order the
@@ -127,11 +132,15 @@ struct Segment {
     range: Range<usize>,
     font: FontId,
     level: u8,
+    hard_break: bool,
 }
 
 /// Cut one styled span wherever the resolved font or the bidi level changes.
 /// Whitespace sticks to the run it's in when covered (spaces
-/// shouldn't split otherwise-uniform runs). Newlines separate silently.
+/// shouldn't split otherwise-uniform runs). A hard line break is a segment of
+/// its own, so it shapes to a cluster of its own, as skparagraph's shaper gives
+/// each character one (`HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS`) where
+/// this one groups graphemes, which would join "\r\n".
 fn segment_span(
     collection: &mut FontCollection,
     text: &str,
@@ -145,11 +154,9 @@ fn segment_span(
     let mut faces = collection.faces().style_faces(&style.families, attrs);
     for (at, ch) in text[span.clone()].char_indices() {
         let at = span.start + at;
-        if ch == '\n' {
-            continue;
-        }
         let level = bidi.levels[at].number();
-        let sticky = ch.is_whitespace();
+        let hard_break = is_hard_break(ch);
+        let sticky = ch.is_whitespace() && !hard_break;
         let font = match (&segments.last(), sticky) {
             (Some(last), true)
                 if last.range.end == at
@@ -172,6 +179,15 @@ fn segment_span(
                     } else {
                         demand.add_codepoint(ch, attrs);
                     }
+                } else if resolved.is_none()
+                    && collection.require_codepoint(&style.families, ' ', attrs)
+                {
+                    // Whitespace, a hard break among it, renders in any face but
+                    // needs one, and the set has none yet: a space, which every
+                    // face covers, asks the sources for the style's face, as
+                    // skparagraph shapes a lone newline in the style's typeface.
+                    faces = collection.faces().style_faces(&style.families, attrs);
+                    resolved = collection.faces().resolve_prepared(&faces, ch);
                 }
                 let Some((font, _covered)) = resolved else {
                     continue;
@@ -180,13 +196,20 @@ fn segment_span(
             }
         };
         match segments.last_mut() {
-            Some(last) if last.range.end == at && last.font == font && last.level == level => {
+            Some(last)
+                if last.range.end == at
+                    && last.font == font
+                    && last.level == level
+                    && !last.hard_break
+                    && !hard_break =>
+            {
                 last.range.end = at + ch.len_utf8();
             }
             _ => segments.push(Segment {
                 range: at..at + ch.len_utf8(),
                 font,
                 level,
+                hard_break,
             }),
         }
     }
@@ -214,6 +237,9 @@ fn shape_segment(
             })
             .collect();
     apply_spacing(&mut glyphs, text, style);
+    if segment.hard_break {
+        collapse(&mut glyphs);
+    }
     ShapedRun {
         range: segment.range,
         font: segment.font,
@@ -228,6 +254,19 @@ fn shape_segment(
         shadows: style.shadows.clone(),
         glyphs,
         placeholder: None,
+        hard_break: segment.hard_break,
+    }
+}
+
+/// `collapse` takes a hard line break's glyphs to no extent at their origin: skparagraph
+/// shapes the break like any character, then measures every range that ends at it up to the
+/// break's start (`TextLine::measureTextInsideOneRun`), so the break is never as wide as the
+/// missing glyph the font gives it.
+fn collapse(glyphs: &mut [ShapedGlyph]) {
+    for glyph in glyphs {
+        glyph.x_advance = 0.0;
+        glyph.x_offset = 0.0;
+        glyph.y_offset = 0.0;
     }
 }
 
@@ -274,6 +313,7 @@ fn placeholder_run(
             font_ascent,
             font_descent,
         }),
+        hard_break: false,
     }
 }
 
@@ -325,6 +365,7 @@ pub(crate) fn shape_ellipsis(collection: &FaceSet, tail: &ShapedRun, text: &str)
         shadows: Vec::new(),
         glyphs,
         placeholder: None,
+        hard_break: false,
     }
 }
 

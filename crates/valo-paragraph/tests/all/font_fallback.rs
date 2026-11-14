@@ -126,3 +126,32 @@ fn an_empty_collection_shapes_from_its_sources() {
     );
     assert!(paragraph.demand().is_empty());
 }
+
+/// A text of hard breaks alone still asks the sources for its style's face, so each break is
+/// a cluster of its line, as skparagraph shapes a lone newline in the style's typeface.
+#[test]
+fn an_empty_collection_gives_lone_hard_breaks_a_face() {
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: None,
+        fallback_bytes: Some(asset("fira_sans.ttf")),
+        asked_codepoints: Vec::new(),
+    });
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text(
+        "\n\n",
+        &TextStyle::new("Fira Sans", 16.0, valo_geometry::Color::BLACK),
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(1000.0);
+
+    assert_eq!(paragraph.lines().len(), 3);
+    for newline in 0..2 {
+        assert_eq!(
+            paragraph.rects_for_range(newline..newline + 1).len(),
+            1,
+            "the newline at {newline} has a box"
+        );
+    }
+}

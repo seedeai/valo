@@ -177,8 +177,7 @@ fn justify_stretches_word_gaps() {
     // Every non-final line fills the width; the last stays ragged.
     for line in &p.lines()[..p.lines().len() - 1] {
         let right = line
-            .runs
-            .iter()
+            .drawn_runs()
             .map(|r| r.bounds.right())
             .fold(f32::MIN, f32::max);
         assert!(
@@ -188,8 +187,7 @@ fn justify_stretches_word_gaps() {
     }
     let last = p.lines().last().unwrap();
     let right = last
-        .runs
-        .iter()
+        .drawn_runs()
         .map(|r| r.bounds.right())
         .fold(f32::MIN, f32::max);
     assert!(right < 199.0, "last line is ragged: {right}");
@@ -923,4 +921,26 @@ fn a_line_reports_its_fonts_cap_height() {
         line.cap_height
     );
     assert!(line.cap_height > 0.0 && line.cap_height < line.ascent);
+}
+
+/// A line that `max_lines` keeps last but a hard break ends gets no ellipsis: skparagraph
+/// ellipsizes only a line it cut (`needEllipsis && !fHardLineBreak` in
+/// `TextWrapper::breakTextIntoLines`). The text after it is still cut off.
+#[test]
+fn a_hard_break_at_the_line_limit_gets_no_ellipsis() {
+    let style = ParagraphStyle {
+        max_lines: Some(1),
+        ellipsis: Some("\u{2026}".to_owned()),
+        ..Default::default()
+    };
+    let p = monospace("hello\nworld", style, f32::INFINITY);
+    let advance = monospace("X", ParagraphStyle::default(), f32::INFINITY).max_intrinsic_width();
+    assert!(p.truncated());
+    let lines = p.lines();
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].runs.iter().all(|run| !run.text.is_empty()),
+        "no ellipsis run"
+    );
+    assert_close(lines[0].width, 5.0 * advance);
 }

@@ -9,7 +9,7 @@ use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis
 
 use crate::shape::{shape_runs, ShapedRun};
 use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
-use crate::wrap::{place_lines, wrap_lines, LineLimit, Wrapped};
+use crate::wrap::{is_hard_break, place_lines, wrap_lines, LineLimit, Wrapped};
 
 /// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
 #[derive(Clone, Copy, Debug)]
@@ -80,9 +80,16 @@ pub struct PlaceholderBox {
 }
 
 /// `Line` contains the visually ordered runs and metrics of one laid-out line.
+///
+/// A line holds every cluster of its text, as skparagraph's line does: the content it draws,
+/// and after it its ghosts, the trailing whitespace and the hard line break that ends it, if
+/// one does. Ghosts answer carets, selection boxes and hit tests like any cluster, but are
+/// neither drawn nor counted in [`Self::width`]. A hard line break is a ghost with no
+/// advance. [`Self::drawn_runs`] leaves the ghosts out.
 #[derive(Clone, Debug)]
 pub struct Line {
-    /// `runs` contains the line's visually ordered glyph runs.
+    /// `runs` contains the line's visually ordered glyph runs, its ghosts among them. A run is
+    /// either drawn or a ghost, never both.
     pub runs: Vec<PlacedRun>,
     /// `baseline` is the paragraph-local y coordinate of the text baseline.
     pub baseline: f32,
@@ -99,8 +106,39 @@ pub struct Line {
     ///
     /// Trailing whitespace contributes only when requested by [`ParagraphStyle`].
     pub width: f32,
-    /// `range` is the UTF-8 byte range of paragraph text covered by the line.
+    /// `range` is the UTF-8 byte range of paragraph text covered by the line, its trailing
+    /// whitespace and hard line break included.
     pub range: Range<usize>,
+    /// `content_end` is where the text the line draws ends: before its trailing whitespace,
+    /// or, when [`ParagraphStyle`] preserves it, before the hard line break alone. Clusters
+    /// from here to the end of `range` are ghosts.
+    pub content_end: usize,
+    /// `text_end` is where the line's text ends before the hard line break that ends it, or
+    /// the end of `range` when none does.
+    pub text_end: usize,
+}
+
+impl Line {
+    /// `drawn_runs` returns the runs the line draws, in visual order: every run but its
+    /// ghosts. Placeholders and an ellipsis are drawn runs.
+    pub fn drawn_runs(&self) -> impl Iterator<Item = &PlacedRun> {
+        self.runs.iter().filter(|run| !self.is_ghost(run))
+    }
+
+    /// `ends_with_hard_break` reports whether a hard line break ends the line.
+    pub fn ends_with_hard_break(&self) -> bool {
+        self.text_end < self.range.end
+    }
+
+    /// A ghost shows text at or past the content's end; a placeholder or an ellipsis shows
+    /// none of the text.
+    fn is_ghost(&self, run: &PlacedRun) -> bool {
+        !run.text.is_empty()
+            && run
+                .glyphs
+                .first()
+                .is_some_and(|glyph| glyph.cluster >= self.content_end)
+    }
 }
 
 /// A finished `layout(width)`: the placed lines plus what they were placed
@@ -199,8 +237,9 @@ impl Paragraph {
         )
     }
 
-    /// skparagraph's computeEmptyMetrics: glyphless lines (blank first line,
-    /// trailing newline, empty paragraph) measure as the FIRST span's style.
+    /// skparagraph's computeEmptyMetrics: glyphless lines (the empty line after a
+    /// trailing newline before any text, an empty paragraph) measure as the FIRST
+    /// span's style.
     fn empty_line_metrics(&self) -> Option<crate::wrap::LineHeights> {
         self.empty_metrics
     }
@@ -274,9 +313,9 @@ impl Paragraph {
     pub fn last_glyph_origin(&self) -> Option<f32> {
         self.lines()
             .iter()
-            .flat_map(|line| &line.runs)
+            .flat_map(Line::drawn_runs)
             .flat_map(|run| &run.glyphs)
-            .next_back()
+            .last()
             .map(|glyph| glyph.x)
     }
 
@@ -295,7 +334,7 @@ impl Paragraph {
         let mut result: Option<Rect> = None;
         let mut rasterizer = Rasterizer::new();
         let mut color_bounds = HashMap::<(FontId, u32, u32), Option<Rect>>::new();
-        for run in self.lines().iter().flat_map(|line| &line.runs) {
+        for run in self.lines().iter().flat_map(Line::drawn_runs) {
             let font = self.faces.get(run.font);
             for glyph in &run.glyphs {
                 let key = (run.font, glyph.id, run.size.to_bits());
@@ -327,7 +366,11 @@ impl Paragraph {
     /// For glyphless text it resolves the first styled span instead. It returns
     /// `None` when no span or font is available.
     pub fn primary_font(&self) -> Option<(&Font, f32)> {
-        if let Some(run) = self.lines().first().and_then(|line| line.runs.first()) {
+        if let Some(run) = self
+            .lines()
+            .first()
+            .and_then(|line| line.drawn_runs().next())
+        {
             return Some((self.faces.get(run.font), run.size));
         }
         let (_, style) = self.spans.first()?;
@@ -498,6 +541,11 @@ pub struct LineMetrics {
     pub left: f32,
     /// `width` is the line's signed content advance in logical pixels.
     pub width: f32,
+    /// `content_end` is where the text the line draws ends; see [`Line::content_end`].
+    pub content_end: usize,
+    /// `text_end` is where the line's text ends before its hard line break; see
+    /// [`Line::text_end`].
+    pub text_end: usize,
 }
 
 impl Paragraph {
@@ -533,6 +581,8 @@ impl Paragraph {
                 cap_height: line.cap_height,
                 left: line.left,
                 width: line.width,
+                content_end: line.content_end,
+                text_end: line.text_end,
             })
             .collect()
     }
@@ -605,33 +655,27 @@ impl Paragraph {
     /// `rects_for_range` returns boxes for painting a selected UTF-8 byte range.
     ///
     /// It returns one box per intersecting line and visual run, so bidirectional
-    /// text may produce multiple boxes on one line.
+    /// text may produce multiple boxes on one line. Neighbouring boxes of runs in one
+    /// direction and font join into one, as skparagraph merges them
+    /// (`TextLine::getRectsForRange`), so a line's ghosts extend its content's box.
     pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Rect> {
         let mut out = Vec::new();
         for line in self.lines() {
             if range.end <= line.range.start || range.start >= line.range.end {
                 continue;
             }
+            let mut previous: Option<&PlacedRun> = None;
             for run in &line.runs {
-                let cells: Vec<&PlacedGlyph> = run
-                    .glyphs
-                    .iter()
-                    .filter(|g| g.cluster >= range.start && g.cluster < range.end)
-                    .collect();
-                let Some(first) = cells.first() else {
+                let Some(rect) = run_rect_in(line, run, &range) else {
                     continue;
                 };
-                let x0 = cells.iter().map(|g| g.x).fold(first.x, f32::min);
-                let x1 = cells
-                    .iter()
-                    .map(|g| g.x + g.advance)
-                    .fold(first.x + first.advance, f32::max);
-                out.push(Rect::from_ltrb(
-                    x0,
-                    line.baseline - line.ascent,
-                    x1,
-                    line.baseline + line.descent,
-                ));
+                match (out.last_mut(), previous) {
+                    (Some(last), Some(before)) if boxes_join(before, run, last, &rect) => {
+                        *last = last.union(&rect);
+                    }
+                    _ => out.push(rect),
+                }
+                previous = Some(run);
             }
         }
         out
@@ -694,6 +738,39 @@ impl Paragraph {
     }
 }
 
+/// `run_rect_in` is the box of `run`'s glyphs whose clusters start in `range`, across the
+/// line's height, or `None` when it has none there.
+fn run_rect_in(line: &Line, run: &PlacedRun, range: &Range<usize>) -> Option<Rect> {
+    let mut cells = run
+        .glyphs
+        .iter()
+        .filter(|g| g.cluster >= range.start && g.cluster < range.end);
+    let first = cells.next()?;
+    let (left, right) = cells.fold((first.x, first.x + first.advance), |(left, right), g| {
+        (left.min(g.x), right.max(g.x + g.advance))
+    });
+    Some(Rect::from_ltrb(
+        left,
+        line.baseline - line.ascent,
+        right,
+        line.baseline + line.descent,
+    ))
+}
+
+/// `boxes_join` reports whether the box of `run` continues `last`, the box of `before`, the
+/// run left of it: skparagraph merges the boxes of text runs in one direction, font and
+/// height multiplier that touch.
+fn boxes_join(before: &PlacedRun, run: &PlacedRun, last: &Rect, rect: &Rect) -> bool {
+    let touching = (last.right() - rect.x).abs() < 1e-3 || (rect.right() - last.x).abs() < 1e-3;
+    before.placeholder.is_none()
+        && run.placeholder.is_none()
+        && before.rtl == run.rtl
+        && before.font == run.font
+        && before.size == run.size
+        && before.height == run.height
+        && touching
+}
+
 /// `caret_x` returns the leading edge at an offset or the nearest prior edge.
 ///
 /// It uses the leading edge of the cluster at `offset`, else the nearest trailing edge
@@ -727,10 +804,17 @@ struct VisualCluster {
     rtl: bool,
 }
 
-/// `visual_clusters` returns a line's clusters from left to right.
+/// `visual_clusters` returns a line's clusters a point can land on, from left to right: all
+/// but its hard line break, a run of its own, which skparagraph's hit test never lands on,
+/// since it measures a run's glyphs only up to a hard break's start
+/// (`TextLine::measureTextInsideOneRun`).
 fn visual_clusters(line: &Line) -> Vec<VisualCluster> {
     let mut clusters: Vec<VisualCluster> = Vec::new();
-    for run in &line.runs {
+    let under_a_point = line
+        .runs
+        .iter()
+        .filter(|run| !run.text.chars().next().is_some_and(is_hard_break));
+    for run in under_a_point {
         for g in &run.glyphs {
             let (left, right) = (g.x.min(g.x + g.advance), g.x.max(g.x + g.advance));
             match clusters.last_mut() {

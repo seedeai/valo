@@ -79,7 +79,7 @@ pub fn wrap_lines(
     let mut committed = 0usize; // last opportunity that fit
     let mut full = false;
     let mut intrinsics = Intrinsics::default();
-    for (at, kind) in unicode_linebreak::linebreaks(text) {
+    for (at, kind) in line_breaks(text) {
         intrinsics.segment(
             text,
             &measure,
@@ -128,6 +128,27 @@ pub fn wrap_lines(
         min_intrinsic,
         max_intrinsic,
     }
+}
+
+/// `line_breaks` are UAX #14's break opportunities in `text`, mandatory only after a hard break
+/// and at the text's end. skparagraph records ICU's breaks as soft and only those after a hard
+/// break as hard (`SkUnicode_icu::computeCodeUnitFlags`), so a carriage return or a next-line
+/// character alone allows a break but forces none.
+fn line_breaks(
+    text: &str,
+) -> impl Iterator<Item = (usize, unicode_linebreak::BreakOpportunity)> + '_ {
+    use unicode_linebreak::BreakOpportunity::{Allowed, Mandatory};
+    unicode_linebreak::linebreaks(text).map(move |(at, kind)| {
+        let forced = at == text.len() || text[..at].chars().next_back().is_some_and(is_hard_break);
+        (
+            at,
+            if kind == Mandatory && forced {
+                Mandatory
+            } else {
+                Allowed
+            },
+        )
+    })
 }
 
 /// `LineLimit` is where wrapping stops laying out lines, as skparagraph's TextWrapper
@@ -271,8 +292,9 @@ pub fn place_lines(
     let mut lines = Vec::new();
     let mut y = 0.0f32;
     let mut para_width = 0.0f32;
-    // Lines with no glyphs (blank first line, trailing newline, empty
-    // paragraph) take the paragraph style's metrics — skparagraph's
+    // Lines with no clusters (the empty line after a trailing newline, an empty
+    // paragraph) take the previous line's metrics, as skparagraph's last line
+    // keeps them, or before any line the paragraph style's — skparagraph's
     // computeEmptyMetrics — not invented constants.
     let mut last_heights = empty_metrics.unwrap_or(LineHeights::FALLBACK);
     let count = wrapped.ranges.len();
@@ -281,11 +303,7 @@ pub fn place_lines(
             .iter()
             .filter(|r| r.range.start < range.end && r.range.end > range.start)
             .collect();
-        let text_runs: Vec<&ShapedRun> = overlapping
-            .iter()
-            .filter(|run| run.placeholder.is_none())
-            .copied()
-            .collect();
+        let text_runs = sizing_runs(&overlapping);
         let text_heights = line_heights(collection, &text_runs);
         if let Some(h) = text_heights {
             last_heights = h;
@@ -310,6 +328,7 @@ pub fn place_lines(
             count,
         );
         let line = LineSpec {
+            text_end: text_end(text, &range),
             range,
             baseline,
             text_descent,
@@ -328,6 +347,8 @@ pub fn place_lines(
             cap_height,
             left: placed.left,
             width: placed.width,
+            content_end: placed.content_end,
+            text_end: line.text_end,
             range: line.range,
         });
         y += heights.height();
@@ -344,6 +365,8 @@ pub fn place_lines(
 
 struct LineSpec {
     range: Range<usize>,
+    /// Where the line's text ends before the hard line break that ends it, if one does.
+    text_end: usize,
     baseline: f32,
     /// How far the line's text, without its placeholders, reaches below the baseline.
     text_descent: f32,
@@ -357,6 +380,7 @@ struct PlacedLine {
     runs: Vec<PlacedRun>,
     width: f32,
     left: f32,
+    content_end: usize,
 }
 
 /// The ellipsis run for a truncated final line, shaped in the line's
@@ -369,7 +393,10 @@ fn ellipsis_for(
     index: usize,
     count: usize,
 ) -> Option<ShapedRun> {
-    if !truncated || index + 1 != count {
+    // skparagraph ellipsizes only a line it cut, never one a hard break ends
+    // (`needEllipsis && !fHardLineBreak` in `TextWrapper::breakTextIntoLines`).
+    let ends_with_hard_break = overlapping.last().is_some_and(|run| run.hard_break);
+    if !truncated || index + 1 != count || ends_with_hard_break {
         return None;
     }
     let text = style.ellipsis.as_deref()?;
@@ -380,6 +407,12 @@ fn ellipsis_for(
     Some(shape_ellipsis(collection, tail, text))
 }
 
+/// `place_line` places every cluster of the line, as skparagraph's line holds them all
+/// (`fGhostClusterRange`): the content it draws, then its ghosts, the trailing whitespace and
+/// the hard break that it keeps for carets, selection and hit testing but neither draws nor
+/// counts in its width. The ghosts sit at the paragraph direction's end (UAX #9 L1), so in a
+/// right-to-left paragraph they hang left of the line's left edge, as skparagraph offsets them
+/// (`TextLine::iterateThroughVisualRuns`).
 fn place_line(
     collection: &FaceSet,
     text: &str,
@@ -396,42 +429,54 @@ fn place_line(
         return PlacedLine {
             runs: Vec::new(),
             width: 0.0,
-            left: 0.0,
+            left: align_shift(line, 0.0),
+            content_end: line.range.start,
         };
     };
-    let mut end = content_end(
-        text,
-        &(line.range.start..line.range.end.min(para.range.end)),
-        line.preserve_trailing_whitespace,
-    );
     let ellipsis_width: f32 = ellipsis
         .as_ref()
         .map(|e| e.glyphs.iter().map(|g| g.x_advance).sum())
         .unwrap_or(0.0);
-    if ellipsis.is_some() {
-        end = fit_for_ellipsis(runs, line, end, ellipsis_width);
-    }
-    let content = line.range.start..end;
+    let drawn_end = drawn_end(text, line);
+    let (content_end, placed_end) = match ellipsis {
+        // The ellipsis replaces the ghosts too (skparagraph's `TextLine::createEllipsis`).
+        Some(_) => {
+            let end = fit_for_ellipsis(runs, line, drawn_end, ellipsis_width);
+            (end, end)
+        }
+        None => (drawn_end, line.range.end),
+    };
+    let content = line.range.start..content_end;
     let width = advance_between_refs(runs, &content) + ellipsis_width;
-    let extra_per_space = justify_extra(text, line, para, &content, width);
+    let extra_per_space = justify_extra(text, line, &content, width);
     let x0 = align_shift(line, width);
     let rtl_base = para.level.is_rtl();
+    let ghosts_width = advance_between_refs(runs, &(content_end..placed_end));
 
-    let mut x = x0;
+    let mut x = if rtl_base { x0 - ghosts_width } else { x0 };
     let mut placed = Vec::new();
     if rtl_base {
         if let Some(e) = &ellipsis {
-            place_isolated(collection, e, line.baseline, end, &mut x, &mut placed);
+            place_isolated(
+                collection,
+                e,
+                line.baseline,
+                content_end,
+                &mut x,
+                &mut placed,
+            );
         }
     }
-    if !content.is_empty() {
+    let placed_range = line.range.start..placed_end;
+    if !placed_range.is_empty() {
         place_visual_runs(
             collection,
             text,
             bidi,
             runs,
             para,
-            &content,
+            &placed_range,
+            content_end,
             (line.baseline, line.text_descent),
             extra_per_space,
             &mut x,
@@ -440,13 +485,41 @@ fn place_line(
     }
     if !rtl_base {
         if let Some(e) = &ellipsis {
-            place_isolated(collection, e, line.baseline, end, &mut x, &mut placed);
+            place_isolated(
+                collection,
+                e,
+                line.baseline,
+                content_end,
+                &mut x,
+                &mut placed,
+            );
         }
     }
     PlacedLine {
         runs: placed,
         width,
         left: x0,
+        content_end,
+    }
+}
+
+/// `drawn_end` is where the text the line draws ends: before its trailing whitespace, as
+/// skparagraph trims a line (`TextWrapper::trimEndSpaces`), or, when the paragraph preserves
+/// trailing whitespace, before its hard line break alone.
+fn drawn_end(text: &str, line: &LineSpec) -> usize {
+    if line.preserve_trailing_whitespace {
+        line.text_end
+    } else {
+        trimmed_end(text, &line.range)
+    }
+}
+
+/// `text_end` is where the text of the line `range` covers ends before the hard line break
+/// that ends it, or the range's end when none does: skparagraph's `TextLine::text`.
+pub(crate) fn text_end(text: &str, range: &Range<usize>) -> usize {
+    match text[range.clone()].chars().next_back() {
+        Some(last) if is_hard_break(last) => range.end - last.len_utf8(),
+        _ => range.end,
     }
 }
 
@@ -488,18 +561,13 @@ fn fit_for_ellipsis(
 
 /// CSS-style justify: stretch U+0020 gaps on every line except paragraph-
 /// final ones (hard breaks and the overall last line stay ragged).
-fn justify_extra(
-    text: &str,
-    line: &LineSpec,
-    para: &unicode_bidi::ParagraphInfo,
-    content: &Range<usize>,
-    width: f32,
-) -> f32 {
+fn justify_extra(text: &str, line: &LineSpec, content: &Range<usize>, width: f32) -> f32 {
     if line.align != TextAlign::Justify || !line.max_width.is_finite() {
         return 0.0;
     }
-    let para_final = line.is_last || line.range.end >= para.range.end;
-    if para_final || width >= line.max_width {
+    // skparagraph justifies no line a hard break ends (`TextLine::format`).
+    let ends_paragraph = line.is_last || line.text_end < line.range.end;
+    if ends_paragraph || width >= line.max_width {
         return 0.0;
     }
     let spaces = text[content.clone()].bytes().filter(|&b| b == b' ').count();
@@ -527,13 +595,14 @@ fn place_visual_runs(
     bidi: &BidiInfo,
     runs: &[&ShapedRun],
     para: &unicode_bidi::ParagraphInfo,
-    content: &Range<usize>,
+    placed_range: &Range<usize>,
+    content_end: usize,
     (baseline, text_descent): (f32, f32),
     extra_per_space: f32,
     x: &mut f32,
     placed: &mut Vec<PlacedRun>,
 ) {
-    let (levels, visual) = bidi.visual_runs(para, content.clone());
+    let (levels, visual) = bidi.visual_runs(para, placed_range.clone());
     for segment in visual {
         // Shaped runs (font splits) inside ONE visual segment: an RTL
         // segment lays its runs out in REVERSE logical order — the segment
@@ -546,18 +615,40 @@ fn place_visual_runs(
         if rtl {
             overlapping.reverse();
         }
+        let range = segment.start.max(placed_range.start)..segment.end.min(placed_range.end);
         for run in overlapping {
-            let slice = Slice {
-                range: segment.start.max(content.start)..segment.end.min(content.end),
-                baseline,
-                text_descent,
-                extra_per_space,
-                rtl,
-            };
-            if let Some(p) = place_slice(collection, text, run, &slice, x) {
-                placed.push(p);
+            for (range, drawn) in drawn_then_ghosts(&range, content_end, rtl) {
+                let slice = Slice {
+                    range,
+                    baseline,
+                    text_descent,
+                    extra_per_space: if drawn { extra_per_space } else { 0.0 },
+                    rtl,
+                };
+                if let Some(p) = place_slice(collection, text, run, &slice, x) {
+                    placed.push(p);
+                }
             }
         }
+    }
+}
+
+/// `drawn_then_ghosts` splits a visual segment at `content_end` into the part the line draws
+/// and its ghost part, each flagged whether it is drawn, in visual order: ghosts come
+/// logically last, so leftmost in a right-to-left segment. A run never mixes the two, so a
+/// line draws whole runs.
+fn drawn_then_ghosts(
+    range: &Range<usize>,
+    content_end: usize,
+    rtl: bool,
+) -> [(Range<usize>, bool); 2] {
+    let split = content_end.clamp(range.start, range.end);
+    let drawn = (range.start..split, true);
+    let ghosts = (split..range.end, false);
+    if rtl {
+        [ghosts, drawn]
+    } else {
+        [drawn, ghosts]
     }
 }
 
@@ -784,6 +875,19 @@ fn fit_placeholders(
         .reduce(LineHeights::max)
 }
 
+/// `sizing_runs` are the text runs whose metrics size a line: all but its hard break, whose
+/// metrics skparagraph ignores (`TextStretch::extend`), unless the break is all the line
+/// holds, when the line takes the break's run's metrics, as skparagraph's line does by
+/// starting from the break's cluster (`TextStretch::startFrom`).
+fn sizing_runs<'a>(overlapping: &[&'a ShapedRun]) -> Vec<&'a ShapedRun> {
+    let only_a_break = overlapping.iter().all(|run| run.hard_break);
+    overlapping
+        .iter()
+        .filter(|run| run.placeholder.is_none() && (only_a_break || !run.hard_break))
+        .copied()
+        .collect()
+}
+
 /// Max-over-runs line metrics (the strut-free rule).
 fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<LineHeights> {
     runs.iter()
@@ -871,11 +975,9 @@ pub(crate) fn style_heights(
     }
 }
 
-/// Hard-break characters (UAX #14 BK/CR/LF/NL) — a paragraph ending in one
-/// opens a final empty line.
-fn is_hard_break(c: char) -> bool {
-    matches!(
-        c,
-        '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'
-    )
+/// Hard-break characters, the UAX #14 classes LF and BK that skparagraph treats as hard
+/// (`SkUnicode_icu::isHardLineBreak`): line feed, line and form tabulation, line and
+/// paragraph separator. A paragraph ending in one opens a final empty line.
+pub(crate) fn is_hard_break(c: char) -> bool {
+    matches!(c, '\n' | '\u{0B}' | '\u{0C}' | '\u{2028}' | '\u{2029}')
 }

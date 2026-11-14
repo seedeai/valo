@@ -114,10 +114,11 @@ fn draw_line_decorations(
     }
 }
 
-/// `text_runs` returns the line's runs that draw glyphs, leaving out
+/// `text_runs` returns the line's runs that draw glyphs, leaving out its ghosts,
+/// which skparagraph never paints (`TextLine::paint` walks the trimmed text), and
 /// placeholders, whose content the host draws.
 fn text_runs(line: &Line) -> impl Iterator<Item = &PlacedRun> {
-    line.runs.iter().filter(|run| run.placeholder.is_none())
+    line.drawn_runs().filter(|run| run.placeholder.is_none())
 }
 
 /// `draw_backgrounds` fills the line's background boxes in visual order.
@@ -134,7 +135,7 @@ fn draw_backgrounds(b: &mut DisplayListBuilder, paragraph: &Paragraph, line: &Li
 }
 
 /// `background_boxes` pairs each background on `line` with the box it fills,
-/// in paragraph coordinates and visual order.
+/// in paragraph coordinates and visual order. Ghosts have none.
 ///
 /// Neighbouring runs that skparagraph shapes as one run (same face, size,
 /// synthesis, height and direction) and whose backgrounds are equal share one
@@ -144,7 +145,7 @@ fn draw_backgrounds(b: &mut DisplayListBuilder, paragraph: &Paragraph, line: &Li
 fn background_boxes<'a>(paragraph: &Paragraph, line: &'a Line) -> Vec<(Rect, &'a Paint)> {
     let mut boxes: Vec<(Rect, &Paint)> = Vec::new();
     let mut previous: Option<&PlacedRun> = None;
-    for run in &line.runs {
+    for run in line.drawn_runs() {
         if let Some(paint) = &run.background {
             let run_box = background_box(paragraph, line, run);
             match boxes.last_mut() {
