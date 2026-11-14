@@ -672,16 +672,35 @@ impl PipelineCache {
         Frag::Runtime(self.runtime.register(device, shader))
     }
 
+    /// `prepare_runtime` compiles `effect`'s module and the pipelines its
+    /// commonest draws take into targets of `format`, a shape filled or
+    /// covered at SrcOver with every override at its default: Impeller's
+    /// `RuntimeEffectContents::BootstrapShader`, which builds one pipeline
+    /// when a runtime stage is cached.
+    pub(crate) fn prepare_runtime(
+        &mut self,
+        device: &wgpu::Device,
+        effect: &valo_dl::RuntimeEffect,
+        format: wgpu::TextureFormat,
+    ) {
+        let frag = Frag::Runtime(self.runtime.register_default(device, effect));
+        let keys = [PipelineKind::Draw(frag), PipelineKind::Cover(frag)]
+            .map(|kind| PipelineKey::new(format, PipelineBlend::SrcOver, kind));
+        self.compile(device, keys);
+    }
+
     /// `runtime_image_bind` is the group-1 bind of `shader`'s images, or
-    /// `None` when its effect samples none. `shader` was drawn through
-    /// [`PipelineCache::runtime`] first.
+    /// `None` when its effect samples none, `filter_input` where an image is
+    /// unset. `shader` was drawn through [`PipelineCache::runtime`] first.
     pub(crate) fn runtime_image_bind(
         &self,
         device: &wgpu::Device,
         images: &mut crate::images::ImageStore,
         shader: &RuntimeShader,
+        filter_input: Option<&wgpu::TextureView>,
     ) -> Option<wgpu::BindGroup> {
-        self.runtime.image_bind(device, images, shader)
+        self.runtime
+            .image_bind(device, images, shader, filter_input)
     }
 
     /// `runtime_source_bind` is the group-3 bind of a filter's `source`,

@@ -197,9 +197,11 @@ impl MatrixClipState {
                     }
                 }
             }
-            Op::DrawRect { bounds, .. }
+            Op::DrawPaint { bounds, .. }
+            | Op::DrawRect { bounds, .. }
             | Op::DrawPath { bounds, .. }
             | Op::RRectBlur { bounds, .. }
+            | Op::DrawShadow { bounds, .. }
             | Op::DrawImage { bounds, .. }
             | Op::GlyphRun { bounds, .. }
             | Op::DrawDisplayList { bounds, .. } => Bounds::of(*bounds),
@@ -281,9 +283,11 @@ mod tests {
                 Op::Restore => "restore",
                 Op::Transform(_) => "transform",
                 Op::ClipPath { .. } => "clip",
+                Op::DrawPaint { .. } => "paint",
                 Op::DrawRect { .. } => "rect",
                 Op::DrawPath { .. } => "path",
                 Op::RRectBlur { .. } => "blur",
+                Op::DrawShadow { .. } => "shadow",
                 Op::DrawImage { .. } => "image",
                 Op::GlyphRun { .. } => "glyphs",
                 Op::DrawDisplayList { .. } => "list",

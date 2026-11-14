@@ -152,10 +152,13 @@ impl Shader {
     }
 
     /// `runtime` creates a shader from a runtime paint shader effect with one
-    /// draw's inputs; a filter's effect is refused.
+    /// draw's inputs; a filter's effect, or an image left unset, is refused.
     pub fn runtime(shader: crate::RuntimeShader) -> Result<Self, crate::EffectError> {
         match shader.effect.kind() {
-            crate::EffectKind::Shader => Ok(Shader::Runtime(shader)),
+            crate::EffectKind::Shader => {
+                shader.check_images_set()?;
+                Ok(Shader::Runtime(shader))
+            }
             crate::EffectKind::Filter(_) => Err(crate::EffectError::Contract(
                 "a paint shader's effect is made by `RuntimeEffect::shader`".to_owned(),
             )),

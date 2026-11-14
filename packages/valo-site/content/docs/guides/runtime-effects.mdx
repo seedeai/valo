@@ -6,7 +6,8 @@ icon: Sparkles
 
 A runtime effect is one WGSL function that valo splices into its own pipelines. As a paint
 shader it colours the shapes a paint fills; as a filter it shades a layer's content or the
-backdrop behind a layer, reading that content as `source`. valo writes the fragment entry around
+backdrop behind a layer, reading that content as `source`, or, written as a paint shader, as its
+first image. valo writes the fragment entry around
 the function, so clipping, antialiasing, the paint's alpha and blending stay valo's and an effect
 cannot break them.
 
@@ -50,8 +51,8 @@ An effect's own bindings follow valo's groups:
 | Group | What |
 | --- | --- |
 | 0 | valo's own draw record. An effect never declares anything here. |
-| 1 | Images: `texture_2d<f32>` / `sampler` pairs at bindings 0 and 1, 2 and 3, and so on. A `RuntimeShader` supplies one `EffectImage` (an image and its `Sampling`) per pair. |
-| 2 | Uniforms: one struct at binding 0, at most 1024 bytes. A `RuntimeShader` supplies exactly its bytes, laid out as WGSL lays the struct out; `effect.uniforms()` lists each field's offset and type. |
+| 1 | Images: `texture_2d<f32>` / `sampler` pairs at bindings 0 and 1, 2 and 3, and so on. A `RuntimeShader` supplies one `EffectImage` (an image and its `Sampling`) per pair; only a filter's input, below, is left unset. |
+| 2 | Uniforms: one struct at binding 0, at most 1024 bytes. A `RuntimeShader` supplies exactly its bytes, laid out as WGSL lays the struct out; `effect.uniforms()` lists each field's offset and type, and for an array its elements' type, count and stride. |
 | 3 | A filter's `source` and `source_sampler`, which valo declares. |
 
 An effect defines no entry points. Pipeline-overridable constants (`override`) choose variants:
@@ -102,10 +103,47 @@ A filter reads its input through three helpers valo defines:
 A filter shades what its input covers, as Flutter's `ImageFilter.shader` does: it never colours
 pixels outside its input, however far it reads.
 
+## A paint shader as a filter
+
+A paint shader's effect is also a filter, by Flutter's convention for `ImageFilter.shader`, so
+one effect can fill shapes and filter a layer or a backdrop:
+
+- its first uniform is a `vec2<f32>`, which valo sets to the input's size in pixels;
+- its first image is the input: leave it unset (`image: None`), and its `sampling` says how the
+  input is sampled;
+- `position` is in the input's pixels, so `position / size` is the input's uv. A backdrop's
+  input is the whole target beneath it, as in Impeller.
+
+```rust
+use valo::{EffectImage, ImageFilter, RuntimeEffect, RuntimeShader, Sampling};
+
+let effect = RuntimeEffect::shader(
+    "
+struct Uniforms { size: vec2<f32>, amount: f32 }
+@group(2) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var input: texture_2d<f32>;
+@group(1) @binding(1) var input_sampler: sampler;
+
+fn shade(position: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(input, input_sampler, position / u.size, 0.0) * u.amount;
+}
+",
+)?;
+let input = EffectImage { image: None, sampling: Sampling::default() };
+let shader = RuntimeShader::new(effect, uniforms, vec![input])?;
+let filter = ImageFilter::runtime(shader)?;
+```
+
+`ImageFilter::runtime` refuses such an effect without a `vec2<f32>` first or with its first
+image set, as dart:ui does; `Shader::runtime` refuses any image left unset. An input whose pixels
+are scaled, such as a blur's, is first drawn again at one texel per pixel.
+
 ## What it costs
 
 - An effect's module compiles the first time it is drawn, and each set of override values
   compiles one pipeline the first time it is drawn; both are kept for the life of the renderer.
+  `Context::prepare_runtime_effect` compiles the common ones ahead, as Flutter does when a
+  `FragmentProgram` loads.
 - A paint shader costs what a gradient costs: one fragment over the shape's pixels.
 - A filter on a backdrop that is the backdrop's only filter reads the backdrop's copy directly;
   with `source_scale` or `source_mips` it adds one resample pass, and a pass per pyramid level,

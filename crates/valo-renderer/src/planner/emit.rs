@@ -305,12 +305,25 @@ impl<'a> StepEmitter<'a> {
         format: wgpu::TextureFormat,
         quad: &Rect,
         extent: [u32; 2],
+        shading: Shading,
+    ) -> Draw {
+        self.mapped_filter_draw(format, &Matrix::IDENTITY, quad, extent, shading)
+    }
+
+    /// `mapped_filter_draw` is [`StepEmitter::filter_draw`] of `quad` in a
+    /// space of its own, which `to_texture` maps into the texture's pixels:
+    /// the varying is in that space.
+    pub fn mapped_filter_draw(
+        &mut self,
+        format: wgpu::TextureFormat,
+        to_texture: &Matrix,
+        quad: &Rect,
+        extent: [u32; 2],
         mut shading: Shading,
     ) -> Draw {
         shading.record.set(slot::RECT, rect_payload(quad));
-        shading
-            .record
-            .set_mvp(ortho_mvp(&rect_to_unit(quad), extent, 0.0));
+        let model = to_texture.then(&rect_to_unit(quad));
+        shading.record.set_mvp(ortho_mvp(&model, extent, 0.0));
         Draw {
             scissor: Scissor::whole(extent),
             stencil: None,
@@ -426,7 +439,19 @@ impl<'a> StepEmitter<'a> {
     /// of what it reads.
     pub fn runtime(&mut self, shader: &RuntimeShader) -> (Frag, Bindings) {
         let frag = self.pipelines.runtime(self.device, shader);
-        (frag, self.runtime_bindings(shader, None))
+        (frag, self.runtime_bindings(shader, None, None))
+    }
+
+    /// `runtime_over_input` is the fragment of a paint shader's variant
+    /// drawn as a filter and the bind of what it reads, `input` as its first
+    /// image.
+    pub fn runtime_over_input(
+        &mut self,
+        shader: &RuntimeShader,
+        input: &wgpu::TextureView,
+    ) -> (Frag, Bindings) {
+        let frag = self.pipelines.runtime(self.device, shader);
+        (frag, self.runtime_bindings(shader, Some(input), None))
     }
 
     /// `runtime_filter` is the fragment of a filter's variant and the bind of
@@ -440,20 +465,21 @@ impl<'a> StepEmitter<'a> {
         let source =
             self.pipelines
                 .runtime_source_bind(self.device, shader, source, &self.samplers.levels);
-        (frag, self.runtime_bindings(shader, Some(source)))
+        (frag, self.runtime_bindings(shader, None, Some(source)))
     }
 
     /// `runtime_bindings` binds what `shader`, its variant registered, reads:
-    /// its images, its uniforms beside the draw records, and a filter's
-    /// `source`.
+    /// its images, `filter_input` where one is unset, its uniforms beside the
+    /// draw records, and a filter's `source`.
     fn runtime_bindings(
         &mut self,
         shader: &RuntimeShader,
+        filter_input: Option<&wgpu::TextureView>,
         source: Option<wgpu::BindGroup>,
     ) -> Bindings {
-        let images = self
-            .pipelines
-            .runtime_image_bind(self.device, self.images, shader);
+        let images =
+            self.pipelines
+                .runtime_image_bind(self.device, self.images, shader, filter_input);
         let uniforms = (!shader.uniforms.is_empty())
             .then(|| self.host.alloc_effect_uniforms(&shader.uniforms));
         Bindings::Runtime {

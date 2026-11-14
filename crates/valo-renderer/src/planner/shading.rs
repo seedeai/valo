@@ -385,6 +385,22 @@ impl StepEmitter<'_> {
         Shading::of(frag, record, bindings)
     }
 
+    /// `shader_filter_shading` is a paint shader's effect drawn as a filter
+    /// over `input`, its first image, at `alpha`: Impeller's
+    /// `RuntimeEffectContents` as `RuntimeEffectFilterContents` draws it. The
+    /// draw's local space is the input's texels, so `shade` is called at
+    /// positions in the input's pixels.
+    pub fn shader_filter_shading(
+        &mut self,
+        shader: &RuntimeShader,
+        input: &wgpu::TextureView,
+        alpha: f32,
+    ) -> Shading {
+        let record = UniformRecord::tinted(alpha_tint(alpha));
+        let (frag, bindings) = self.runtime_over_input(shader, input);
+        Shading::of(frag, record, bindings)
+    }
+
     /// `blur_pass_shading` is one direction of the Gaussian over `input`,
     /// a texture `size` texels big, its kernel beside the record.
     pub fn blur_pass_shading(

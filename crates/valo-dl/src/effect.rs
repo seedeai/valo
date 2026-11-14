@@ -103,7 +103,7 @@ pub enum UniformType {
     Mat2x2F,
     Mat3x3F,
     Mat4x4F,
-    /// Anything else (arrays, nested structs), written as raw bytes.
+    /// Anything else (a nested struct, an array as an array's element), written as raw bytes.
     Other {
         size: u32,
     },
@@ -115,7 +115,27 @@ pub enum UniformType {
 pub struct UniformField {
     pub name: String,
     pub offset: u32,
+    /// The field's type; for an array, the type of each element.
     pub ty: UniformType,
+    /// How the elements of an array field are laid out; `None` for a field that is not an
+    /// array.
+    pub array: Option<UniformArray>,
+}
+
+/// `UniformArray` is the layout of an array field's elements, Impeller's `array_elements` with
+/// the stride its `padding_layout` spells out.
+///
+/// WGSL places uniform array elements 16 bytes apart at least, so an array of `f32` or `vec2f`
+/// is not allowed in a uniform struct and a tightly packed float array, as Flutter's shaders
+/// declare one, becomes an array of `vec4f`, four floats an element. A host that writes floats
+/// by index repacks them through this layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UniformArray {
+    /// How many elements the array holds.
+    pub count: u32,
+    /// The bytes from the start of one element to the start of the next.
+    pub stride: u32,
 }
 
 /// An effect's uniform struct: the bytes a draw supplies for it.
@@ -407,13 +427,34 @@ fn read_uniforms(
         size: *span,
         fields: members
             .iter()
-            .map(|member| UniformField {
-                name: member.name.clone().unwrap_or_default(),
-                offset: member.offset,
-                ty: uniform_type(module, member.ty),
-            })
+            .map(|member| uniform_field(module, member))
             .collect(),
     })
+}
+
+/// `uniform_field` is one member of the uniform struct: an array's element type and layout, or
+/// any other member's type.
+fn uniform_field(module: &naga::Module, member: &naga::StructMember) -> UniformField {
+    let (ty, array) = match module.types[member.ty].inner {
+        TypeInner::Array {
+            base,
+            size: naga::ArraySize::Constant(count),
+            stride,
+        } => (
+            uniform_type(module, base),
+            Some(UniformArray {
+                count: count.get(),
+                stride,
+            }),
+        ),
+        _ => (uniform_type(module, member.ty), None),
+    };
+    UniformField {
+        name: member.name.clone().unwrap_or_default(),
+        offset: member.offset,
+        ty,
+        array,
+    }
 }
 
 fn uniform_type(module: &naga::Module, ty: naga::Handle<naga::Type>) -> UniformType {
@@ -480,7 +521,11 @@ fn read_constants(module: &naga::Module) -> Result<Vec<String>, EffectError> {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct EffectImage {
-    pub image: crate::Image,
+    /// The image sampled; `None` only in the first slot of a paint shader's effect used as an
+    /// image filter, where the renderer binds the filter's input, as Flutter leaves the first
+    /// sampler of `ImageFilter.shader` for the engine to set.
+    pub image: Option<crate::Image>,
+    /// How the image is sampled; for the filter's input, Flutter's `filterQuality`.
     pub sampling: crate::Sampling,
 }
 
@@ -529,6 +574,51 @@ impl RuntimeShader {
             constants: Vec::new(),
             margin: None,
         })
+    }
+
+    /// `check_images_set` refuses a draw that leaves an image unset: one with no filter input
+    /// to fill it.
+    pub(crate) fn check_images_set(&self) -> Result<(), EffectError> {
+        match self.images.iter().position(|input| input.image.is_none()) {
+            Some(slot) => Err(EffectError::Contract(format!(
+                "image {slot} is unset; only a filter's input, the first image of a paint \
+                 shader's effect used as an image filter, is left to the renderer"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// `check_filter_input` refuses a paint shader's effect that cannot be a filter by
+    /// Flutter's convention, checking what dart:ui's `ImageFilter.shader` checks: the first
+    /// uniform is a `vec2f`, the input's size, and the first image is left unset for the input.
+    pub(crate) fn check_filter_input(&self) -> Result<(), EffectError> {
+        let size_first = self.effect.uniforms.fields.first().is_some_and(|field| {
+            field.offset == 0 && field.ty == UniformType::Vec2F && field.array.is_none()
+        });
+        if !size_first {
+            return Err(EffectError::Contract(
+                "a paint shader used as a filter has a vec2<f32> first in its uniforms, which \
+                 the renderer sets to its input's size"
+                    .to_owned(),
+            ));
+        }
+        let Some((input, others)) = self.images.split_first() else {
+            return Err(EffectError::Contract(
+                "a paint shader used as a filter samples at least one image, its input".to_owned(),
+            ));
+        };
+        if input.image.is_some() {
+            return Err(EffectError::Contract(
+                "a paint shader used as a filter leaves its first image unset, for its input"
+                    .to_owned(),
+            ));
+        }
+        if others.iter().any(|other| other.image.is_none()) {
+            return Err(EffectError::Contract(
+                "only a filter's first image, its input, is left unset".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Sets how far past its area this draw's filter reads, in local units, in place of the
@@ -623,6 +713,46 @@ fn shade(position: vec2<f32>) -> vec4<f32> {
             ]
         );
         assert_eq!(effect.images(), 0);
+        assert!(uniforms.fields.iter().all(|field| field.array.is_none()));
+    }
+
+    /// An array field reports its elements' type and layout, as Impeller's reflection does,
+    /// so a host can write floats packed tightly by index into WGSL's 16-byte elements.
+    #[test]
+    fn an_array_reports_its_elements() {
+        let effect = RuntimeEffect::shader(
+            "
+struct Uniforms {
+    size: vec2<f32>,
+    shapes: array<vec4<f32>, 28>,
+    corners: array<vec3<f32>, 2>,
+    rows: array<array<vec4<f32>, 2>, 3>,
+}
+@group(2) @binding(0) var<uniform> u: Uniforms;
+
+fn shade(position: vec2<f32>) -> vec4<f32> {
+    return u.shapes[0] + vec4<f32>(u.corners[1], u.size.x) + u.rows[2][1];
+}
+",
+        )
+        .expect("valid shader");
+        let fields: Vec<_> = effect
+            .uniforms()
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset, field.ty, field.array))
+            .collect();
+        let array = |count, stride| Some(UniformArray { count, stride });
+        assert_eq!(
+            fields,
+            vec![
+                ("size", 0, UniformType::Vec2F, None),
+                ("shapes", 16, UniformType::Vec4F, array(28, 16)),
+                ("corners", 464, UniformType::Vec3F, array(2, 16)),
+                ("rows", 496, UniformType::Other { size: 32 }, array(3, 32)),
+            ]
+        );
+        assert_eq!(effect.uniforms().size, 592);
     }
 
     #[test]
@@ -771,6 +901,77 @@ fn shade(position: vec2<f32>) -> vec4<f32> {
         };
         assert!(message.contains("oops"), "{message}");
         assert!(message.contains(":1:"), "{message}");
+    }
+
+    /// A paint shader's effect is a filter by Flutter's convention: dart:ui's checks, its first
+    /// uniform the input's size and its first image left for the input, and nothing else unset.
+    #[test]
+    fn a_paint_shader_is_a_filter_by_flutters_convention() {
+        let effect = RuntimeEffect::shader(
+            "struct U { size: vec2<f32>, amount: f32 }
+             @group(2) @binding(0) var<uniform> u: U;
+             @group(1) @binding(0) var input: texture_2d<f32>;
+             @group(1) @binding(1) var input_sampler: sampler;
+             fn shade(position: vec2<f32>) -> vec4<f32> {
+                 return textureSampleLevel(input, input_sampler, position / u.size, 0.0) * u.amount;
+             }",
+        )
+        .unwrap();
+        let shader = |image: Option<crate::Image>| {
+            RuntimeShader::new(
+                effect.clone(),
+                vec![0; 16],
+                vec![EffectImage {
+                    image,
+                    sampling: crate::Sampling::default(),
+                }],
+            )
+            .unwrap()
+        };
+        assert!(crate::ImageFilter::runtime(shader(None)).is_ok());
+        assert!(
+            crate::Shader::runtime(shader(None)).is_err(),
+            "a paint shader samples only images it is given"
+        );
+
+        let size_last = RuntimeEffect::shader(
+            "struct U { amount: f32, size: vec2<f32> }
+             @group(2) @binding(0) var<uniform> u: U;
+             @group(1) @binding(0) var input: texture_2d<f32>;
+             @group(1) @binding(1) var input_sampler: sampler;
+             fn shade(position: vec2<f32>) -> vec4<f32> {
+                 return textureSampleLevel(input, input_sampler, position / u.size, 0.0) * u.amount;
+             }",
+        )
+        .unwrap();
+        let unset = vec![EffectImage {
+            image: None,
+            sampling: crate::Sampling::default(),
+        }];
+        let size_last = RuntimeShader::new(size_last, vec![0; 16], unset.clone()).unwrap();
+        assert!(crate::ImageFilter::runtime(size_last).is_err());
+
+        let no_image = RuntimeEffect::shader(
+            "struct U { size: vec2<f32> }
+             @group(2) @binding(0) var<uniform> u: U;
+             fn shade(position: vec2<f32>) -> vec4<f32> { return vec4<f32>(position / u.size, 0.0, 1.0); }",
+        )
+        .unwrap();
+        let no_image = RuntimeShader::new(no_image, vec![0; 8], Vec::new()).unwrap();
+        assert!(crate::ImageFilter::runtime(no_image).is_err());
+
+        let valo_filter = RuntimeEffect::filter(
+            "@group(1) @binding(0) var t: texture_2d<f32>;
+             @group(1) @binding(1) var s: sampler;
+             fn shade(position: vec2<f32>) -> vec4<f32> { return textureSampleLevel(t, s, position, 0.0); }",
+            FilterInputs::default(),
+        )
+        .unwrap();
+        let valo_filter = RuntimeShader::new(valo_filter, Vec::new(), unset).unwrap();
+        assert!(
+            crate::ImageFilter::runtime(valo_filter).is_err(),
+            "a filter's effect reads its input as `source`"
+        );
     }
 
     #[test]

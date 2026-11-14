@@ -184,6 +184,19 @@ impl RendererCore {
         &mut self.services.images
     }
 
+    /// `prepare_runtime_effect` builds `effect`'s pipelines for its common
+    /// draws into targets of `format` now rather than at its first draw. See
+    /// `valo::Context::prepare_runtime_effect`.
+    pub fn prepare_runtime_effect(
+        &mut self,
+        effect: &valo_dl::RuntimeEffect,
+        format: wgpu::TextureFormat,
+    ) {
+        self.services
+            .pipelines
+            .prepare_runtime(&self.device, effect, format);
+    }
+
     /// `device` returns the device used by this renderer.
     pub fn device(&self) -> &wgpu::Device {
         &self.device

@@ -18,8 +18,8 @@
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-use valo_dl::{DisplayList, MaskBlur, Op, Paint};
-use valo_geometry::{Matrix, Rect};
+use valo_dl::{DisplayList, MaskBlur, Op, Paint, SpotShadow};
+use valo_geometry::{Color, FillRule, Matrix, Path, Rect};
 
 use super::backdrop::SharedBackdrop;
 use super::clip_coverage::{scales_and_moves, ClipCoverage, ClipShape};
@@ -265,6 +265,12 @@ impl Planner<'_> {
                     base_slot,
                     cache,
                 } => self.replay_embed(list, bounds, *base_slot, *cache, state),
+                Op::DrawPaint {
+                    paint,
+                    bounds,
+                    slot,
+                } => self.replay_paint(paint, bounds, *slot, state),
+                Op::DrawShadow { .. } => self.replay_shadow(RecordedShadow::of(op, state), state),
                 Op::DrawRect { .. }
                 | Op::DrawPath { .. }
                 | Op::DrawImage { .. }
@@ -283,6 +289,68 @@ impl Planner<'_> {
         }
         let at = self.at_slot(state, draw.slot);
         self.plan_routed(draw.source, draw.paint, &at);
+    }
+
+    /// `replay_paint` fills the whole clip with `paint`, as Impeller's
+    /// `Canvas::DrawPaint` does: a rect over every texel of the target, in
+    /// the draw's local coordinates so a shader samples where it would on any
+    /// other draw (Impeller's `CoverGeometry`), routed as any rect is, the
+    /// clips around it cutting it. Nothing shows under a transform with no
+    /// inverse.
+    fn replay_paint(&mut self, paint: &Paint, bounds: &Rect, slot: u32, state: &ReplayState) {
+        let target = self.contexts.top().area;
+        let cover = state
+            .top()
+            .transform
+            .invert()
+            .map(|back| back.map_rect(&target.texels()));
+        let Some(cover) = cover.filter(|_| !target.culls(&state.device_bounds(bounds))) else {
+            self.plan.stats.culled += 1;
+            return;
+        };
+        let at = self.draw_state(state, slot);
+        let source = DrawSource::Shape {
+            shape: Shape::Rect(cover),
+            ink: cover,
+        };
+        self.plan_routed(source, paint, &at);
+    }
+
+    /// `replay_shadow` resolves a recorded shadow under the transform it is
+    /// drawn under, all the lists and layers around it included, and draws
+    /// the spot it resolves to: Impeller's `DlDispatcherBase::drawShadow`.
+    /// A rectangle's, a rounded rectangle's with one radius and a circle's is
+    /// the closed-form blurred rrect and any other path's a mask-blurred
+    /// fill, as Impeller's `SimplifyOrDrawPath` picks them.
+    fn replay_shadow(&mut self, shadow: RecordedShadow<'_>, state: &ReplayState) {
+        let at = self.at_slot(state, shadow.slot);
+        let spot = SpotShadow::resolve(
+            shadow.color,
+            shadow.elevation,
+            shadow.device_pixel_ratio,
+            &at.transform,
+        );
+        let Some(spot) = spot.filter(|_| !self.contexts.top().area.culls(&shadow.bounds)) else {
+            self.plan.stats.culled += 1;
+            return;
+        };
+        let at = at.with_transform(at.transform.then(&spot.offset));
+        let blur = spot.paint.mask_blur.unwrap_or(MaskBlur::new(0.0));
+        let source = match shadow.round_rect {
+            Some((rect, radius)) => DrawSource::RRectBlur {
+                rect,
+                radii: [radius; 4],
+                blur,
+            },
+            None => DrawSource::Shape {
+                shape: Shape::Path {
+                    path: shadow.path,
+                    rule: shadow.fill_rule,
+                },
+                ink: shadow.path.bounds(),
+            },
+        };
+        self.plan_routed(source, &spot.paint, &at);
     }
 
     /// `replay_embed` draws an embedded list: culled whole when its bounds
@@ -437,6 +505,50 @@ impl<'a> RecordedDraw<'a> {
             source,
             paint,
             bounds,
+            slot: state.absolute(*slot),
+        }
+    }
+}
+
+/// `RecordedShadow` is one recorded shadow pinned to one replay: what
+/// resolving it needs, its recorded bounds in the target's coordinates, and
+/// its slot on the target's depth line.
+struct RecordedShadow<'a> {
+    path: &'a Arc<Path>,
+    fill_rule: FillRule,
+    color: Color,
+    elevation: f32,
+    device_pixel_ratio: f32,
+    round_rect: Option<(Rect, f32)>,
+    bounds: Rect,
+    slot: u32,
+}
+
+impl<'a> RecordedShadow<'a> {
+    /// `of` is the shadow `op` records, pinned to the replay `state`.
+    fn of(op: &'a Op, state: &ReplayState) -> Self {
+        let Op::DrawShadow {
+            path,
+            fill_rule,
+            color,
+            elevation,
+            device_pixel_ratio,
+            round_rect,
+            bounds,
+            slot,
+            ..
+        } = op
+        else {
+            unreachable!("replay_list hands over shadows only, not {op:?}");
+        };
+        Self {
+            path,
+            fill_rule: *fill_rule,
+            color: *color,
+            elevation: *elevation,
+            device_pixel_ratio: *device_pixel_ratio,
+            round_rect: *round_rect,
+            bounds: state.device_bounds(bounds),
             slot: state.absolute(*slot),
         }
     }

@@ -24,7 +24,7 @@ pub fn woff2_to_sfnt_for_probe(bytes: &[u8]) -> Option<Vec<u8>> {
 
 pub use font::{
     match_style, FaceSet, Font, FontAttrs, FontCollection, FontData, FontDemand, FontId,
-    FontSource, FontUid,
+    FontSource, FontUid, StyleFaces,
 };
 pub use raster::{glyph_path, GlyphImage, GlyphRaster, GlyphStroke, Rasterizer, SDF_PAD};
 pub use shaper::{shape, FontFeature, ShapedGlyph};

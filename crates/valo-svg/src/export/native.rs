@@ -32,8 +32,9 @@ impl Filter {
 }
 
 /// `rasterized` is whether a document drawn with `native` leaves `op` and the `scope` it opens to
-/// a picture: an image, a sweep gradient or a shader SVG has no word for, a blend mode or filter
-/// SVG can't say, or an effect `native` leaves out.
+/// a picture: an image, a shadow, which is resolved under the transform it is drawn under, a
+/// sweep gradient or a shader SVG has no word for, a blend mode or filter SVG can't say, or an
+/// effect `native` leaves out.
 pub(super) fn rasterized(op: &Op, scope: &[Op], native: NativeEffects) -> bool {
     match op {
         Op::SaveLayer {
@@ -51,10 +52,11 @@ pub(super) fn rasterized(op: &Op, scope: &[Op], native: NativeEffects) -> bool {
                 || layer_filter(paint, native).is_none()
         }
         Op::RRectBlur { paint, .. }
+        | Op::DrawPaint { paint, .. }
         | Op::DrawRect { paint, .. }
         | Op::DrawPath { paint, .. }
         | Op::GlyphRun { paint, .. } => !paints_natively(paint, native),
-        Op::DrawImage { .. } => true,
+        Op::DrawImage { .. } | Op::DrawShadow { .. } => true,
         Op::Save
         | Op::Restore
         | Op::Transform(_)

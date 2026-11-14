@@ -20,13 +20,15 @@ mod list;
 mod paint;
 mod resources;
 mod shader;
+mod shadow;
 mod walk;
 
 pub use bounds::Bounds;
 pub use builder::DisplayListBuilder;
 pub use effect::{
-    EffectError, EffectImage, EffectKind, FilterInputs, RuntimeEffect, RuntimeShader, UniformField,
-    UniformLayout, UniformType, IMAGE_GROUP, MAX_UNIFORM_BYTES, SOURCE_GROUP, UNIFORM_GROUP,
+    EffectError, EffectImage, EffectKind, FilterInputs, RuntimeEffect, RuntimeShader, UniformArray,
+    UniformField, UniformLayout, UniformType, IMAGE_GROUP, MAX_UNIFORM_BYTES, SOURCE_GROUP,
+    UNIFORM_GROUP,
 };
 pub use list::{
     Backdrop, BackdropGroup, ClipOp, DisplayList, GlyphPos, MaskKind, Op, RunFont, RunText,
@@ -34,4 +36,5 @@ pub use list::{
 pub use paint::{BlendMode, BlurStyle, ColorFilter, ImageFilter, MaskBlur, Paint, PaintStyle};
 pub use resources::{Filter, Image, ImageInner, MipmapMode, Sampling, TileMode};
 pub use shader::{FocalCircle, GradientStop, Shader, SpreadMode, MAX_GRADIENT_STOPS};
+pub use shadow::SpotShadow;
 pub use walk::{DisplayListWalker, MatrixClipState};

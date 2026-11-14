@@ -91,7 +91,8 @@ pub(super) enum Filter<'a> {
     },
     /// A runtime filter: its effect's `shade` over what its input covers,
     /// reading the input as far as the effect's margin past it (Flutter's
-    /// `DlRuntimeEffectImageFilter`, which reads no margin).
+    /// `DlRuntimeEffectImageFilter`, which reads no margin). A paint
+    /// shader's effect has no margin and reads its input as its first image.
     Runtime(RuntimeShader),
 }
 

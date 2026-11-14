@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use valo_geometry::{FillRule, Matrix, Path, Rect};
+use valo_geometry::{Color, FillRule, Matrix, Path, Rect};
 
 use crate::{Bounds, Image, ImageFilter, Paint, Sampling};
 
@@ -129,6 +129,20 @@ pub enum Op {
     /// Appends to the current transform (canvas semantics: applies to
     /// subsequently drawn geometry first).
     Transform(Matrix),
+    /// Fills the whole clip with `paint`: Flutter's `DrawPaintOp`, which
+    /// Impeller draws over its render target's every texel and leaves the
+    /// clip to cut (`Canvas::DrawPaint`, with its `CoverGeometry`). A blend
+    /// mode that changes pixels a draw leaves transparent therefore changes
+    /// the whole clip. Its paint fills and takes no mask blur, as Flutter's
+    /// display list records it (`kDrawPaintFlags`). `bounds` is the clip
+    /// in force, [`Rect::EVERYTHING`] where nothing clips it; in a layer
+    /// that does not crop it the layer's content is unbounded, so the layer
+    /// covers its own clip.
+    DrawPaint {
+        paint: Paint,
+        bounds: Rect,
+        slot: u32,
+    },
     DrawRect {
         rect: Rect,
         paint: Paint,
@@ -153,6 +167,42 @@ pub enum Op {
         rect: Rect,
         radii: [f32; 4],
         paint: Paint,
+        bounds: Rect,
+        slot: u32,
+    },
+    /// The shadow an occluder of `path`'s shape casts: Flutter's
+    /// `DrawShadowOp` and `DrawShadowTransparentOccluderOp`, with the
+    /// parameters Flutter's `drawShadow` takes. It is resolved when it is
+    /// drawn, as Impeller's `DlDispatcherBase::drawShadow` resolves it
+    /// ([`crate::SpotShadow::resolve`]): the blur's radius divides by the
+    /// vertical scale of the whole transform it is drawn under, which only
+    /// playback knows.
+    DrawShadow {
+        path: Arc<Path>,
+        fill_rule: FillRule,
+        /// The occluder's colour, before the shadow tones it.
+        color: Color,
+        /// How far the occluder stands above the canvas, in logical pixels.
+        elevation: f32,
+        /// Whether the occluder lets light through. Recorded as Flutter
+        /// records it; Impeller draws the same shadow either way.
+        transparent_occluder: bool,
+        /// The pixel ratio of the view drawn into: what turns the elevation
+        /// into the occluder's height in device pixels.
+        device_pixel_ratio: f32,
+        /// Set when the path is a rectangle rounded by one circular radius,
+        /// zero for a sharp one, which the shadow then fills in closed form,
+        /// as `RRectBlur` does: a rectangle, a rounded rectangle with the
+        /// same radius at every corner, or a circle, as Impeller's
+        /// `SimplifyOrDrawPath` and `AttemptDrawBlur` find them. Any other
+        /// path is a mask-blurred fill.
+        round_rect: Option<(Rect, f32)>,
+        /// Where the shadow may show: the path moved and blurred as it is
+        /// resolved under the transform at record time, which stands in
+        /// for the one at playback as it does for a hairline's width
+        /// (Flutter's display list bounds its shadows under its own matrix
+        /// too). A list played back under a smaller scale than it was
+        /// recorded at blurs further than these bounds.
         bounds: Rect,
         slot: u32,
     },
@@ -385,9 +435,11 @@ impl Tally {
                 self.draw_count += list.draw_count;
                 self.backdrop_reads += list.backdrop_reads;
             }
-            Op::DrawRect { .. }
+            Op::DrawPaint { .. }
+            | Op::DrawRect { .. }
             | Op::DrawPath { .. }
             | Op::RRectBlur { .. }
+            | Op::DrawShadow { .. }
             | Op::DrawImage { .. }
             | Op::GlyphRun { .. } => self.draw_count += 1,
             Op::Save | Op::Restore | Op::Transform(_) | Op::ClipPath { .. } => {}

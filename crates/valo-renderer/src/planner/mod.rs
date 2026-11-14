@@ -30,6 +30,8 @@
 //!   order a draw or a save layer gives them.
 //! - [`filters`]: renders a filter tree, node by node.
 //! - [`filter_output`]: what a tree hands on, and how it draws itself.
+//! - [`shader_filter`]: a paint shader's effect as a filter, by Flutter's
+//!   convention.
 //! - [`filter_passes`]: the [`FilterPasses`](filter_passes::FilterPasses)
 //!   view, which appends independent one-quad passes and can touch no
 //!   context; the Gaussian blur's passes in [`gaussian`].
@@ -65,6 +67,7 @@ mod raster_embed;
 mod replay;
 mod route;
 mod segments;
+mod shader_filter;
 mod shading;
 mod snapshot;
 mod source;

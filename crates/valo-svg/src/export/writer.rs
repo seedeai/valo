@@ -136,16 +136,12 @@ impl Writer<'_> {
                 op,
                 ..
             } => self.clip(path, *fill_rule, *op),
-            Op::DrawRect { rect, paint, .. } => {
-                let attributes = self.paint_attributes(paint, FillRule::NonZero, *rect);
-                self.element(&format!(
-                    r#"<rect x="{}" y="{}" width="{}" height="{}"{attributes}/>"#,
-                    Number(rect.x),
-                    Number(rect.y),
-                    Number(rect.width),
-                    Number(rect.height)
-                ));
+            Op::DrawPaint { paint, .. } => {
+                // The whole document, in the space it is drawn in: the clips around it cut it.
+                let cover = self.local_region(ops.matrix_clip(), Bounds::Unbounded);
+                self.rect(&cover, paint);
             }
+            Op::DrawRect { rect, paint, .. } => self.rect(rect, paint),
             Op::DrawPath {
                 path,
                 fill_rule,
@@ -167,9 +163,23 @@ impl Writer<'_> {
                 content_bounds,
                 ..
             } => self.glyph_run(font, paint, glyphs, *content_bounds)?,
-            Op::DrawImage { .. } => unreachable!("images are drawn as pictures"),
+            Op::DrawImage { .. } | Op::DrawShadow { .. } => {
+                unreachable!("images and shadows are drawn as pictures")
+            }
         }
         Ok(())
+    }
+
+    /// `rect` writes `rect` filled or stroked with `paint`.
+    fn rect(&mut self, rect: &Rect, paint: &Paint) {
+        let attributes = self.paint_attributes(paint, FillRule::NonZero, *rect);
+        self.element(&format!(
+            r#"<rect x="{}" y="{}" width="{}" height="{}"{attributes}/>"#,
+            Number(rect.x),
+            Number(rect.y),
+            Number(rect.width),
+            Number(rect.height)
+        ));
     }
 
     /// `open_layer` opens a layer as a group isolated from what is under it, with its opacity,

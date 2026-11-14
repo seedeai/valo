@@ -184,7 +184,9 @@ impl Planner<'_> {
                 Some(FilterOutput::Snapshot(blurred))
             }
             // So does one runtime filter: it samples through its own uv map,
-            // clamped at the parent's edge, so nothing is cut out first.
+            // clamped at the parent's edge, so nothing is cut out first. A
+            // paint shader's effect reads the whole parent as its input, as
+            // Impeller's reads the whole backdrop texture.
             None if is_one_runtime_filter(&tree) => {
                 Some(self.render_filter_tree(&tree, &parent, local_to_target, Some(*hint)))
             }

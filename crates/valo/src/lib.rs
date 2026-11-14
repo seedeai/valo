@@ -44,8 +44,8 @@ pub use valo_dl::{
     DisplayListBuilder, DisplayListWalker, EffectError, EffectImage, EffectKind, Filter,
     FilterInputs, FocalCircle, GradientStop, Image, ImageFilter, MaskBlur, MaskKind,
     MatrixClipState, MipmapMode, Op, Paint, PaintStyle, RunFont, RunText, RuntimeEffect,
-    RuntimeShader, Sampling, Shader, SpreadMode, TileMode, UniformField, UniformLayout,
-    UniformType, MAX_UNIFORM_BYTES,
+    RuntimeShader, Sampling, Shader, SpreadMode, TileMode, UniformArray, UniformField,
+    UniformLayout, UniformType, MAX_UNIFORM_BYTES,
 };
 pub use valo_geometry::{
     constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,

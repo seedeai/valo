@@ -107,12 +107,29 @@ impl RuntimePrograms {
     /// `register` makes sure `shader`'s effect has a program and its override values a key,
     /// compiling the effect's module the first time it is seen.
     pub fn register(&mut self, device: &wgpu::Device, shader: &RuntimeShader) -> RuntimeKey {
-        let effect = &shader.effect;
+        self.register_variant(device, &shader.effect, shader.constants.clone())
+    }
+
+    /// `register_default` is [`RuntimePrograms::register`] of `effect` with every override at
+    /// its default: the variant a draw that sets none of them names.
+    pub fn register_default(
+        &mut self,
+        device: &wgpu::Device,
+        effect: &RuntimeEffect,
+    ) -> RuntimeKey {
+        self.register_variant(device, effect, Vec::new())
+    }
+
+    fn register_variant(
+        &mut self,
+        device: &wgpu::Device,
+        effect: &RuntimeEffect,
+        mut constants: Vec<(String, f64)>,
+    ) -> RuntimeKey {
         let (record_layout, uniform_layout) = (&self.record_layout, &self.uniform_layout);
         self.programs
             .entry(effect.id())
             .or_insert_with(|| compile(device, record_layout, uniform_layout, effect));
-        let mut constants = shader.constants.clone();
         constants.sort_by(|(a, _), (b, _)| a.cmp(b));
         let mut hasher = FxHasher::default();
         for (name, value) in &constants {
@@ -167,11 +184,14 @@ impl RuntimePrograms {
     }
 
     /// `image_bind` is the group-1 bind of `shader`'s images, or `None` when it samples none.
+    /// `filter_input` is bound where an image is unset: a paint shader's effect drawn as a
+    /// filter, whose first image is its input.
     pub fn image_bind(
         &self,
         device: &wgpu::Device,
         images: &mut ImageStore,
         shader: &RuntimeShader,
+        filter_input: Option<&wgpu::TextureView>,
     ) -> Option<wgpu::BindGroup> {
         let layout = self.program(shader.effect.id()).image_layout.as_ref()?;
         let samplers: Vec<wgpu::Sampler> = shader
@@ -179,16 +199,26 @@ impl RuntimePrograms {
             .iter()
             .map(|input| images.sampler(input.sampling).clone())
             .collect();
-        let entries: Vec<wgpu::BindGroupEntry> = shader
+        let views: Vec<&wgpu::TextureView> = shader
             .images
+            .iter()
+            .map(|input| match &input.image {
+                Some(image) => image.view(),
+                None => filter_input.expect(
+                    "only a filter's input is unset: `Shader::runtime` and `ImageFilter::runtime` \
+                     refuse any other",
+                ),
+            })
+            .collect();
+        let entries: Vec<wgpu::BindGroupEntry> = views
             .iter()
             .zip(&samplers)
             .enumerate()
-            .flat_map(|(slot, (input, sampler))| {
+            .flat_map(|(slot, (view, sampler))| {
                 [
                     wgpu::BindGroupEntry {
                         binding: 2 * slot as u32,
-                        resource: wgpu::BindingResource::TextureView(input.image.view()),
+                        resource: wgpu::BindingResource::TextureView(view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2 * slot as u32 + 1,

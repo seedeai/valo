@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use valo_geometry::{FillRule, Matrix, Path, PathBuilder, PathElement, Point, Rect};
+use valo_geometry::{Color, FillRule, Matrix, Path, PathBuilder, PathElement, Point, Rect};
 
 use crate::list::Recording;
-use crate::{Backdrop, Bounds, ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling};
+use crate::{
+    Backdrop, Bounds, ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling, SpotShadow,
+};
 
 /// `DisplayListBuilder` records drawing commands into an immutable display list.
 ///
@@ -458,6 +460,85 @@ impl DisplayListBuilder {
 
     // ── draws (one slot each; bounds pre-clipped for the culling oracle) ───
 
+    /// `draw_paint` fills the whole clip with `paint`, as Flutter's
+    /// `Canvas.drawPaint`: a background, a tint over everything drawn so
+    /// far, or, with a blend such as [`crate::BlendMode::Clear`] or
+    /// [`crate::BlendMode::Src`], a change to every pixel the clip lets
+    /// through, which a shape could not reach.
+    ///
+    /// The paint always fills, and its mask blur is dropped, as Flutter's
+    /// display list records a paint for this draw; its colour, shader,
+    /// filters and blend apply. Where no clip bounds it, the list's bounds
+    /// become unbounded, and a save layer around it covers its own clip.
+    pub fn draw_paint(&mut self, paint: &Paint) {
+        let paint = Paint {
+            style: crate::PaintStyle::Fill,
+            mask_blur: None,
+            ..paint.clone()
+        };
+        if paint.is_nop() {
+            return;
+        }
+        let takes_group_opacity = paint.takes_group_opacity();
+        self.record_op(Bounds::Unbounded, 1, takes_group_opacity, |bounds, slot| {
+            Op::DrawPaint {
+                paint,
+                bounds,
+                slot,
+            }
+        });
+    }
+
+    /// `draw_shadow` records the shadow an occluder of `path`'s shape, filled
+    /// by `fill_rule` and painted `color`, casts from `elevation` logical
+    /// pixels above the canvas, in a view whose device pixel ratio is
+    /// `device_pixel_ratio`: Flutter's `Canvas.drawShadow`, which material
+    /// elevation draws.
+    ///
+    /// The shadow is resolved when it is drawn, as Impeller resolves it: the
+    /// path moves down by the occluder's height, `device_pixel_ratio ×
+    /// elevation` in its own coordinates, and fills with a toned, lighter
+    /// `color` under a blur whose radius is that height over the vertical
+    /// scale of the whole transform it is drawn under, scales of the lists
+    /// and layers around it included. `transparent_occluder` is recorded and
+    /// changes nothing drawn, as in Impeller. A shadow takes no group
+    /// opacity, as in Flutter's display list.
+    pub fn draw_shadow(
+        &mut self,
+        path: &Arc<Path>,
+        fill_rule: FillRule,
+        color: Color,
+        elevation: f32,
+        transparent_occluder: bool,
+        device_pixel_ratio: f32,
+    ) {
+        if path.is_empty() || Paint::from_color(color).is_nop() {
+            return;
+        }
+        let transform = self.top().transform;
+        let Some(spot) = SpotShadow::resolve(color, elevation, device_pixel_ratio, &transform)
+        else {
+            return;
+        };
+        let moved = spot.offset.map_rect(&path.bounds());
+        let local = spot.paint.effect_bounds(moved);
+        let round_rect = closed_form_shadow(path);
+        let takes_group_opacity = false;
+        self.record_op(local, 1, takes_group_opacity, |bounds, slot| {
+            Op::DrawShadow {
+                path: Arc::clone(path),
+                fill_rule,
+                color,
+                elevation,
+                transparent_occluder,
+                device_pixel_ratio,
+                round_rect,
+                bounds,
+                slot,
+            }
+        });
+    }
+
     /// `draw_rect` records a filled or stroked rectangle.
     pub fn draw_rect(&mut self, rect: impl Into<Rect>, paint: &Paint) {
         let rect = rect.into();
@@ -659,6 +740,7 @@ impl DisplayListBuilder {
             },
             Op::Restore => self.restore(),
             Op::Transform(matrix) => self.concat(matrix),
+            Op::DrawPaint { paint, .. } => self.draw_paint(paint),
             Op::DrawRect { rect, paint, .. } => self.draw_rect(*rect, paint),
             Op::DrawPath {
                 path,
@@ -669,6 +751,22 @@ impl DisplayListBuilder {
             Op::RRectBlur {
                 rect, radii, paint, ..
             } => self.draw_rrect_radii(*rect, *radii, paint),
+            Op::DrawShadow {
+                path,
+                fill_rule,
+                color,
+                elevation,
+                transparent_occluder,
+                device_pixel_ratio,
+                ..
+            } => self.draw_shadow(
+                path,
+                *fill_rule,
+                *color,
+                *elevation,
+                *transparent_occluder,
+                *device_pixel_ratio,
+            ),
             Op::ClipPath {
                 path,
                 fill_rule,
@@ -1030,6 +1128,34 @@ fn sides_follow_axes(corners: &[Point; 4]) -> bool {
     let starts_along_x = a.y == b.y && b.x == c.x && c.y == d.y && d.x == a.x;
     let starts_along_y = a.x == b.x && b.y == c.y && c.x == d.x && d.y == a.y;
     starts_along_x || starts_along_y
+}
+
+/// `closed_form_shadow` is the rectangle and the one circular corner radius
+/// of `path`, when a shadow of it takes the closed-form blur: Impeller's
+/// `SimplifyOrDrawPath` draws a closed rectangle, a rounded rectangle whose
+/// corners are all the same, or an oval as such, and `AttemptDrawBlur` takes
+/// a rectangle, a rounded rectangle whose common radius is circular, or a
+/// circle, in closed form. Any other shape is blurred as a path.
+fn closed_form_shadow(path: &Path) -> Option<(Rect, f32)> {
+    if is_rect(path) {
+        return Some((path.bounds(), 0.0));
+    }
+    if let Some((_, radii)) = path.as_round_rect() {
+        let [x, y] = radii[0];
+        let same = radii
+            .iter()
+            .all(|corner| nearly_equal(corner[0], x) && nearly_equal(corner[1], y));
+        return (same && nearly_equal(x, y)).then(|| (path.bounds(), x));
+    }
+    // A square oval is a circle (Impeller's `Rect::IsSquare`, exact).
+    let oval = path.as_oval()?;
+    (oval.width == oval.height).then_some((oval, oval.width * 0.5))
+}
+
+/// `nearly_equal` is Impeller's `ScalarNearlyEqual` at its default
+/// tolerance, `kEhCloseEnough`.
+fn nearly_equal(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1e-3
 }
 
 /// `scales_and_moves` reports whether `transform` only scales and moves, so
@@ -2104,6 +2230,18 @@ mod tests {
                 ..Paint::default()
             },
         );
+        b.draw_paint(&Paint {
+            blend_mode: BlendMode::Multiply,
+            ..red()
+        });
+        b.draw_shadow(
+            &rect_path(Rect::new(10.0, 10.0, 30.0, 20.0)),
+            FillRule::NonZero,
+            Color::BLACK,
+            6.0,
+            true,
+            2.0,
+        );
         b.restore();
         let original = b.build();
 
@@ -2112,5 +2250,216 @@ mod tests {
             again.replay(op);
         }
         assert!(again.build() == original);
+    }
+
+    /// A paint fills the clip in force; with none it fills the list
+    /// everywhere (Flutter's `AccumulateUnbounded`).
+    #[test]
+    fn a_paint_fills_the_clip_and_unbounds_an_unclipped_list() {
+        let mut b = DisplayListBuilder::new();
+        b.draw_paint(&red());
+        let dl = b.build();
+        assert_eq!(dl.bounds(), Bounds::Unbounded);
+        assert!(
+            matches!(dl.ops(), [Op::DrawPaint { bounds, .. }] if *bounds == Rect::EVERYTHING),
+            "{:?}",
+            dl.ops()
+        );
+
+        let mut b = DisplayListBuilder::new();
+        b.translate(5.0, 5.0);
+        b.clip_rect(Rect::new(0.0, 0.0, 20.0, 10.0), ClipOp::Intersect, true);
+        b.draw_paint(&red());
+        assert_eq!(
+            b.build().bounds(),
+            Bounds::Bounded(Rect::new(5.0, 5.0, 20.0, 10.0))
+        );
+    }
+
+    /// Flutter's display list records the paint of `drawPaint` without its
+    /// draw style or mask filter (`kDrawPaintFlags`), and records nothing for
+    /// a paint that changes nothing.
+    #[test]
+    fn a_paint_fills_without_a_mask_blur_and_is_dropped_when_it_changes_nothing() {
+        let mut b = DisplayListBuilder::new();
+        b.draw_paint(&Paint {
+            style: crate::PaintStyle::Stroke(valo_geometry::Stroke::new(3.0)),
+            mask_blur: Some(MaskBlur::new(4.0)),
+            ..red()
+        });
+        b.draw_paint(&Paint::from_color(Color::TRANSPARENT));
+        let dl = b.build();
+        let [Op::DrawPaint { paint, .. }] = dl.ops() else {
+            panic!("one paint recorded: {:?}", dl.ops());
+        };
+        assert_eq!(*paint, red());
+
+        let mut b = DisplayListBuilder::new();
+        b.draw_paint(&Paint {
+            blend_mode: BlendMode::Clear,
+            ..Paint::from_color(Color::TRANSPARENT)
+        });
+        assert_eq!(
+            b.build().draw_count(),
+            1,
+            "Clear changes pixels whatever its colour"
+        );
+    }
+
+    /// In a layer that does not crop it, a paint leaves the layer's content
+    /// unbounded, so the layer covers its clip; it takes the group's alpha
+    /// alone, and overlaps anything else the layer holds.
+    #[test]
+    fn a_paint_unbounds_its_layer_and_overlaps_the_layers_other_draws() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 32.0, 32.0), ClipOp::Intersect, true);
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_paint(&red());
+        b.restore();
+        let (content, .., can_elide) = find_layer(&b.build());
+        assert_eq!(content, Bounds::Unbounded);
+        assert!(can_elide);
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_rect(Rect::new(0.0, 0.0, 4.0, 4.0), &red());
+        b.draw_paint(&red());
+        b.restore();
+        let (.., can_elide) = find_layer(&b.build());
+        assert!(!can_elide);
+    }
+
+    /// A shadow's bounds are its path moved down by the occluder's height
+    /// and spread by its blur, resolved under the transform at record time.
+    #[test]
+    fn a_shadow_records_the_bounds_of_its_moved_and_blurred_path() {
+        let path = rect_path(Rect::new(10.0, 10.0, 20.0, 20.0));
+        let mut b = DisplayListBuilder::new();
+        b.scale(2.0, 2.0);
+        b.draw_shadow(&path, FillRule::NonZero, Color::BLACK, 4.0, false, 2.0);
+        let dl = b.build();
+        let [Op::Transform(_), Op::DrawShadow {
+            round_rect, bounds, ..
+        }] = dl.ops()
+        else {
+            panic!("one shadow recorded: {:?}", dl.ops());
+        };
+        assert_eq!(*round_rect, Some((Rect::new(10.0, 10.0, 20.0, 20.0), 0.0)));
+        // A height of 8 local units; a radius of 8 / 2, a σ of 4 / √3 + 0.5,
+        // padded by its 3σ rounded up, 9.
+        let local = Rect::new(10.0, 18.0, 20.0, 20.0).expand(9.0);
+        assert_eq!(*bounds, Matrix::scale(2.0, 2.0).map_rect(&local));
+    }
+
+    /// A shadow of a transparent occluder is not recorded, and a shadow never
+    /// takes a group's alpha (Flutter's `UpdateLayerOpacityCompatibility`).
+    #[test]
+    fn a_shadow_takes_no_group_alpha() {
+        let card = rect_path(Rect::new(10.0, 10.0, 20.0, 20.0));
+        let mut b = DisplayListBuilder::new();
+        b.draw_shadow(
+            &card,
+            FillRule::NonZero,
+            Color::TRANSPARENT,
+            4.0,
+            false,
+            1.0,
+        );
+        assert_eq!(b.build().draw_count(), 0);
+
+        let mut b = DisplayListBuilder::new();
+        b.save_layer(None, &alpha_layer(0.5));
+        b.draw_shadow(&card, FillRule::NonZero, Color::BLACK, 4.0, false, 1.0);
+        b.restore();
+        let (.., can_elide) = find_layer(&b.build());
+        assert!(!can_elide);
+    }
+
+    /// The shapes Impeller's `SimplifyOrDrawPath` and `AttemptDrawBlur` draw
+    /// a shadow of in closed form: a rectangle, a rounded rectangle with one
+    /// circular radius, a circle. A rounded rectangle with differing or
+    /// elliptical corners, a non-square oval and any other path are blurred
+    /// as paths.
+    #[test]
+    fn a_shadow_records_the_closed_form_shapes_impeller_finds() {
+        let shape = |build: &dyn Fn(&mut PathBuilder)| {
+            let mut path = PathBuilder::new();
+            build(&mut path);
+            let mut b = DisplayListBuilder::new();
+            b.draw_shadow(
+                &path.build(),
+                FillRule::NonZero,
+                Color::BLACK,
+                4.0,
+                false,
+                1.0,
+            );
+            let dl = b.build();
+            match dl.ops() {
+                [Op::DrawShadow { round_rect, .. }] => *round_rect,
+                ops => panic!("one shadow recorded: {ops:?}"),
+            }
+        };
+        let r = Rect::new(10.0, 10.0, 40.0, 20.0);
+        assert_eq!(
+            shape(&|p| {
+                p.rect(r);
+            }),
+            Some((r, 0.0))
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect(r, 6.0);
+            }),
+            Some((r, 6.0))
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.circle((30.0, 30.0), 10.0);
+            }),
+            Some((Rect::new(20.0, 20.0, 20.0, 20.0), 10.0))
+        );
+        let square = Rect::new(0.0, 0.0, 20.0, 20.0);
+        assert_eq!(
+            shape(&|p| {
+                p.rrect(square, 10.0);
+            }),
+            Some((square, 10.0)),
+            "a rounded rect whose radii fill a square is a circle"
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect_radii(r, [6.0, 6.0, 0.0, 0.0]);
+            }),
+            None
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect_radii_elliptical(r, [[6.0, 3.0]; 4]);
+            }),
+            None
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect(r, 10.0);
+            }),
+            Some((r, 10.0)),
+            "a pill"
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect_radii_elliptical(r, [[20.0, 10.0]; 4]);
+            }),
+            None,
+            "a non-square oval"
+        );
+        assert_eq!(
+            shape(&|p| {
+                p.rrect(r, 6.0);
+                p.line_to((0.0, 0.0));
+            }),
+            None,
+            "a rounded rect with more after it"
+        );
     }
 }

@@ -39,6 +39,18 @@ passes one on the scene so a demo can `uploadImageBitmap`.
 The paint's alpha, blend mode, and mask blur apply; its RGB channels are
 ignored. Enable mips when the image may be drawn smaller than its source size.
 
+## A picture as an image
+
+A display list can become an image too, drawn at once into a texture valo makes, as Flutter's
+`Picture.toImageSync` makes one:
+
+```rust
+let image = context.display_list_to_image(&picture, [256, 256]);
+```
+
+It draws, tiles and feeds a runtime effect's images like an uploaded one. It has one mip level,
+and a size past the device's largest texture shrinks to fit.
+
 ## Browser uploads
 
 JavaScript can also upload an `ImageBitmap` or copy a live DOM source

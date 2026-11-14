@@ -17,14 +17,24 @@ if let Some(frame) = surface.acquire() {
 }
 ```
 
-Native applications can also export pixels without a window:
+Pixels can also be read back without a window. `request_pixels` draws a list
+into pixels of any size and asks the GPU for them; the request is a future of
+straight-alpha RGBA8:
 
 ```rust
-let pixels = context.render_to_rgba(&display_list, [320, 220], Some(Color::BLACK));
+let list = Arc::new(display_list);
+let request = context.request_pixels(&list, [320, 220], Some(Color::BLACK));
+// Natively, call `context.check_requests()` while the request is out;
+// on the web the browser answers on its own.
+let pixels = request.await?.into_bytes();
 ```
 
 `render` submits one command buffer and returns frame statistics.
-`render_to_rgba` is a blocking helper for tests and exports.
+`request_pixels` draws in tiles past the device's largest texture, and
+`export_pixels` does the same one tile per step, for a progress bar.
+
+A list can also become an [Image](/docs/reference/image) to draw or sample:
+`display_list_to_image(&list, size)`.
 
 ## JavaScript: Device and Renderer
 
@@ -46,6 +56,14 @@ The live canvases on [Paint](/docs/reference/paint) and
 [DisplayListBuilder](/docs/reference/display-list-builder) already go through
 `createDevice` and `attach`. Change those scenes to see a render on this
 device.
+
+## Runtime effects
+
+`prepare_runtime_effect(&effect, format)` compiles a
+[runtime effect](/docs/guides/runtime-effects)'s pipelines before its first
+draw, so it does not stall the frame it first appears in. It warms the common
+case only: the effect filling or covering a shape at the default blend, with
+its overrides at their defaults, into targets of `format`.
 
 ## Options
 

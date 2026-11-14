@@ -91,9 +91,70 @@ pub struct Path {
     /// Control-point bounds: conservative (curves stay inside their hull),
     /// which is exactly what the record-time oracle wants.
     bounds: Rect,
+    /// What the path was built as, when it was built as nothing but an oval
+    /// or a rounded rectangle.
+    shape: BuiltShape,
+}
+
+/// `BuiltShape` is what a path was built as, known by construction as
+/// Skia's path knows it (`SkPathIsAType`): an oval or a rounded rectangle
+/// added to an empty builder, with nothing added after it. Any other path is
+/// `General`, whatever its outline happens to trace.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+enum BuiltShape {
+    #[default]
+    General,
+    /// An oval filling the rect.
+    Oval(Rect),
+    /// A rounded rectangle with its constrained per-corner radii, clockwise
+    /// from the top-left, each `[x, y]`; never all zero.
+    RoundRect { rect: Rect, radii: [[f32; 2]; 4] },
+}
+
+impl BuiltShape {
+    /// `of_round_rect` is what a rounded rectangle over `rect` with
+    /// constrained `radii` was built as, simplified as Skia's
+    /// `SkPathPriv::SimplifyRRect` does: a rectangle, which is `General` and
+    /// which [`PathBuilder::rect`] would equally build, when every radius is
+    /// zero; an oval when every corner's radii are half the rect's sides.
+    fn of_round_rect(rect: Rect, radii: [[f32; 2]; 4]) -> Self {
+        let halves = [rect.width * 0.5, rect.height * 0.5];
+        if radii.iter().all(|corner| *corner == [0.0; 2]) {
+            BuiltShape::General
+        } else if radii.iter().all(|corner| *corner == halves) {
+            BuiltShape::Oval(rect)
+        } else {
+            BuiltShape::RoundRect { rect, radii }
+        }
+    }
 }
 
 impl Path {
+    /// `as_oval` is the rect the path's oval fills, when the path was built
+    /// as nothing but an oval: one [`PathBuilder::circle`], or a rounded
+    /// rectangle whose radii fill its rect, added to an empty builder, as
+    /// Skia's `SkPath::isOval` knows it by construction.
+    pub fn as_oval(&self) -> Option<Rect> {
+        match self.shape {
+            BuiltShape::Oval(rect) => Some(rect),
+            _ => None,
+        }
+    }
+
+    /// `as_round_rect` is the rect and the per-corner `[x, y]` radii,
+    /// clockwise from the top-left, of the rounded rectangle the path was
+    /// built as, when it was built as nothing but one, added to an empty
+    /// builder, as Skia's `SkPath::isRRect` knows it by construction. One
+    /// whose radii are all zero is a rectangle, and one whose radii fill its
+    /// rect an oval ([`Self::as_oval`]), as Skia simplifies them.
+    pub fn as_round_rect(&self) -> Option<(Rect, [[f32; 2]; 4])> {
+        match self.shape {
+            BuiltShape::RoundRect { rect, radii } => Some((rect, radii)),
+            _ => None,
+        }
+    }
+
     /// `elements` walks the path's verbs with their points, for a consumer that
     /// serializes or re-encodes it rather than flattens it.
     pub fn elements(&self) -> impl Iterator<Item = PathElement> + '_ {
@@ -536,6 +597,10 @@ pub struct PathBuilder {
     /// coincide only at radius zero.
     resume_point: Option<Point>,
     contour_open: bool,
+    /// What the path is built as so far; any point added resets it to
+    /// `General`, and only the oval and rounded-rect helpers set it, after
+    /// their own points, on a builder that had no segment before them.
+    shape: BuiltShape,
 }
 
 impl PathBuilder {
@@ -683,6 +748,18 @@ impl PathBuilder {
     ) -> &mut Self {
         let r = r.into();
         let [tl, tr, br, bl] = constrain_radii_elliptical(&r, radii);
+        let built_alone = self.has_no_segment();
+        self.trace_rrect(r, [tl, tr, br, bl], winding);
+        if built_alone {
+            self.shape = BuiltShape::of_round_rect(r, [tl, tr, br, bl]);
+        }
+        self
+    }
+
+    /// `trace_rrect` adds the outline of the rounded rectangle `r` with
+    /// constrained `radii`, wound by `winding`.
+    fn trace_rrect(&mut self, r: Rect, radii: [[f32; 2]; 4], winding: Winding) {
+        let [tl, tr, br, bl] = radii;
         let (l, t, rr, b) = (r.x, r.y, r.right(), r.bottom());
         if [tl, tr, br, bl].iter().all(|[x, y]| *x == 0.0 && *y == 0.0) {
             match winding {
@@ -695,7 +772,7 @@ impl PathBuilder {
                     .close(),
             };
             self.resume_point = Some(Point::new(l, t));
-            return self;
+            return;
         }
         // Each corner is one conic: a quarter ELLIPSE, exactly — the control
         // point is the box corner and the weight is cos(45°). Impeller's
@@ -741,7 +818,6 @@ impl PathBuilder {
         // two places where the prose and every implementation disagree, so
         // that distinction is worth keeping in view.
         self.resume_point = Some(Point::new(l, t));
-        self
     }
 
     /// `rsuperellipse` adds a rounded superellipse with one corner radius.
@@ -914,12 +990,17 @@ impl PathBuilder {
         let c = center.into();
         let r = radius;
         let w = std::f32::consts::FRAC_1_SQRT_2;
+        let built_alone = self.has_no_segment();
         self.move_to((c.x + r, c.y))
             .conic_to((c.x + r, c.y + r), (c.x, c.y + r), w)
             .conic_to((c.x - r, c.y + r), (c.x - r, c.y), w)
             .conic_to((c.x - r, c.y - r), (c.x, c.y - r), w)
             .conic_to((c.x + r, c.y - r), (c.x + r, c.y), w)
-            .close()
+            .close();
+        if built_alone && r > 0.0 {
+            self.shape = BuiltShape::Oval(Rect::new(c.x - r, c.y - r, 2.0 * r, 2.0 * r));
+        }
+        self
     }
 
     /// `append` adds a transformed copy of another path.
@@ -996,6 +1077,7 @@ impl PathBuilder {
             points: self.points,
             weights: self.weights,
             bounds: self.bounds.unwrap_or_default(),
+            shape: self.shape,
         })
     }
 
@@ -1039,7 +1121,14 @@ impl PathBuilder {
         self.move_to(self.resume_point.unwrap_or(p));
     }
 
+    /// `has_no_segment` reports whether nothing but moves has been added, as
+    /// Skia's builder asks before it marks a path an oval or a rounded rect.
+    fn has_no_segment(&self) -> bool {
+        self.verbs.iter().all(|verb| matches!(verb, Verb::Move))
+    }
+
     fn push_point(&mut self, p: Point) {
+        self.shape = BuiltShape::General;
         self.points.push(p);
         // Plain min/max accumulation — a zero-size seed rect is a valid
         // bound, wherever it sits (a rect-union "empty = identity" rule
@@ -1282,6 +1371,64 @@ pub fn local_tolerance(transform: &Matrix) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// A path knows it is an oval or a rounded rectangle by how it was
+    /// built, as Skia's does: one added to an empty builder, with nothing
+    /// after it, simplified as Skia simplifies a rounded rectangle.
+    #[test]
+    fn a_path_built_as_an_oval_or_a_rounded_rect_knows_it() {
+        let built = |build: &dyn Fn(&mut PathBuilder)| {
+            let mut path = PathBuilder::new();
+            build(&mut path);
+            path.build()
+        };
+        let r = Rect::new(10.0, 10.0, 40.0, 20.0);
+
+        let rounded = built(&|p| {
+            p.rrect_radii(r, [4.0, 6.0, 0.0, 2.0]);
+        });
+        let radii = [[4.0; 2], [6.0; 2], [0.0; 2], [2.0; 2]];
+        assert_eq!(rounded.as_round_rect(), Some((r, radii)));
+        assert_eq!(rounded.as_oval(), None);
+
+        let circle = built(&|p| {
+            p.circle((5.0, 5.0), 5.0);
+        });
+        assert_eq!(circle.as_oval(), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        let filled = built(&|p| {
+            p.rrect_radii_elliptical(r, [[20.0, 10.0]; 4]);
+        });
+        assert_eq!(filled.as_oval(), Some(r));
+        assert_eq!(filled.as_round_rect(), None);
+
+        for general in [
+            built(&|p| {
+                p.rect(r);
+            }),
+            built(&|p| {
+                p.rrect(r, 0.0);
+            }),
+            built(&|p| {
+                p.rect(r);
+                p.rrect(r, 4.0);
+            }),
+            built(&|p| {
+                p.circle((5.0, 5.0), 5.0);
+                p.line_to((20.0, 20.0));
+            }),
+        ] {
+            assert_eq!((general.as_oval(), general.as_round_rect()), (None, None));
+        }
+
+        let after_a_move = built(&|p| {
+            p.move_to((0.0, 0.0));
+            p.rrect(r, 4.0);
+        });
+        assert!(
+            after_a_move.as_round_rect().is_some(),
+            "a move adds no segment"
+        );
+    }
+
     use super::*;
 
     /// The observable meaning of winding: under the NON-ZERO rule two

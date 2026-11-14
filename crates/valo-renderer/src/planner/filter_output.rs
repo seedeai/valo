@@ -18,6 +18,7 @@ use crate::pipelines::{AdvancedBlend, Blend, PipelineBlend};
 use super::draw_state::DrawState;
 use super::drawing::Drawing;
 use super::emit::{Cover, Entity, Role};
+use super::shader_filter::ShaderFilterOutput;
 use super::shading::Shading;
 use super::snapshot::Snapshot;
 use super::source::Shape;
@@ -49,6 +50,9 @@ pub(super) enum FilterOutput<'a> {
     Solid { sharp: Snapshot, blur: Snapshot },
     /// A runtime filter drawn straight into the destination.
     Runtime(RuntimeOutput),
+    /// A paint shader's effect drawn as a filter, by Flutter's convention,
+    /// straight into the destination.
+    ShaderFilter(ShaderFilterOutput),
 }
 
 /// `RuntimeOutput` is what a runtime filter draws: its effect's `shade`
@@ -112,6 +116,7 @@ impl FilterOutput<'_> {
                 sharp.placement.coverage().union(&blur.placement.coverage())
             }
             FilterOutput::Runtime(output) => output.region,
+            FilterOutput::ShaderFilter(output) => output.region,
         }
     }
 }
@@ -161,6 +166,7 @@ impl Planner<'_> {
                 merge,
             } => self.filter_passes().push_merge(&first, &second, merge),
             FilterOutput::Runtime(output) => self.filter_passes().push_runtime(&output),
+            FilterOutput::ShaderFilter(output) => self.filter_passes().push_shader_filter(&output),
             output @ (FilterOutput::Clipped { .. } | FilterOutput::Solid { .. }) => self
                 .render_to_snapshot(&output.coverage(), |drawing, depths| {
                     let at = DrawState::in_layer(Matrix::IDENTITY, depths.first);
@@ -233,6 +239,14 @@ impl Drawing<'_, '_> {
                     at.alpha,
                 );
                 self.draw_output_quad(&output.region, shading, blend, at);
+            }
+            FilterOutput::ShaderFilter(output) => {
+                let shading =
+                    self.emit
+                        .shader_filter_shading(&output.shader, &output.input.view, at.alpha);
+                let texels_at =
+                    at.with_transform(at.transform.then(&output.input.placement.transform));
+                self.draw_output_quad(&output.texel_quad(), shading, blend, &texels_at);
             }
         }
     }

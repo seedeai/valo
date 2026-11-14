@@ -5,6 +5,7 @@ use valo_dl::Paint;
 use valo_geometry::Color;
 use valo_text::{
     shape, FaceSet, FontCollection, FontDemand, FontFeature, FontId, FontSynthesis, ShapedGlyph,
+    StyleFaces,
 };
 
 use crate::style::{
@@ -150,8 +151,9 @@ fn segment_span(
     demand: &mut FontDemand,
 ) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
-    let attrs = style.font_attrs();
-    let mut faces = collection.faces().style_faces(&style.families, attrs);
+    let mut faces = collection
+        .faces()
+        .style_faces(&style.families, style.font_attrs());
     for (at, ch) in text[span.clone()].char_indices() {
         let at = span.start + at;
         let level = bidi.levels[at].number();
@@ -163,37 +165,13 @@ fn segment_span(
                     && last.level == level
                     && collection.faces().get(last.font).covers(ch) =>
             {
-                last.font
+                Some(last.font)
             }
-            _ => {
-                let mut resolved = collection.faces().resolve_prepared(&faces, ch);
-                let covered = matches!(resolved, Some((_, true)));
-                if !covered && !ch.is_whitespace() {
-                    // Uncovered ink pulls a face from the sources, which
-                    // changes what the style resolves to; a char no source
-                    // can render is skipped (its miss is recorded on the
-                    // collection for the host's async loader).
-                    if collection.require_codepoint(&style.families, ch, attrs) {
-                        faces = collection.faces().style_faces(&style.families, attrs);
-                        resolved = collection.faces().resolve_prepared(&faces, ch);
-                    } else {
-                        demand.add_codepoint(ch, attrs);
-                    }
-                } else if resolved.is_none()
-                    && collection.require_codepoint(&style.families, ' ', attrs)
-                {
-                    // Whitespace, a hard break among it, renders in any face but
-                    // needs one, and the set has none yet: a space, which every
-                    // face covers, asks the sources for the style's face, as
-                    // skparagraph shapes a lone newline in the style's typeface.
-                    faces = collection.faces().style_faces(&style.families, attrs);
-                    resolved = collection.faces().resolve_prepared(&faces, ch);
-                }
-                let Some((font, _covered)) = resolved else {
-                    continue;
-                };
-                font
-            }
+            _ if hard_break => hard_break_face(collection, &mut faces, style),
+            _ => character_face(collection, &mut faces, style, ch, demand),
+        };
+        let Some(font) = font else {
+            continue;
         };
         match segments.last_mut() {
             Some(last)
@@ -214,6 +192,59 @@ fn segment_span(
         }
     }
     segments
+}
+
+/// `hard_break_face` is the face a hard line break shapes in, which sizes the
+/// line it ends when that line is empty: the style's own face, whether or not
+/// its cmap maps the break, as skparagraph resolves a control character in the
+/// first typeface it tries and never hands one to fallback. Taking the first
+/// face that maps it instead would let whichever fallback faces happen to be
+/// loaded change a blank line's height. When the set has no face yet, a space
+/// asks the sources for the style's. `faces` is renewed when a face is added.
+fn hard_break_face(
+    collection: &mut FontCollection,
+    faces: &mut StyleFaces,
+    style: &TextStyle,
+) -> Option<FontId> {
+    let attrs = style.font_attrs();
+    if faces.style_face().is_none() && collection.require_codepoint(&style.families, ' ', attrs) {
+        *faces = collection.faces().style_faces(&style.families, attrs);
+    }
+    faces.style_face()
+}
+
+/// `character_face` is the face `ch` shapes in: the first of the style's faces
+/// whose cmap covers it, then the fallback chain's. Uncovered ink pulls a face
+/// from the sources, which renews `faces`; a char no source can render is
+/// recorded in `demand` and shapes in the style's face as `.notdef`.
+/// Whitespace renders in any face, so `None` only when there is no face at
+/// all and none can be had.
+fn character_face(
+    collection: &mut FontCollection,
+    faces: &mut StyleFaces,
+    style: &TextStyle,
+    ch: char,
+    demand: &mut FontDemand,
+) -> Option<FontId> {
+    let attrs = style.font_attrs();
+    let mut resolved = collection.faces().resolve_prepared(faces, ch);
+    let covered = matches!(resolved, Some((_, true)));
+    if !covered && !ch.is_whitespace() {
+        // The miss is recorded on the collection for the host's async
+        // loader when no source has the char.
+        if collection.require_codepoint(&style.families, ch, attrs) {
+            *faces = collection.faces().style_faces(&style.families, attrs);
+            resolved = collection.faces().resolve_prepared(faces, ch);
+        } else {
+            demand.add_codepoint(ch, attrs);
+        }
+    } else if resolved.is_none() && collection.require_codepoint(&style.families, ' ', attrs) {
+        // Whitespace needs a face and the set has none yet: a space, which
+        // every face covers, asks the sources for the style's face.
+        *faces = collection.faces().style_faces(&style.families, attrs);
+        resolved = collection.faces().resolve_prepared(faces, ch);
+    }
+    resolved.map(|(font, _covered)| font)
 }
 
 fn shape_segment(

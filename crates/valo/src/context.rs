@@ -1,4 +1,6 @@
-use valo_dl::{BlendMode, DisplayList, Filter, Image, MipmapMode, Paint, Sampling, TileMode};
+use valo_dl::{
+    BlendMode, DisplayList, Filter, Image, MipmapMode, Paint, RuntimeEffect, Sampling, TileMode,
+};
 use valo_geometry::Color;
 use valo_renderer::{ImageDesc, MemoryReport, RenderStats, RenderTarget, RendererCore};
 
@@ -125,6 +127,45 @@ impl Context {
         self.renderer.images().finish_external(texture, size, 1)
     }
 
+    /// `prepare_runtime_effect` builds `effect`'s shader module and pipelines now, so its first
+    /// draw does not stall while they compile.
+    ///
+    /// It is Impeller's `CacheRuntimeStage`, which Flutter calls when a `FragmentProgram`
+    /// loads. Only the common case is warmed: the effect, with every `override` at its default,
+    /// filling or covering a shape at the default blend (source over) into targets of `format`,
+    /// the format of the surface or offscreen it will be drawn into. Another blend, another
+    /// format, other override values, a stroke, or the effect drawn as an image filter still
+    /// compile their pipeline at their first draw. Calling it again for the same effect and
+    /// format costs nothing.
+    pub fn prepare_runtime_effect(&mut self, effect: &RuntimeEffect, format: wgpu::TextureFormat) {
+        self.renderer.prepare_runtime_effect(effect, format);
+    }
+
+    /// `display_list_to_image` draws `dl` into a new [`Image`] of `size` pixels, over transparent
+    /// black, and returns it at once.
+    ///
+    /// It is Impeller's `DisplayListToTexture`, the immediate form of Flutter's
+    /// `Picture.toImageSync`: the drawing is submitted now, and anything drawn with the image
+    /// afterwards waits for it on the GPU. The image can be drawn, tiled or sampled by a runtime
+    /// effect like any uploaded one; it has one mip level. A side longer than the device's
+    /// largest texture shrinks the image to fit, keeping its aspect, as Impeller's snapshots do;
+    /// the list is drawn at its own scale, so what falls past the smaller image is cut off.
+    pub fn display_list_to_image(&mut self, dl: &DisplayList, size: [u32; 2]) -> Image {
+        let side = self.device().limits().max_texture_dimension_2d;
+        let size = snapshot_size(size, side);
+        let texture = self.renderer.images().create_image_texture(size, 1);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = RenderTarget {
+            view: &view,
+            texture: &texture,
+            format: valo_renderer::IMAGE_FORMAT,
+            size,
+            clear: Some(Color::TRANSPARENT),
+        };
+        self.renderer.render(dl, &target);
+        self.renderer.images().finish_external(texture, size, 1)
+    }
+
     /// `upload_image_bitmap` uploads a browser-decoded `ImageBitmap`.
     ///
     /// Pixels are copied directly into a retained [`Image`] without passing
@@ -202,6 +243,14 @@ impl Context {
     }
 }
 
+/// `snapshot_size` is `size` scaled down, if it must be, so neither side passes `side`, as
+/// Impeller's `DoMakeRasterSnapshot` sizes its target; every side keeps at least one pixel.
+fn snapshot_size(size: [u32; 2], side: u32) -> [u32; 2] {
+    let fit = |length: u32| f64::from(side) / f64::from(length.max(1));
+    let scale = fit(size[0]).min(fit(size[1])).min(1.0);
+    size.map(|length| ((f64::from(length) * scale) as u32).clamp(1, side))
+}
+
 #[cfg(target_arch = "wasm32")]
 fn copy_external_image(
     queue: &wgpu::Queue,
@@ -255,5 +304,17 @@ pub(crate) fn copy_paint() -> Paint {
         color: Color::WHITE,
         blend_mode: BlendMode::Src,
         ..Paint::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot_size;
+
+    #[test]
+    fn a_snapshot_shrinks_to_the_largest_texture() {
+        assert_eq!(snapshot_size([300, 200], 8192), [300, 200]);
+        assert_eq!(snapshot_size([16384, 4096], 8192), [8192, 2048]);
+        assert_eq!(snapshot_size([0, 10], 8192), [1, 10]);
     }
 }

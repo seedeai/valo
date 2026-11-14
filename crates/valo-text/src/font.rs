@@ -456,6 +456,19 @@ pub struct StyleFaces {
     tofu: Option<FontId>,
 }
 
+impl StyleFaces {
+    /// `style_face` is the face the style tries first, whatever a character
+    /// needs: its first present family's nearest variant, else the first
+    /// fallback, else the set's first face; `None` on an empty set. It is
+    /// skparagraph's first typeface for a style, in which a control
+    /// character such as a hard line break is always resolved
+    /// (`OneLineShaper::sortOutGlyphs` never counts one as unresolved), so
+    /// no fallback face takes it.
+    pub fn style_face(&self) -> Option<FontId> {
+        self.tofu
+    }
+}
+
 impl FaceSet {
     /// `new` creates an empty face set.
     pub fn new() -> Self {

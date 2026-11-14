@@ -139,8 +139,9 @@ impl Planner<'_> {
 
     /// `render_filter` is one node over its input's texture, its parameters
     /// under `effect_transform`. A blur cuts a placed input to its input
-    /// hint when the input holds it; a runtime filter shades only what its
-    /// output hint asks for.
+    /// hint when the input holds it; a runtime filter, or a paint shader's
+    /// effect as one (`shader_filter`), shades only what its output hint asks
+    /// for.
     fn render_filter<'t>(
         &mut self,
         filter: &Filter<'t>,
@@ -195,10 +196,9 @@ impl Planner<'_> {
                 drop_shadow(input, shadow, device_offset(effect_transform, *offset))
             }
             Filter::Runtime(shader) => {
-                let inputs = shader
-                    .effect
-                    .filter_inputs()
-                    .expect("an image filter's effect is made by `RuntimeEffect::filter`");
+                let Some(inputs) = shader.effect.filter_inputs() else {
+                    return self.render_shader_filter(shader, input, hints.output);
+                };
                 let coverage = input.placement.coverage();
                 // A hint the coverage misses cuts nothing, as a fill's does.
                 let region = hints

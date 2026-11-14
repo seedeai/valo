@@ -430,3 +430,41 @@ fn a_trailing_carriage_return_opens_no_line() {
     assert_eq!(mono("ab\r").lines().len(), 1);
     assert_eq!(mono("ab\u{2028}").lines().len(), 2);
 }
+
+/// `blank_line_height` is the height of "one\n\ntwo" in Fira Sans at 16 px, with the newline
+/// test font, whose cmap maps U+000A where Fira Sans maps none, in the fallback chain or not.
+fn blank_line_height(with_newline_fallback: bool) -> f32 {
+    let mut fonts = FontCollection::new();
+    let latin = fonts
+        .register("Fira Sans", super::asset("fira_sans.ttf"))
+        .unwrap();
+    fonts.add_fallback(latin);
+    if with_newline_fallback {
+        let newline = fonts
+            .register("Newline Test", super::asset("newline_test.ttf"))
+            .unwrap();
+        fonts.add_fallback(newline);
+    }
+    let mut builder = ParagraphBuilder::new(&mut fonts);
+    builder.add_text(
+        "one\n\ntwo",
+        &TextStyle::new("Fira Sans", 16.0, Color::BLACK),
+    );
+    let mut paragraph = builder.build();
+    paragraph.layout(300.0);
+    paragraph.height()
+}
+
+/// A hard break shapes in the style's own face, which sizes the blank line it ends, whatever
+/// fallback faces are loaded: skparagraph never counts a control character as unresolved
+/// (`OneLineShaper::sortOutGlyphs`), so the style's first typeface keeps it. Resolving the
+/// break to the first face that maps U+000A made a blank line as tall as that fallback's
+/// ascent and descent once one had been loaded.
+#[test]
+fn a_blank_lines_height_does_not_depend_on_the_fallback_faces_loaded() {
+    let alone = blank_line_height(false);
+    let beside_a_newline_face = blank_line_height(true);
+    assert_close(beside_a_newline_face, alone);
+    // Three lines of Fira Sans: 0.935 + 0.265 of 16 px each.
+    assert_close(alone, 3.0 * 1.2 * 16.0);
+}

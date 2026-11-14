@@ -244,11 +244,15 @@ pub enum ImageFilter {
         /// `inner` receives the original input.
         inner: Arc<ImageFilter>,
     },
-    /// `Runtime` shades what the input covers with a runtime filter's `shade`,
-    /// its `source` the input prepared as the effect's
-    /// [`FilterInputs`](crate::FilterInputs) ask. The effect is made by
-    /// [`RuntimeEffect::filter`](crate::RuntimeEffect::filter); see
-    /// [`ImageFilter::runtime`].
+    /// `Runtime` shades what the input covers with a runtime effect's `shade`.
+    ///
+    /// An effect made by [`RuntimeEffect::filter`](crate::RuntimeEffect::filter)
+    /// reads the input as `source`, prepared as its
+    /// [`FilterInputs`](crate::FilterInputs) ask, at local positions. One made
+    /// by [`RuntimeEffect::shader`](crate::RuntimeEffect::shader) follows
+    /// Flutter's `ImageFilter.shader`: the input is its first image, the
+    /// input's size in pixels its first uniform, and `position` is in the
+    /// input's pixels. See [`ImageFilter::runtime`].
     Runtime(crate::RuntimeShader),
 }
 
@@ -311,15 +315,23 @@ impl ImageFilter {
         }
     }
 
-    /// `runtime` creates a filter from a runtime filter effect with one
-    /// draw's inputs; a paint shader's effect is refused.
+    /// `runtime` creates a filter from a runtime effect with one draw's
+    /// inputs.
+    ///
+    /// A filter's effect reads its input as `source`. A paint shader's effect
+    /// is a filter by Flutter's convention, as `ImageFilter.shader` is: its
+    /// first uniform is a `vec2<f32>` the renderer sets to the input's size in
+    /// pixels, its first image is left unset (`EffectImage::image` is `None`)
+    /// for the renderer to bind the input, sampled as that slot's `sampling`
+    /// says, and `shade` is called at positions in the input's pixels. The
+    /// same effect can then also fill shapes, with its first image set. Each
+    /// kind refuses inputs that break its convention, as dart:ui refuses them.
     pub fn runtime(shader: crate::RuntimeShader) -> Result<Self, crate::EffectError> {
         match shader.effect.kind() {
-            crate::EffectKind::Filter(_) => Ok(Self::Runtime(shader)),
-            crate::EffectKind::Shader => Err(crate::EffectError::Contract(
-                "an image filter's effect is made by `RuntimeEffect::filter`".to_owned(),
-            )),
+            crate::EffectKind::Filter(_) => shader.check_images_set()?,
+            crate::EffectKind::Shader => shader.check_filter_input()?,
         }
+        Ok(Self::Runtime(shader))
     }
 
     /// `drop_shadow` creates a shadow that retains the original input.

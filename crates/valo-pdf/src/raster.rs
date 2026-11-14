@@ -34,8 +34,8 @@ pub(crate) fn raster_regions(
     regions
 }
 
-/// `rasterized` is whether PDF can't hold `op` and the `scope` it opens: a blur, a filter, an
-/// image, a shader PDF has no word for, or a layer with a filter, a backdrop or a mask, or one a
+/// `rasterized` is whether PDF can't hold `op` and the `scope` it opens: a blur, a shadow, a
+/// filter, an image, a shader PDF has no word for, or a layer with a filter, a backdrop or a mask, or one a
 /// mask inside it masks.
 pub(crate) fn rasterized(op: &Op, scope: &[Op]) -> bool {
     match op {
@@ -51,10 +51,11 @@ pub(crate) fn rasterized(op: &Op, scope: &[Op]) -> bool {
                 || paint.color_filter.is_some()
                 || holds_a_mask(scope)
         }
-        Op::RRectBlur { .. } | Op::DrawImage { .. } => true,
-        Op::DrawRect { paint, .. } | Op::DrawPath { paint, .. } | Op::GlyphRun { paint, .. } => {
-            needs_pixels(paint)
-        }
+        Op::RRectBlur { .. } | Op::DrawShadow { .. } | Op::DrawImage { .. } => true,
+        Op::DrawPaint { paint, .. }
+        | Op::DrawRect { paint, .. }
+        | Op::DrawPath { paint, .. }
+        | Op::GlyphRun { paint, .. } => needs_pixels(paint),
         _ => false,
     }
 }

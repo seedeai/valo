@@ -55,6 +55,7 @@ impl DocumentWriter {
         let mut writer = Writer {
             surface: &mut surface,
             fonts: &mut self.fonts,
+            page: Rect::new(0.0, 0.0, page.size[0], page.size[1]),
             scopes: vec![0],
             pictures: pictures.into_iter(),
         };
@@ -64,7 +65,7 @@ impl DocumentWriter {
                 writer.picture(ops.matrix_clip());
                 ops.skip_scope();
             } else {
-                writer.op(op);
+                writer.op(op, ops.matrix_clip());
             }
         }
         writer.close_all();
@@ -113,13 +114,15 @@ fn images_of(
 struct Writer<'a, 'b> {
     surface: &'a mut Surface<'b>,
     fonts: &'a mut HashMap<FontUid, Option<PdfFont>>,
+    /// The page, in the units its list draws in.
+    page: Rect,
     scopes: Vec<usize>,
     pictures: std::vec::IntoIter<Option<PlacedImage>>,
 }
 
 impl Writer<'_, '_> {
-    /// `op` writes an op PDF can hold.
-    fn op(&mut self, op: &Op) {
+    /// `op` writes an op PDF can hold, drawn where `state` places it.
+    fn op(&mut self, op: &Op, state: &MatrixClipState) {
         match op {
             Op::Save | Op::DrawDisplayList { .. } => self.open(),
             Op::SaveLayer { paint, .. } => {
@@ -137,17 +140,13 @@ impl Writer<'_, '_> {
                 op,
                 ..
             } => self.clip(path, *fill_rule, *op),
-            Op::DrawRect { rect, paint, .. } => {
-                let mut pb = PathBuilder::new();
-                if let Some(rect) =
-                    krilla::geom::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)
-                {
-                    pb.push_rect(rect);
-                }
-                if let Some(path) = pb.finish() {
-                    self.draw(&path, FillRule::NonZero, paint);
+            Op::DrawPaint { paint, .. } => {
+                // The whole page, in the space it is drawn in: the clips around it cut it.
+                if let Some(back) = state.transform().invert() {
+                    self.rect(&back.map_rect(&self.page), paint);
                 }
             }
+            Op::DrawRect { rect, paint, .. } => self.rect(rect, paint),
             Op::DrawPath {
                 path,
                 fill_rule,
@@ -165,9 +164,20 @@ impl Writer<'_, '_> {
                 text,
                 ..
             } => self.glyph_run(font, paint, glyphs, text),
-            Op::RRectBlur { .. } | Op::DrawImage { .. } => {
-                unreachable!("blurs and images are rasterized")
+            Op::RRectBlur { .. } | Op::DrawShadow { .. } | Op::DrawImage { .. } => {
+                unreachable!("blurs, shadows and images are rasterized")
             }
+        }
+    }
+
+    /// `rect` draws `rect` filled or stroked with `paint`.
+    fn rect(&mut self, rect: &Rect, paint: &Paint) {
+        let mut pb = PathBuilder::new();
+        if let Some(rect) = krilla::geom::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height) {
+            pb.push_rect(rect);
+        }
+        if let Some(path) = pb.finish() {
+            self.draw(&path, FillRule::NonZero, paint);
         }
     }
 

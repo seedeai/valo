@@ -61,4 +61,22 @@ paragraphs. JavaScript `drawCircle` and `clipRoundedRect` match the C and Rust
 circle and rounded-clip calls. See [Paint](/docs/reference/paint) for style and
 [Path](/docs/reference/path) for geometry.
 
+Two more are Rust only for now:
+
+- **The whole clip** with `draw_paint`, as Flutter's `Canvas.drawPaint`: the
+  paint covers everything the clip lets through, so a blend such as `Clear`
+  or `DstIn` reaches past any shape, and a save layer around it covers its
+  own clip. The paint always fills, and its mask blur is ignored.
+- **A shadow** with `draw_shadow`, as Flutter's `Canvas.drawShadow`: an
+  occluder's path, colour, elevation and the view's device pixel ratio. It is
+  resolved when it is drawn, as Impeller draws it: the path moved down by
+  `device_pixel_ratio × elevation`, filled with a lighter tone of the colour
+  under a blur as wide as that height in pixels, whatever scale the list is
+  drawn at.
+
+```rust
+builder.draw_paint(&Paint::from_color(Color::rgb(0.98, 0.98, 0.98)));
+builder.draw_shadow(&card, FillRule::NonZero, Color::BLACK, 4.0, false, 2.0);
+```
+
 Next: [DisplayList](/docs/reference/display-list).
