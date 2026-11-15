@@ -56,6 +56,8 @@ Every one is covered by name instead, in `degenerate-scenes.ts` or as its own
 test in `query.browser.test.ts`, with a comment at the generator saying where.
 When the divergence closes, widen the generator and delete the comment.
 
+One divergence is kept on purpose: Valo blurs as Impeller does, which leaves a draw unblurred below a sigma of about 0.79 (`smallestBlurringSigma` in `degenerate-scenes.ts`), where Canvas2D blurs it. The generators skip that band, and `degenerate.browser.test.ts` holds it, by name, to Canvas2D drawing the same scene unblurred.
+
 ## Why these scripts build `valo-web` first
 
 This suite imports `valo-web` by package name, so it resolves through that

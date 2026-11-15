@@ -1,4 +1,5 @@
 import * as fc from "fast-check";
+import { smallestBlurringSigma } from "./degenerate-scenes.js";
 import {
   FIXTURE_FONT_FAMILY,
   type CanvasCommand,
@@ -90,11 +91,29 @@ const lineDash = fc.record({
   offset: measure(-12, 24),
 });
 
+/**
+ * A blur's sigma up to `max`: none, or one Valo blurs with. Between the two,
+ * below `smallestBlurringSigma`, Valo keeps Impeller's answer and leaves the
+ * draw unblurred where Canvas2D blurs it, which would fail most runs and mask
+ * the rest; `degenerate-scenes.ts` holds that band to the unblurred drawing by
+ * name.
+ */
+function blurSigma(max: number): fc.Arbitrary<number> {
+  return measure(0, max).filter(bothBlurOrNeither);
+}
+
+function bothBlurOrNeither(sigma: number): boolean {
+  return sigma === 0 || sigma >= smallestBlurringSigma;
+}
+
+/** A `shadowBlur`, twice its sigma, under the same rule as `blurSigma`. */
+const shadowBlur = measure(0, 8).filter((blur) => bothBlurOrNeither(blur / 2));
+
 const filterFunction = fc.oneof(
   // Sigma stops below 4√2, where Valo's downsampled blur path takes over and
   // diverges. Widening it here would fail every run and mask the other eight
   // functions; `degenerate-scenes.ts` covers the large-sigma band by name.
-  measure(0, 5).map((pixels) => `blur(${pixels}px)`),
+  blurSigma(5).map((pixels) => `blur(${pixels}px)`),
   measure(0, 200).map((percent) => `brightness(${percent}%)`),
   measure(0, 200).map((percent) => `contrast(${percent}%)`),
   measure(0, 100).map((percent) => `grayscale(${percent}%)`),
@@ -624,7 +643,7 @@ const shadowedRectangle = fc
     color,
     shadow: color,
     operation: compositeOperation,
-    blur: measure(0, 8),
+    blur: shadowBlur,
     offsetX: measure(-6, 8),
     offsetY: measure(-6, 8),
   })
@@ -658,7 +677,7 @@ const shadowedGradient = fc
     first: color,
     second: color,
     shadow: color,
-    blur: measure(0, 8),
+    blur: shadowBlur,
   })
   .map((shape): CommandBlock => [
     { type: "save" },
