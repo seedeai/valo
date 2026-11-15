@@ -105,9 +105,7 @@ impl ContourMeasure {
         let mut points = vec![self.sample(start).position];
         let first = self.segment_containing(start);
         let last = self.segment_containing(end);
-        for index in first + 1..=last {
-            points.push(self.points[index]);
-        }
+        points.extend_from_slice(&self.points[first + 1..=last]);
         points.push(self.sample(end).position);
         Some(Contour {
             points: dedup_adjacent(points),
