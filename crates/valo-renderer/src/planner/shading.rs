@@ -171,6 +171,29 @@ impl StepEmitter<'_> {
         Shading::of(Frag::Image, record, self.textured(&snapshot.view))
     }
 
+    /// `moved_texture_shading` is `snapshot` drawn over its own texels at
+    /// `alpha`, read as `sampling` filters it and clamped at its edge
+    /// whatever its tile modes: a matrix filter's moved input, its sampler
+    /// set as Impeller's `MatrixFilterContents` sets its snapshot's. The
+    /// quad is the texels' own, so the draw's transform does the moving.
+    pub fn moved_texture_shading(
+        &mut self,
+        snapshot: &Snapshot,
+        sampling: Sampling,
+        alpha: f32,
+    ) -> Shading {
+        let mut record = UniformRecord::tinted(alpha_tint(alpha));
+        let [width, height] = snapshot.placement.size.map(|side| side as f32);
+        record.set(slot::GEOM, [1.0 / width, 1.0 / height, 0.0, 0.0]);
+        let clamped = Sampling {
+            tile_x: TileMode::Clamp,
+            tile_y: TileMode::Clamp,
+            ..sampling
+        };
+        let bind = self.sampled_texture_bind(&snapshot.view, clamped);
+        Shading::of(Frag::Image, record, Bindings::Textured(bind))
+    }
+
     /// `raster_shading` is a cached list's whole texture stretched over
     /// `sampled`, a rect the texture's size in destination units, at
     /// `alpha`: one premultiplied composite, exactly like a layer's.
@@ -545,12 +568,16 @@ impl<'a> PaintSource<'a> {
             Shader::Sweep {
                 center,
                 start_angle,
+                end_angle,
                 stops,
+                spread,
                 local,
             } => (
                 GradientKind::Sweep {
                     center: *center,
                     start_angle: *start_angle,
+                    end_angle: *end_angle,
+                    spread: *spread,
                 },
                 stops,
                 local,
@@ -581,8 +608,12 @@ enum GradientKind {
         focus: Option<FocalCircle>,
         spread: SpreadMode,
     },
-    /// A sweep is periodic by nature.
-    Sweep { center: Point, start_angle: f32 },
+    Sweep {
+        center: Point,
+        start_angle: f32,
+        end_angle: f32,
+        spread: SpreadMode,
+    },
 }
 
 impl Gradient<'_> {
@@ -617,8 +648,12 @@ fn is_opaque_paint(paint: &Paint) -> bool {
 fn shader_opaque(shader: &Shader) -> bool {
     // A two-point conical gradient with a real start circle does not cover
     // the plane: outside its cone nothing is painted at all, so opaque
-    // promotion would turn those pixels into replaced black. A gradient that
-    // can leave gaps never qualifies, however opaque its stops are.
+    // promotion would turn those pixels into replaced black. Nor does a
+    // decal gradient, outside its span. A gradient that can leave gaps never
+    // qualifies, however opaque its stops are.
+    if shader.spread() == Some(SpreadMode::Decal) {
+        return false;
+    }
     if let Shader::Radial {
         center,
         focus: Some(circle),
@@ -820,9 +855,9 @@ fn fill_gradient_payload(
     gradient: &Gradient,
     ramp_texels: Option<u32>,
 ) {
-    let (geom, angle, misc_w, spread) = match gradient.kind {
+    let (geom, misc_w, spread) = match gradient.kind {
         GradientKind::Linear { start, end, spread } => {
-            ([start.x, start.y, end.x, end.y], 0.0, 0.0, spread)
+            ([start.x, start.y, end.x, end.y], 0.0, spread)
         }
         GradientKind::Radial {
             center,
@@ -831,17 +866,17 @@ fn fill_gradient_payload(
             spread,
         } => {
             let f = focus.map_or(center, |circle| circle.center);
-            ([center.x, center.y, radius, f.x], 0.0, f.y, spread)
+            ([center.x, center.y, radius, f.x], f.y, spread)
         }
         GradientKind::Sweep {
             center,
             start_angle,
-        } => (
-            [center.x, center.y, 0.0, 0.0],
-            start_angle,
-            0.0,
-            SpreadMode::Pad,
-        ),
+            end_angle,
+            spread,
+        } => {
+            let [bias, scale] = sweep_bias_and_scale(start_angle, end_angle);
+            ([center.x, center.y, bias, scale], 0.0, spread)
+        }
     };
     record.set(slot::GEOM, geom);
     let mut inverse = gradient
@@ -876,7 +911,7 @@ fn fill_gradient_payload(
         Some(texels) => texels as f32,
         None => count as f32,
     };
-    record.set(slot::MISC, [count_lane, angle, spread_id(spread), misc_w]);
+    record.set(slot::MISC, [count_lane, 0.0, spread_id(spread), misc_w]);
     if ramp_texels.is_some() {
         return;
     }
@@ -893,6 +928,18 @@ fn fill_gradient_payload(
         slot::OFFSETS + 1,
         [offsets[4], offsets[5], offsets[6], offsets[7]],
     );
+}
+
+/// `sweep_bias_and_scale` is Impeller's `SweepGradientContents` setup:
+/// what takes a turn, as a fraction of a whole one, to the gradient's
+/// offset, `(turn + bias) * scale`, so the start angle lands on 0 and the
+/// end angle on 1. An end at or before the start, which Skia refuses and
+/// Impeller asserts against, scales by the largest step instead of
+/// dividing by nothing.
+fn sweep_bias_and_scale(start_angle: f32, end_angle: f32) -> [f32; 2] {
+    let start = start_angle / std::f32::consts::TAU;
+    let end = end_angle / std::f32::consts::TAU;
+    [-start, 1.0 / (end - start).max(1e-6)]
 }
 
 /// `fill_pattern_payload` writes a pattern's mapping: `local⁻¹` into

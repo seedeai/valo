@@ -1,17 +1,17 @@
 //! What a filter tree hands whoever draws it, and how it is drawn. The last
 //! node need not make a texture: it hands on a [`FilterOutput`] that draws
 //! itself into the destination, as Impeller's `RenderFilter` returns an
-//! entity, so a colour filter, a styled blur or a drop shadow at the end of
-//! a tree costs no pass of its own. An inner or outer mask blur clips its
-//! blur to the draw's shape, or to outside it, where it is drawn, as
-//! Impeller's `ApplyClippedBlurStyle` does; a glyph run, which has no
+//! entity, so a colour filter, a styled blur, a drop shadow or a matrix at
+//! the end of a tree costs no pass of its own. An inner or outer mask blur
+//! clips its blur to the draw's shape, or to outside it, where it is drawn,
+//! as Impeller's `ApplyClippedBlurStyle` does; a glyph run, which has no
 //! shape, merges its style in the composite's fragment. The composite of
 //! a filtered layer, of a whole image's filters and of a backdrop's glass is
 //! that draw. A texture is made of an output only when a next node or an
 //! advanced blend has to read one ([`Planner::snapshot_output`]).
 
-use valo_dl::{BlurStyle, ClipOp, ColorFilter, RuntimeShader};
-use valo_geometry::{Matrix, Rect};
+use valo_dl::{BlurStyle, ClipOp, ColorFilter, Filter, RuntimeShader, Sampling};
+use valo_geometry::{Matrix, MatrixKind, Rect};
 
 use crate::pipelines::{AdvancedBlend, Blend, PipelineBlend};
 
@@ -20,7 +20,7 @@ use super::drawing::Drawing;
 use super::emit::{Cover, Entity, Role};
 use super::shader_filter::ShaderFilterOutput;
 use super::shading::Shading;
-use super::snapshot::Snapshot;
+use super::snapshot::{Placement, Snapshot};
 use super::source::Shape;
 use super::Planner;
 
@@ -53,6 +53,62 @@ pub(super) enum FilterOutput<'a> {
     /// A paint shader's effect drawn as a filter, by Flutter's convention,
     /// straight into the destination.
     ShaderFilter(ShaderFilterOutput),
+    /// A matrix filter's input moved, drawn straight into the destination.
+    Moved(MovedOutput),
+}
+
+/// `MovedOutput` is what a matrix filter draws: Impeller's
+/// `MatrixFilterContents` hands its input's snapshot on with the matrix in
+/// its transform and its own sampler, as an entity drawn as it is. `input`
+/// goes where `transform`, in the tree's space, moves it, read as
+/// `sampling` filters it; `limit` is the region the output has to cover,
+/// when the tree knows one.
+pub(super) struct MovedOutput {
+    pub input: Snapshot,
+    pub transform: Matrix,
+    pub sampling: Sampling,
+    pub limit: Option<Rect>,
+}
+
+impl MovedOutput {
+    /// `texel_transform` maps the input's texels to where they are drawn in
+    /// the tree's space.
+    pub fn texel_transform(&self) -> Matrix {
+        self.transform.then(&self.input.placement.transform)
+    }
+
+    /// `texel_quad` is the input's texels, all of them.
+    pub fn texel_quad(&self) -> Rect {
+        let [width, height] = self.input.placement.size.map(|side| side as f32);
+        Rect::new(0.0, 0.0, width, height)
+    }
+
+    /// `coverage` is what the moved input covers in the tree's space, cut
+    /// to the limit when there is one.
+    pub fn coverage(&self) -> Rect {
+        let moved = self.texel_transform().map_rect(&self.texel_quad());
+        self.limit
+            .and_then(|limit| limit.intersect(&moved))
+            .unwrap_or(moved)
+    }
+
+    /// `as_snapshot` is the moved input as a snapshot that needs no pass of
+    /// its own, when one can say it: moved by a positive scale and a
+    /// translation only, as every snapshot's placement is, and read
+    /// linearly, as every reader reads a snapshot.
+    pub fn as_snapshot(&self) -> Option<Snapshot> {
+        let transform = self.texel_transform();
+        let placeable =
+            transform.kind() == MatrixKind::AxisAligned && self.sampling.filter == Filter::Linear;
+        placeable.then(|| Snapshot {
+            view: self.input.view.clone(),
+            placement: Placement {
+                size: self.input.placement.size,
+                transform,
+                placed: false,
+            },
+        })
+    }
 }
 
 /// `RuntimeOutput` is what a runtime filter draws: its effect's `shade`
@@ -117,6 +173,7 @@ impl FilterOutput<'_> {
             }
             FilterOutput::Runtime(output) => output.region,
             FilterOutput::ShaderFilter(output) => output.region,
+            FilterOutput::Moved(output) => output.coverage(),
         }
     }
 }
@@ -167,11 +224,40 @@ impl Planner<'_> {
             } => self.filter_passes().push_merge(&first, &second, merge),
             FilterOutput::Runtime(output) => self.filter_passes().push_runtime(&output),
             FilterOutput::ShaderFilter(output) => self.filter_passes().push_shader_filter(&output),
-            output @ (FilterOutput::Clipped { .. } | FilterOutput::Solid { .. }) => self
-                .render_to_snapshot(&output.coverage(), |drawing, depths| {
-                    let at = DrawState::in_layer(Matrix::IDENTITY, depths.first);
-                    drawing.draw_filter_output(&output, PipelineBlend::SrcOver, &at);
-                }),
+            FilterOutput::Moved(moved) => match moved.as_snapshot() {
+                Some(snapshot) => snapshot,
+                None => {
+                    let region = self.moved_region(&moved);
+                    self.render_output_to_snapshot(&FilterOutput::Moved(moved), &region)
+                }
+            },
+            output @ (FilterOutput::Clipped { .. } | FilterOutput::Solid { .. }) => {
+                let region = output.coverage();
+                self.render_output_to_snapshot(&output, &region)
+            }
+        }
+    }
+
+    /// `render_output_to_snapshot` draws `output` into a texture of its own
+    /// over `region` of the tree's space.
+    fn render_output_to_snapshot(&mut self, output: &FilterOutput<'_>, region: &Rect) -> Snapshot {
+        self.render_to_snapshot(region, |drawing, depths| {
+            let at = DrawState::in_layer(Matrix::IDENTITY, depths.first);
+            drawing.draw_filter_output(output, PipelineBlend::SrcOver, &at);
+        })
+    }
+
+    /// `moved_region` is the region a texture of `moved` covers: its
+    /// coverage, or, when perspective takes the input past the eye plane
+    /// and leaves its coverage everything with no limit to cut it, the
+    /// target the planner is drawing, which is all of the output that can
+    /// show when the tree's space is the target's.
+    fn moved_region(&self, moved: &MovedOutput) -> Rect {
+        let coverage = moved.coverage();
+        if coverage == Rect::EVERYTHING {
+            self.contexts.top().area.rect()
+        } else {
+            coverage
         }
     }
 
@@ -246,6 +332,13 @@ impl Drawing<'_, '_> {
                         .shader_filter_shading(&output.shader, &output.input.view, at.alpha);
                 let texels_at =
                     at.with_transform(at.transform.then(&output.input.placement.transform));
+                self.draw_output_quad(&output.texel_quad(), shading, blend, &texels_at);
+            }
+            FilterOutput::Moved(output) => {
+                let shading =
+                    self.emit
+                        .moved_texture_shading(&output.input, output.sampling, at.alpha);
+                let texels_at = at.with_transform(at.transform.then(&output.texel_transform()));
                 self.draw_output_quad(&output.texel_quad(), shading, blend, &texels_at);
             }
         }

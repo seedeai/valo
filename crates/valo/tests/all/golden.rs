@@ -404,11 +404,13 @@ fn m3_gradients_scene() -> valo::DisplayList {
         &Paint::from_shader(Shader::Sweep {
             center: Point::new(340.0, 240.0),
             start_angle: 0.0,
+            end_angle: std::f32::consts::TAU,
             stops: stops(&[
                 (0.0, Color::rgb(0.9, 0.25, 0.3)),
                 (0.5, Color::rgb(0.35, 0.55, 1.0)),
                 (1.0, Color::rgb(0.9, 0.25, 0.3)),
             ]),
+            spread: valo::SpreadMode::Pad,
             local: Default::default(),
         }),
     );

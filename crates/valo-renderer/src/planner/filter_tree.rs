@@ -94,6 +94,9 @@ pub(super) enum Filter<'a> {
     /// `DlRuntimeEffectImageFilter`, which reads no margin). A paint
     /// shader's effect has no margin and reads its input as its first image.
     Runtime(RuntimeShader),
+    /// A matrix filter: its input moved by `matrix`, in local coordinates,
+    /// read as `sampling` filters it (Impeller's `MatrixFilterContents`).
+    Matrix { matrix: Matrix, sampling: Sampling },
 }
 
 /// `StyleShape` is what a mask blur's style keeps the blur to: the draw's
@@ -442,6 +445,13 @@ impl<'a> FilterInput<'a> {
                 .with_image_filter(Some(inner), TileMode::Clamp)
                 .with_image_filter(Some(outer), TileMode::Clamp),
             ImageFilter::Runtime(shader) => self.with(Filter::Runtime(shader.clone())),
+            // `DlMatrixImageFilter::Make` makes no filter of a matrix that
+            // moves nothing, so a composition takes only its other side.
+            ImageFilter::Matrix { .. } if filter.is_nop() => self,
+            ImageFilter::Matrix { matrix, sampling } => self.with(Filter::Matrix {
+                matrix: *matrix,
+                sampling: *sampling,
+            }),
         }
     }
 
@@ -472,7 +482,7 @@ impl Filter<'_> {
             Filter::DropShadow {
                 sigma_x, sigma_y, ..
             } => Some(blur_of_drop_shadow([*sigma_x, *sigma_y], effect_transform)),
-            Filter::Color(_) | Filter::Runtime(_) => None,
+            Filter::Color(_) | Filter::Runtime(_) | Filter::Matrix { .. } => None,
         }
     }
 
@@ -491,7 +501,7 @@ impl Filter<'_> {
     /// `input_hint` is the coverage hint this filter hands its input when
     /// its own is `hint`: a blur's grown by its padding, as Impeller's blurs
     /// hand theirs on, and a runtime filter's by its margin; none from a
-    /// colour filter or a drop shadow.
+    /// colour filter, a drop shadow or a matrix.
     pub fn input_hint(&self, hint: Option<Rect>, effect_transform: &Matrix) -> Option<Rect> {
         match self {
             Filter::Blur { .. } | Filter::MaskBlur { .. } => {
@@ -499,14 +509,19 @@ impl Filter<'_> {
                 Some(expanded(&hint?, blur.local_padding()))
             }
             Filter::Runtime(_) => Some(expanded(&hint?, self.margin(effect_transform))),
-            Filter::Color(_) | Filter::DropShadow { .. } => None,
+            Filter::Color(_) | Filter::DropShadow { .. } | Filter::Matrix { .. } => None,
         }
     }
 
     /// `coverage` is this filter's `GetFilterCoverage`: what it covers when
     /// its input covers `input`. A blur grows its input by its halo; a drop
-    /// shadow covers its input and the halo moved by its offset.
+    /// shadow covers its input and the halo moved by its offset; a matrix
+    /// moves it.
     fn coverage(&self, input: &Rect, effect_transform: &Matrix) -> Rect {
+        if let Filter::Matrix { matrix, .. } = self {
+            return tree_matrix(matrix, effect_transform)
+                .map_or(*input, |moved| moved.map_rect(input));
+        }
         let Some(blur) = self.blur(effect_transform) else {
             return *input;
         };
@@ -524,7 +539,8 @@ impl Filter<'_> {
     /// limit grown by its radius, as Impeller computes it; a mask blur's and
     /// a drop shadow's blur reach as far as the σ rule they run by takes
     /// them, and a drop shadow also needs the limit moved back by its offset.
-    /// A runtime filter needs the limit grown by its margin.
+    /// A runtime filter needs the limit grown by its margin, and a matrix the
+    /// limit moved back; one that flattens what it draws needs nothing.
     fn source_coverage(&self, effect_transform: &Matrix, output_limit: &Rect) -> Rect {
         let reach = self
             .blur(effect_transform)
@@ -540,8 +556,25 @@ impl Filter<'_> {
                 let [x, y] = device_offset(effect_transform, *offset);
                 output_limit.union(&expanded(&shifted(output_limit, [-x, -y]), reach))
             }
+            Filter::Matrix { matrix, .. } => {
+                match tree_matrix(matrix, effect_transform).and_then(|moved| moved.invert()) {
+                    Some(back) => back.map_rect(output_limit),
+                    None => Rect::new(output_limit.x, output_limit.y, 0.0, 0.0),
+                }
+            }
         }
     }
+}
+
+/// `tree_matrix` is a matrix filter's local `matrix` as it moves the tree's
+/// space: Impeller's `effect_transform · matrix · effect_transform⁻¹`
+/// (`MatrixFilterContents::RenderFilter`, `GetFilterCoverage`,
+/// `GetFilterSourceCoverage`), so a scale about a point of the content
+/// stays about that point however the content is drawn. `None` when the
+/// effect transform cannot be inverted: what it draws shows nowhere.
+pub(super) fn tree_matrix(matrix: &Matrix, effect_transform: &Matrix) -> Option<Matrix> {
+    let inverse = effect_transform.invert()?;
+    Some(effect_transform.then(matrix).then(&inverse))
 }
 
 /// `blur_of_image_filter` is an image filter's blur of local σ under
@@ -704,6 +737,96 @@ mod tests {
             shadow.source_coverage(&Matrix::IDENTITY, &source),
             ltrb(-10.0, 0.0, 20.0, 20.0)
         );
+    }
+
+    fn moved_by(matrix: Matrix) -> FilterInput<'static> {
+        FilterInput::Source.with_image_filter(
+            Some(&ImageFilter::matrix(matrix, Sampling::default())),
+            TileMode::Decal,
+        )
+    }
+
+    // Impeller's `matrix_filter_contents_unittests.cc`. Its entity places
+    // the input and, drawing directly, is the transform the matrix is taken
+    // through; valo's tree is in the source's space, so the entity's
+    // translation is in the source's coverage and is the effect transform.
+
+    #[test]
+    fn matrix_coverage_simple() {
+        let source = ltrb(10.0, 10.0, 110.0, 110.0);
+        assert_eq!(
+            moved_by(Matrix::IDENTITY).coverage(&source, &Matrix::IDENTITY),
+            source
+        );
+    }
+
+    #[test]
+    fn matrix_coverage_2x() {
+        let coverage = moved_by(Matrix::scale(2.0, 2.0))
+            .coverage(&Rect::new(10.0, 10.0, 100.0, 100.0), &Matrix::IDENTITY);
+        assert_eq!(coverage, Rect::new(20.0, 20.0, 200.0, 200.0));
+    }
+
+    #[test]
+    fn matrix_coverage_2x_effect() {
+        let source = Rect::new(10.0, 10.0, 100.0, 100.0);
+        let coverage = moved_by(Matrix::IDENTITY).coverage(&source, &Matrix::scale(2.0, 2.0));
+        assert_eq!(coverage, source);
+    }
+
+    /// `RenderCoverageMatchesGetCoverageTranslate`: a 100×100 texture placed
+    /// at (100, 200) and moved by (50, 100).
+    #[test]
+    fn matrix_coverage_translate() {
+        let entity = Matrix::translation(100.0, 200.0);
+        let source = Rect::new(100.0, 200.0, 100.0, 100.0);
+        let coverage = moved_by(Matrix::translation(50.0, 100.0)).coverage(&source, &entity);
+        assert_rect_near(coverage, Rect::new(150.0, 300.0, 100.0, 100.0));
+    }
+
+    /// `RenderCoverageMatchesGetCoverageScale`: scaled about where the
+    /// entity places the texture's origin.
+    #[test]
+    fn matrix_coverage_scale() {
+        let entity = Matrix::translation(100.0, 200.0);
+        let source = Rect::new(100.0, 200.0, 100.0, 100.0);
+        let coverage = moved_by(Matrix::scale(3.0, 3.0)).coverage(&source, &entity);
+        assert_rect_near(coverage, Rect::new(100.0, 200.0, 300.0, 300.0));
+    }
+
+    /// `RenderCoverageMatchesGetCoverageClippedSubpassTranslate`: a layer's
+    /// matrix is taken through the transform where the layer opens, so a
+    /// translation is magnified by its scale.
+    #[test]
+    fn matrix_coverage_subpass_translate() {
+        let layer = Rect::new(100.0, 200.0, 100.0, 100.0);
+        let coverage =
+            moved_by(Matrix::translation(50.0, 100.0)).coverage(&layer, &Matrix::scale(2.0, 2.0));
+        assert_rect_near(coverage, Rect::new(200.0, 400.0, 100.0, 100.0));
+    }
+
+    /// `DlMatrixImageFilter::Make` makes no filter of a matrix that moves
+    /// nothing: a composition with one is its other side alone.
+    #[test]
+    fn a_matrix_that_moves_nothing_is_no_node() {
+        let composed = ImageFilter::compose(
+            ImageFilter::blur(2.0, 2.0),
+            ImageFilter::matrix(Matrix::scale(f32::NAN, 1.0), Sampling::default()),
+        );
+        let tree = FilterInput::Source.with_image_filter(Some(&composed), TileMode::Decal);
+        assert_eq!(filters_from_the_input_out(&tree).len(), 1);
+    }
+
+    /// `GetFilterSourceCoverage`: the output limit moved back; a matrix that
+    /// flattens what it draws needs nothing of its source.
+    #[test]
+    fn matrix_source_coverage_moves_the_limit_back() {
+        let limit = Rect::new(200.0, 400.0, 100.0, 100.0);
+        let needed = moved_by(Matrix::translation(50.0, 100.0))
+            .source_coverage(&Matrix::scale(2.0, 2.0), &limit);
+        assert_rect_near(needed, Rect::new(100.0, 200.0, 100.0, 100.0));
+        let flat = moved_by(Matrix::scale(0.0, 1.0)).source_coverage(&Matrix::IDENTITY, &limit);
+        assert!(flat.is_empty());
     }
 
     /// The filters of a tree, from the one nearest the source outward,

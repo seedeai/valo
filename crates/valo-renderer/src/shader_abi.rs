@@ -64,11 +64,11 @@ pub(crate) mod slot {
     /// local varying from it, so gradients and images live in draw space.
     pub const RECT: usize = 0;
     /// The family's geometry: an image's or a texture's uv mapping
-    /// `uv = p · xy + zw`, a gradient's points, a rrect's edges, a pass's
-    /// texel size.
+    /// `uv = p · xy + zw`, a gradient's points (a sweep's centre, bias and
+    /// scale), a rrect's edges, a pass's texel size.
     pub const GEOM: usize = 1;
-    /// The family's switches and scalars: a gradient's stop count, angle,
-    /// spread and focal y; a filter's mode and input alpha; a blur's sample
+    /// The family's switches and scalars: a gradient's stop count, spread
+    /// and focal y; a filter's mode and input alpha; a blur's sample
     /// count and division; a downsample's taps; a blend's mode and the
     /// target's size.
     pub const MISC: usize = 2;
@@ -109,6 +109,7 @@ pub(crate) fn spread_id(spread: SpreadMode) -> f32 {
         SpreadMode::Pad => 0.0,
         SpreadMode::Repeat => 1.0,
         SpreadMode::Reflect => 2.0,
+        SpreadMode::Decal => 3.0,
     }
 }
 
@@ -185,6 +186,7 @@ pub(crate) fn wgsl_prelude() -> String {
     for (name, spread) in [
         ("SPREAD_REPEAT", SpreadMode::Repeat),
         ("SPREAD_REFLECT", SpreadMode::Reflect),
+        ("SPREAD_DECAL", SpreadMode::Decal),
     ] {
         line(name, format!("{}u", spread_id(spread) as u32));
     }

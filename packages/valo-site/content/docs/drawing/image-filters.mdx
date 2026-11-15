@@ -36,9 +36,35 @@ A lime card with a drop shadow.
 | `Color` | A [`ColorFilter`](/docs/drawing/color-filters) after rasterization |
 | `DropShadow` | Blurred, offset, recoloured alpha under the original |
 | `Compose` | `inner` first, then `outer` |
+| `Matrix` | The pixels moved by a matrix, read with the given filtering |
 
 Consecutive blurs merge in device space. A rotation mixes the axes before
 they combine.
+
+A matrix filter moves pixels that are already drawn, so a scale enlarges
+them instead of drawing the content again at the new size. The matrix is in
+local units, like a blur's sigma, so a scale about a point of the content
+stays about that point. A backdrop with a matrix filter is a magnifier:
+
+```rust
+let lens = Matrix::translation(120.0, 80.0)
+    .then(&Matrix::scale(2.0, 2.0))
+    .then(&Matrix::translation(-120.0, -80.0));
+builder.save_layer_backdrop(
+    Some(Rect::new(80.0, 40.0, 80.0, 80.0)),
+    &Paint::default(),
+    Backdrop::new(ImageFilter::matrix(lens, Sampling::default())),
+);
+builder.restore();
+```
+
+```ts
+const lens = ImageFilter.matrix(
+  new Float32Array([2, 0, 0, 2, -120, -80]),
+  Filter.Linear,
+  MipmapMode.None,
+);
+```
 
 ## Order with colour filter and mask blur
 

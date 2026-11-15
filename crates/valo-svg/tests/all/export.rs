@@ -219,6 +219,57 @@ fn shadows_are_svg_filters_where_native_effects_let_them() {
     assert!(!svg.contains("<image"));
 }
 
+/// SVG has no decal spread: a decal gradient is a picture, see-through where the gradient paints
+/// nothing, where a padded one is SVG's own gradient.
+#[test]
+fn a_decal_gradient_is_a_picture() {
+    let Some(mut context) = context("a_decal_gradient_is_a_picture") else {
+        return;
+    };
+    let gradient = |spread| {
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(
+            Rect::new(0.0, 0.0, 200.0, 120.0),
+            &Paint::from_shader(Shader::Linear {
+                start: Point::new(60.0, 0.0),
+                end: Point::new(140.0, 0.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgb(0.9, 0.2, 0.2),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgb(0.2, 0.2, 0.9),
+                    },
+                ],
+                spread,
+                local: valo::Matrix::IDENTITY,
+            }),
+        );
+        Arc::new(b.build())
+    };
+
+    let padded = svg_of(
+        &mut context,
+        &gradient(SpreadMode::Pad),
+        NativeEffects::default(),
+    );
+    let decal = svg_of(
+        &mut context,
+        &gradient(SpreadMode::Decal),
+        NativeEffects::default(),
+    );
+
+    assert!(padded.contains("<linearGradient") && !padded.contains("<image"));
+    assert!(!decal.contains("<linearGradient"));
+    assert_eq!(decal.matches("<image").count(), 1);
+    assert!(
+        decal.contains("data:image/png;base64,"),
+        "a decal gradient is see-through past its span"
+    );
+}
+
 #[test]
 fn shadows_are_pictures_when_native_effects_leave_them_out() {
     let Some(mut context) = context("shadows_are_pictures_when_native_effects_leave_them_out")

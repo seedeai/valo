@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use valo_geometry::{Color, Matrix, Point, Rect, Stroke};
 
-use crate::{Bounds, TileMode};
+use crate::{Bounds, Sampling, TileMode};
 
 /// `BlendMode` controls how source pixels combine with destination pixels.
 ///
@@ -254,6 +254,21 @@ pub enum ImageFilter {
     /// input's size in pixels its first uniform, and `position` is in the
     /// input's pixels. See [`ImageFilter::runtime`].
     Runtime(crate::RuntimeShader),
+    /// `Matrix` draws the input moved by `matrix`, in local coordinates:
+    /// dart:ui's `ImageFilter.matrix`, Flutter's `DlMatrixImageFilter` and
+    /// Skia's `SkImageFilters::MatrixTransform`. See [`ImageFilter::matrix`].
+    Matrix {
+        /// `matrix` maps the input's local coordinates to where it shows,
+        /// taken through the transform where the filter applies, so a scale
+        /// about a point of the content stays about that point however the
+        /// content is drawn.
+        matrix: Matrix,
+        /// `sampling` is how the moved input is read: its `filter` and
+        /// `mipmap`, as dart:ui's `filterQuality` picks them. The filter
+        /// draws the input's own pixels and nothing past them, so the tile
+        /// modes go unused.
+        sampling: Sampling,
+    },
 }
 
 impl ImageFilter {
@@ -334,6 +349,19 @@ impl ImageFilter {
         Ok(Self::Runtime(shader))
     }
 
+    /// `matrix` creates a filter that draws its input moved by `matrix`, read
+    /// as `sampling` says: dart:ui's `ImageFilter.matrix(matrix4,
+    /// filterQuality:)`.
+    ///
+    /// It is how Flutter's `Transform` with a `filterQuality` and its
+    /// magnifier draw: the content is drawn first, then its pixels are moved,
+    /// so a scale enlarges pixels rather than redrawing at the new size. An
+    /// identity matrix, or one that is not finite, leaves the input as it
+    /// is, as Flutter's `DlMatrixImageFilter::Make` makes no filter of it.
+    pub fn matrix(matrix: Matrix, sampling: Sampling) -> Self {
+        Self::Matrix { matrix, sampling }
+    }
+
     /// `drop_shadow` creates a shadow that retains the original input.
     pub fn drop_shadow(offset: Point, sigma_x: f32, sigma_y: f32, color: Color) -> Self {
         Self::DropShadow {
@@ -355,18 +383,93 @@ impl ImageFilter {
             Self::DropShadow { color, .. } => color.a <= 0.0,
             Self::Compose { outer, inner } => outer.is_nop() && inner.is_nop(),
             Self::Runtime(_) => false,
+            Self::Matrix { matrix, .. } => {
+                *matrix == Matrix::IDENTITY || !matrix.to_mat4().is_finite()
+            }
         }
     }
 
-    /// `padding` returns conservative local x and y expansion for this filter.
-    pub fn padding(&self) -> [f32; 2] {
+    /// `map_local_bounds` is where the filter's output may show when its
+    /// input shows within `bounds`, both in local coordinates: Flutter's
+    /// `DlImageFilter::map_local_bounds`. A blur or a shadow grows them by
+    /// how far it spreads, a matrix moves them, and a composition maps them
+    /// through its inner filter and then its outer one.
+    pub fn map_local_bounds(&self, bounds: Rect) -> Rect {
+        match self {
+            Self::Blur { .. } | Self::DropShadow { .. } => {
+                let [x, y] = self.halo();
+                Rect::from_ltrb(
+                    bounds.x - x,
+                    bounds.y - y,
+                    bounds.right() + x,
+                    bounds.bottom() + y,
+                )
+            }
+            // It shades what its input covers; its margin is what it reads.
+            // A matrix that moves nothing is no filter at all.
+            Self::Color(_) | Self::Runtime(_) => bounds,
+            Self::Matrix { .. } if self.is_nop() => bounds,
+            Self::Compose { outer, inner } => {
+                outer.map_local_bounds(inner.map_local_bounds(bounds))
+            }
+            Self::Matrix { matrix, .. } => matrix.map_rect(&bounds),
+        }
+    }
+
+    /// `map_device_bounds` is where the filter's output may show when its
+    /// input shows within `bounds`, both in device space, the filter
+    /// applying where `transform` maps its local coordinates: Flutter's
+    /// `DlImageFilter::map_device_bounds`. A matrix under a transform that
+    /// cannot be inverted may show anywhere.
+    pub fn map_device_bounds(&self, bounds: &Bounds, transform: &Matrix) -> Bounds {
+        match self {
+            Self::Blur { .. } | Self::DropShadow { .. } => {
+                bounds.expand(device_reach(self.halo(), transform))
+            }
+            Self::Color(_) | Self::Runtime(_) => *bounds,
+            Self::Matrix { .. } if self.is_nop() => *bounds,
+            Self::Compose { outer, inner } => {
+                outer.map_device_bounds(&inner.map_device_bounds(bounds, transform), transform)
+            }
+            Self::Matrix { matrix, .. } => match transform.invert() {
+                Some(inverse) => bounds.map(&transform.then(matrix).then(&inverse)),
+                None => Bounds::Unbounded,
+            },
+        }
+    }
+
+    /// `input_device_bounds` is what the filter's input has to cover for
+    /// its output to cover `output`, both in device space, the filter
+    /// applying where `transform` maps its local coordinates: Flutter's
+    /// `DlImageFilter::get_input_device_bounds`. A matrix that cannot be
+    /// inverted with the transform may need everything.
+    pub fn input_device_bounds(&self, output: &Bounds, transform: &Matrix) -> Bounds {
+        match self {
+            Self::Blur { .. } | Self::DropShadow { .. } => {
+                output.expand(device_reach(self.halo(), transform))
+            }
+            Self::Color(_) | Self::Runtime(_) => *output,
+            Self::Matrix { .. } if self.is_nop() => *output,
+            Self::Compose { outer, inner } => {
+                inner.input_device_bounds(&outer.input_device_bounds(output, transform), transform)
+            }
+            Self::Matrix { matrix, .. } => match transform.then(matrix).invert() {
+                Some(inverse) => output.map(&transform.then(&inverse)),
+                None => Bounds::Unbounded,
+            },
+        }
+    }
+
+    /// `halo` is how far a blur or a drop shadow spreads its input, in local
+    /// x and y units: three σ, and a shadow's offset; nothing for any other
+    /// filter.
+    fn halo(&self) -> [f32; 2] {
         match self {
             // The bounds limit what the blur reads, not how far it spreads.
             Self::Blur {
                 sigma_x, sigma_y, ..
             } => [(sigma_x * 3.0).ceil(), (sigma_y * 3.0).ceil()],
-            Self::Color(_) => [0.0; 2],
-            // Padding is symmetric, so a one-sided offset has to be paid on
+            // The halo is symmetric, so a one-sided offset has to be paid on
             // both sides — the shadow is free to land on either.
             Self::DropShadow {
                 offset,
@@ -377,13 +480,9 @@ impl ImageFilter {
                 (sigma_x * 3.0).ceil() + offset.x.abs(),
                 (sigma_y * 3.0).ceil() + offset.y.abs(),
             ],
-            Self::Compose { outer, inner } => {
-                let outer = outer.padding();
-                let inner = inner.padding();
-                [outer[0] + inner[0], outer[1] + inner[1]]
+            Self::Color(_) | Self::Compose { .. } | Self::Runtime(_) | Self::Matrix { .. } => {
+                [0.0; 2]
             }
-            // It shades what its input covers; its margin is what it reads.
-            Self::Runtime(_) => [0.0; 2],
         }
     }
 
@@ -402,8 +501,26 @@ impl ImageFilter {
             // Flutter's `DlRuntimeEffectImageFilter`: it shades only what its
             // input covers.
             Self::Runtime(_) => false,
+            // Flutter's `DlMatrixImageFilter`: transparent pixels moved stay
+            // transparent.
+            Self::Matrix { .. } => false,
         }
     }
+}
+
+/// `device_reach` is how far a halo of local x and y units reaches in
+/// device pixels under `transform`, on every side. The half-extent of an
+/// axis-aligned box under a linear map is the component-wise absolute matrix
+/// applied to the half-extent, so the bound holds under rotation and shear.
+fn device_reach(halo: [f32; 2], transform: &Matrix) -> f32 {
+    let [x, y] = halo;
+    if x <= 0.0 && y <= 0.0 {
+        return 0.0;
+    }
+    let [a, b, c, d, ..] = transform.to_affine();
+    let device_x = (x * a).abs() + (y * c).abs();
+    let device_y = (x * b).abs() + (y * d).abs();
+    device_x.max(device_y)
 }
 
 /// `PaintStyle` selects filled geometry or a stroked outline.
@@ -513,49 +630,41 @@ impl Paint {
         self.mask_blur.map_or(0.0, |blur| (blur.sigma * 3.0).ceil())
     }
 
-    /// `effect_padding_axes` returns local x and y padding for raster effects.
-    pub fn effect_padding_axes(&self) -> [f32; 2] {
-        let image = self
-            .image_filter
-            .as_ref()
-            .map_or([0.0; 2], ImageFilter::padding);
-        let mask = self.mask_padding();
-        [image[0] + mask, image[1] + mask]
-    }
-
-    /// `effect_padding` returns the largest local-axis padding for raster effects.
-    pub fn effect_padding(&self) -> f32 {
-        let axes = self.effect_padding_axes();
-        axes[0].max(axes[1])
-    }
-
-    /// `device_effect_padding` returns effect padding in device pixels.
-    ///
-    /// It maps both local padding axes through `transform`, preserving a
-    /// conservative bound under rotation and shear.
-    pub fn device_effect_padding(&self, transform: &Matrix) -> f32 {
-        let [x, y] = self.effect_padding_axes();
-        if x <= 0.0 && y <= 0.0 {
-            return 0.0;
-        }
-        // The half-extent of an axis-aligned box under a linear map is the
-        // component-wise absolute matrix applied to the half-extent.
-        let [a, b, c, d, ..] = transform.to_affine();
-        let device_x = (x * a).abs() + (y * c).abs();
-        let device_y = (x * b).abs() + (y * d).abs();
-        device_x.max(device_y)
-    }
-
     /// `effect_bounds` returns where a draw of `bounds` with this paint may
-    /// show, in local coordinates, its effects included.
+    /// show, in local coordinates, its effects included: its mask blur's
+    /// spread, then its image filter's mapping (Flutter's
+    /// `AdjustBoundsForPaint`).
     ///
     /// A draw whose paint fills its clip ([`Paint::draw_fills_clip`]) is
     /// unbounded: only its clip bounds it.
     pub fn effect_bounds(&self, bounds: Rect) -> Bounds {
         if self.draw_fills_clip() {
-            Bounds::Unbounded
-        } else {
-            Bounds::of(bounds.expand(self.effect_padding()))
+            return Bounds::Unbounded;
+        }
+        let blurred = bounds.expand(self.mask_padding());
+        Bounds::of(match self.effective_image_filter() {
+            Some(filter) => filter.map_local_bounds(blurred),
+            None => blurred,
+        })
+    }
+
+    /// `device_effect_bounds` is where a save layer composited with this
+    /// paint shows when its content shows within `content`, device space:
+    /// the content through the image filter applying under `transform`.
+    pub(crate) fn device_effect_bounds(&self, content: &Bounds, transform: &Matrix) -> Bounds {
+        match self.effective_image_filter() {
+            Some(filter) => filter.map_device_bounds(content, transform),
+            None => *content,
+        }
+    }
+
+    /// `device_effect_input_bounds` is what a save layer composited with
+    /// this paint has to hold for its composite to cover `output`, device
+    /// space: what its image filter, applying under `transform`, reads.
+    pub(crate) fn device_effect_input_bounds(&self, output: &Bounds, transform: &Matrix) -> Bounds {
+        match self.effective_image_filter() {
+            Some(filter) => filter.input_device_bounds(output, transform),
+            None => *output,
         }
     }
 
@@ -622,6 +731,10 @@ mod tests {
         assert!(device_padding >= 0.5);
     }
 
+    fn ltrb(left: f32, top: f32, right: f32, bottom: f32) -> valo_geometry::Rect {
+        valo_geometry::Rect::from_ltrb(left, top, right, bottom)
+    }
+
     #[test]
     fn composed_image_filters_accumulate_blur_coverage() {
         let filter = ImageFilter::compose(
@@ -631,58 +744,121 @@ mod tests {
                 ImageFilter::blur(2.0, 1.0),
             ),
         );
-        assert_eq!(filter.padding(), [15.0, 15.0]);
+        assert_eq!(
+            filter.map_local_bounds(ltrb(0.0, 0.0, 10.0, 10.0)),
+            ltrb(-15.0, -15.0, 25.0, 25.0)
+        );
     }
 
     #[test]
-    fn drop_shadow_padding_covers_the_offset_on_both_sides() {
+    fn drop_shadow_bounds_cover_the_offset_on_both_sides() {
         let filter = ImageFilter::drop_shadow(
             valo_geometry::Point::new(4.0, -6.0),
             2.0,
             1.0,
             valo_geometry::Color::BLACK,
         );
-        assert_eq!(filter.padding(), [10.0, 9.0]);
+        assert_eq!(
+            filter.map_local_bounds(ltrb(0.0, 0.0, 10.0, 10.0)),
+            ltrb(-10.0, -9.0, 20.0, 19.0)
+        );
     }
 
     // A rotation reaches further than any axis length reports: `max_scale`
     // is 1 for a pure rotation, so scalar padding would clip this shadow.
     #[test]
-    fn device_padding_bounds_a_rotated_effect() {
+    fn device_bounds_hold_a_rotated_effect() {
+        use crate::Bounds;
         use valo_geometry::Matrix;
-        let paint = Paint {
-            image_filter: Some(ImageFilter::drop_shadow(
-                valo_geometry::Point::new(10.0, 10.0),
-                0.0,
-                0.0,
-                valo_geometry::Color::BLACK,
-            )),
-            ..Paint::default()
-        };
-        assert_eq!(paint.effect_padding(), 10.0);
-
-        let quarter_turn = Matrix::rotation(std::f32::consts::FRAC_PI_4);
-        let padding = paint.device_effect_padding(&quarter_turn);
-        assert!(
-            (padding - 14.142136).abs() < 1e-3,
-            "a 45° rotation maps the (10, 10) padding box to 14.14, got {padding}"
+        let shadow = ImageFilter::drop_shadow(
+            valo_geometry::Point::new(10.0, 10.0),
+            0.0,
+            0.0,
+            valo_geometry::Color::BLACK,
         );
+        let quarter_turn = Matrix::rotation(std::f32::consts::FRAC_PI_4);
+        let content = Bounds::of(ltrb(0.0, 0.0, 10.0, 10.0));
+        let reach = 14.142136;
+        let Some(mapped) = shadow.map_device_bounds(&content, &quarter_turn).rect() else {
+            panic!("a shadow of bounded content is bounded");
+        };
         assert!(
-            padding > paint.effect_padding() * quarter_turn.max_scale(),
-            "the scalar bound is exactly what this has to beat"
+            (mapped.x + reach).abs() < 1e-3 && (mapped.right() - 10.0 - reach).abs() < 1e-3,
+            "a 45° rotation maps the (10, 10) halo to 14.14 on every side: {mapped:?}"
+        );
+        assert_eq!(
+            shadow.input_device_bounds(&content, &quarter_turn),
+            shadow.map_device_bounds(&content, &quarter_turn),
+            "a blur reads as far as it spreads"
         );
     }
 
     #[test]
-    fn device_padding_matches_the_scalar_bound_under_a_plain_scale() {
-        use valo_geometry::Matrix;
+    fn a_mask_blur_grows_a_draw_by_three_sigma() {
         let paint = Paint {
             mask_blur: Some(MaskBlur::new(2.0)),
             ..Paint::default()
         };
-        let scale = Matrix::scale(3.0, 3.0);
-        assert_eq!(paint.effect_padding(), 6.0);
-        assert!((paint.device_effect_padding(&scale) - 18.0).abs() < 1e-4);
+        assert_eq!(paint.mask_padding(), 6.0);
+        assert_eq!(
+            paint.effect_bounds(ltrb(0.0, 0.0, 10.0, 10.0)),
+            crate::Bounds::of(ltrb(-6.0, -6.0, 16.0, 16.0))
+        );
+    }
+
+    /// Flutter's `DlMatrixImageFilter`: local bounds go through the matrix;
+    /// device bounds through the matrix taken into device space,
+    /// `ctm · matrix · ctm⁻¹`; what it reads is the output taken back,
+    /// `ctm · (ctm · matrix)⁻¹`.
+    #[test]
+    fn a_matrix_filter_moves_its_bounds() {
+        use crate::{Bounds, Sampling};
+        use valo_geometry::Matrix;
+        let scale_about_ten = Matrix::translation(10.0, 10.0)
+            .then(&Matrix::scale(2.0, 2.0))
+            .then(&Matrix::translation(-10.0, -10.0));
+        let filter = ImageFilter::matrix(scale_about_ten, Sampling::default());
+        assert_eq!(
+            filter.map_local_bounds(ltrb(0.0, 0.0, 20.0, 20.0)),
+            ltrb(-10.0, -10.0, 30.0, 30.0)
+        );
+        let ctm = Matrix::translation(100.0, 0.0).then(&Matrix::scale(3.0, 3.0));
+        let device = Bounds::of(ctm.map_rect(&ltrb(0.0, 0.0, 20.0, 20.0)));
+        assert_eq!(
+            filter.map_device_bounds(&device, &ctm),
+            Bounds::of(ctm.map_rect(&ltrb(-10.0, -10.0, 30.0, 30.0)))
+        );
+        assert_eq!(
+            filter.input_device_bounds(
+                &Bounds::of(ctm.map_rect(&ltrb(-10.0, -10.0, 30.0, 30.0))),
+                &ctm
+            ),
+            device
+        );
+        assert!(!filter.modifies_transparent_black());
+        let flat = ImageFilter::matrix(Matrix::scale(0.0, 1.0), Sampling::default());
+        assert_eq!(flat.input_device_bounds(&device, &ctm), Bounds::Unbounded);
+    }
+
+    /// `DlMatrixImageFilter::Make` makes no filter of the identity or of a
+    /// matrix that is not finite.
+    #[test]
+    fn an_identity_or_unfinite_matrix_filter_is_a_nop() {
+        use crate::Sampling;
+        use valo_geometry::Matrix;
+        let nop = |matrix| ImageFilter::matrix(matrix, Sampling::default()).is_nop();
+        assert!(nop(Matrix::IDENTITY));
+        assert!(nop(Matrix::scale(f32::NAN, 1.0)));
+        assert!(!nop(Matrix::scale(2.0, 2.0)));
+        let composed = ImageFilter::compose(
+            ImageFilter::blur(1.0, 1.0),
+            ImageFilter::matrix(Matrix::scale(f32::NAN, 1.0), Sampling::default()),
+        );
+        assert_eq!(
+            composed.map_local_bounds(ltrb(0.0, 0.0, 10.0, 10.0)),
+            ltrb(-3.0, -3.0, 13.0, 13.0),
+            "a composition takes only the side that is a filter"
+        );
     }
 
     /// Flutter's rule: a group's opacity rides a `SrcOver` paint with no

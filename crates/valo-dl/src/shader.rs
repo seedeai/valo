@@ -42,14 +42,31 @@ pub enum Shader {
         /// `local` transforms the shader independently of the drawn geometry.
         local: Matrix,
     },
-    /// `Sweep` interpolates colors around one full clockwise turn.
+    /// `Sweep` interpolates colors around `center`, from `start_angle` to
+    /// `end_angle`: Skia's `SkGradientShader::MakeSweep` and Flutter's
+    /// `Gradient.sweep`.
+    ///
+    /// The angle of a point is measured from +x, clockwise in Valo's y-down
+    /// coordinates, from 0 up to one full turn; it is not wrapped round to
+    /// the start angle. So the offset at a point is how far its angle lies
+    /// from `start_angle` toward `end_angle`, and points whose angle lies
+    /// outside the two take their colour from `spread`. A full turn from
+    /// zero (`0.0` to [`std::f32::consts::TAU`]) is the whole circle;
+    /// a full turn from any other start with [`SpreadMode::Repeat`] is the
+    /// whole circle rotated to begin at it, which is Canvas2D's
+    /// `createConicGradient`.
     Sweep {
         /// `center` is the sweep origin in local coordinates.
         center: Point,
-        /// `start_angle` is the zero-offset angle in radians clockwise from +x.
+        /// `start_angle` is the angle of offset zero, in radians.
         start_angle: f32,
+        /// `end_angle` is the angle of offset one, in radians; it must be
+        /// greater than `start_angle`, as Skia and dart:ui require.
+        end_angle: f32,
         /// `stops` defines the colors around the sweep.
         stops: Vec<GradientStop>,
+        /// `spread` controls colors at angles outside the two.
+        spread: SpreadMode,
         /// `local` transforms the shader independently of the drawn geometry.
         local: Matrix,
     },
@@ -80,6 +97,10 @@ pub enum SpreadMode {
     Repeat,
     /// `Reflect` repeats the gradient with alternating direction.
     Reflect,
+    /// `Decal` paints nothing outside the span: Skia's `SkTileMode::kDecal`
+    /// and dart:ui's `TileMode.decal`. A decal gradient leaves transparent
+    /// whatever its span does not reach, however opaque its stops.
+    Decal,
 }
 
 /// `GradientStop` assigns a color to one position along a gradient.
@@ -129,6 +150,17 @@ impl Shader {
             | Shader::Radial { stops, .. }
             | Shader::Sweep { stops, .. } => stops,
             Shader::Image { .. } | Shader::Runtime(_) => &[],
+        }
+    }
+
+    /// `spread` returns how this gradient spreads past its span, or `None`
+    /// for image and runtime shaders.
+    pub fn spread(&self) -> Option<SpreadMode> {
+        match self {
+            Shader::Linear { spread, .. }
+            | Shader::Radial { spread, .. }
+            | Shader::Sweep { spread, .. } => Some(*spread),
+            Shader::Image { .. } | Shader::Runtime(_) => None,
         }
     }
 

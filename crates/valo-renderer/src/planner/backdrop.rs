@@ -267,13 +267,14 @@ fn is_one_runtime_filter(tree: &FilterInput<'_>) -> bool {
 }
 
 /// `depends_on_position` reports whether `filter` makes something different
-/// of a tile moved by a translation: a bounded blur, whose bounds move, or a
-/// runtime filter, which shades by local position.
+/// of a tile moved by a translation: a bounded blur, whose bounds move, a
+/// runtime filter, which shades by local position, or a matrix, which moves
+/// the tile about its local origin.
 fn depends_on_position(filter: &ImageFilter) -> bool {
     match filter {
         ImageFilter::Blur { bounds, .. } => bounds.is_some(),
         ImageFilter::Color(_) | ImageFilter::DropShadow { .. } => false,
-        ImageFilter::Runtime(_) => true,
+        ImageFilter::Runtime(_) | ImageFilter::Matrix { .. } => true,
         ImageFilter::Compose { outer, inner } => {
             depends_on_position(outer) || depends_on_position(inner)
         }

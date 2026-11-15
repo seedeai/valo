@@ -137,9 +137,11 @@ struct LayerScope {
     bounds: Bounds,
     /// Whether the children can take a group alpha.
     group: GroupOpacity,
-    /// How far the composite paint's filters spread the layer's content,
-    /// list-root units (3σ for a blur, as Flutter's display list pads it).
-    reach: f32,
+    /// The paint the layer composites with, whose image filter spreads or
+    /// moves the layer's content, and the transform where it applies, which
+    /// maps the layer's local coordinates into list-root space.
+    composite_paint: Paint,
+    transform: Matrix,
     /// The clip where the layer opens, cropped by the hint: the op's
     /// `clip_bounds`.
     opening_clip: Bounds,
@@ -270,12 +272,16 @@ impl DisplayListBuilder {
         let transform = top.transform;
         let root_hint =
             bounds_hint.map_or(Bounds::Unbounded, |hint| Bounds::of(hint).map(&transform));
-        let reach = paint.device_effect_padding(&transform);
+        // A filter on the layer reads past the clip, so the children are
+        // culled by what the filter reads to fill the clip (Flutter's
+        // `resetDeviceCullRect` with the filter's input bounds).
+        let cull = paint.device_effect_input_bounds(&top.clip.cull, &transform);
         let layer = LayerScope {
             op_index: self.ops.len(),
             bounds: Bounds::Empty,
             group: GroupOpacity::new(),
-            reach,
+            composite_paint: paint.clone(),
+            transform,
             // The hint crops the children, so it joins every clip they see.
             opening_clip: top.clip.cull.intersect(&root_hint),
             takes_group_opacity: paint.takes_group_opacity(),
@@ -284,10 +290,7 @@ impl DisplayListBuilder {
             hinted: bounds_hint.is_some(),
         };
         let clip = ClipState {
-            // A filter on the layer reads past the clip, so the children are
-            // culled by the clip widened by its reach (Flutter's
-            // `resetDeviceCullRect` with the filter's input bounds).
-            cull: top.clip.cull.expand(reach).intersect(&root_hint),
+            cull: cull.intersect(&root_hint),
             layer_content: root_hint,
         };
         // Children keep counting on the SAME depth line (Impeller's global
@@ -1041,12 +1044,13 @@ impl LayerScope {
 
     /// `composite_region` is where the layer's composite shows, list-root
     /// space: its whole opening clip when it floods, else its content
-    /// spread by the paint's filters.
+    /// through the paint's image filter.
     fn composite_region(&self) -> Bounds {
         if self.floods {
             self.opening_clip
         } else {
-            self.bounds.expand(self.reach)
+            self.composite_paint
+                .device_effect_bounds(&self.bounds, &self.transform)
         }
     }
 }
@@ -1856,6 +1860,46 @@ mod tests {
         );
     }
 
+    /// A matrix filter on a layer culls its children by what it moves into
+    /// the clip, taken through the layer's transform, and the composite shows
+    /// where it moves them (Flutter's `get_input_device_bounds` and
+    /// `map_device_bounds` of a `DlMatrixImageFilter`).
+    #[test]
+    fn a_matrix_filtered_layer_keeps_the_children_it_moves_into_the_clip() {
+        let mut b = DisplayListBuilder::new();
+        b.clip_rect(Rect::new(0.0, 0.0, 50.0, 50.0), ClipOp::Intersect, true);
+        b.scale(2.0, 2.0);
+        b.save_layer(
+            None,
+            &Paint {
+                image_filter: Some(ImageFilter::matrix(
+                    Matrix::translation(-30.0, 0.0),
+                    crate::Sampling::default(),
+                )),
+                ..Default::default()
+            },
+        );
+        b.draw_rect(Rect::new(35.0, 5.0, 5.0, 5.0), &red());
+        b.draw_rect(Rect::new(60.0, 5.0, 5.0, 5.0), &red());
+        b.restore();
+        let dl = b.build();
+        let (bounds, ..) = find_layer(&dl);
+        assert_eq!(
+            bounds,
+            Bounds::Bounded(Rect::new(70.0, 10.0, 10.0, 10.0)),
+            "moved 60 device pixels left, the first lands in the clip, the second past it"
+        );
+        let mut walker = dl.walk();
+        let layer = walker
+            .find(|op| matches!(op, Op::SaveLayer { .. }))
+            .expect("the layer is recorded");
+        assert_eq!(
+            walker.matrix_clip().bounds(layer),
+            Bounds::Bounded(Rect::new(10.0, 10.0, 10.0, 10.0)),
+            "the composite shows where the matrix moves the content"
+        );
+    }
+
     /// A save layer records no mask blur, so it neither blurs the layer nor
     /// widens the clip its children are culled by.
     #[test]
@@ -2461,5 +2505,22 @@ mod tests {
             None,
             "a rounded rect with more after it"
         );
+    }
+
+    /// A rounded rectangle moved as dart:ui's `Path.shift` moves it
+    /// (`Path::transformed`, Skia's `SkPath::offset`) still takes the
+    /// closed form, where the moved one is.
+    #[test]
+    fn a_shadow_of_a_moved_round_rect_keeps_the_closed_form() {
+        let mut path = PathBuilder::new();
+        path.rrect(Rect::new(10.0, 10.0, 40.0, 20.0), 6.0);
+        let moved = path.build().transformed(&Matrix::translation(100.0, 50.0));
+        let mut b = DisplayListBuilder::new();
+        b.draw_shadow(&moved, FillRule::NonZero, Color::BLACK, 4.0, false, 1.0);
+        let dl = b.build();
+        let [Op::DrawShadow { round_rect, .. }] = dl.ops() else {
+            panic!("one shadow recorded: {:?}", dl.ops());
+        };
+        assert_eq!(*round_rect, Some((Rect::new(110.0, 60.0, 40.0, 20.0), 6.0)));
     }
 }

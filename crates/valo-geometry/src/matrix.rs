@@ -99,6 +99,20 @@ impl Matrix {
         }
     }
 
+    /// `rect_stays_rect` reports whether this matrix maps every rectangle
+    /// onto a rectangle: Skia's `SkMatrix::rectStaysRect`, no perspective
+    /// and a two-dimensional block that scales each axis by a nonzero amount,
+    /// mirrored or not, or turns it a quarter onto the other.
+    pub(crate) fn rect_stays_rect(&self) -> bool {
+        if !self.is_affine() {
+            return false;
+        }
+        let [a, b, c, d, ..] = self.to_affine();
+        let scales = b == 0.0 && c == 0.0 && a != 0.0 && d != 0.0;
+        let turns = a == 0.0 && d == 0.0 && b != 0.0 && c != 0.0;
+        scales || turns
+    }
+
     /// `map_point` transforms a point and applies perspective division.
     ///
     /// Points at or behind the eye plane use a small positive divisor.

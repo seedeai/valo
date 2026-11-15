@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use valo::{Bounds, DisplayList, DisplayListBuilder, MatrixClipState, Op, Paint, Rect, Shader};
+use valo::{
+    Bounds, DisplayList, DisplayListBuilder, MatrixClipState, Op, Paint, Rect, Shader, SpreadMode,
+};
 
 /// `RasterRegion` is a region of a page drawn as pixels: the list that draws it, already moved
 /// and scaled into its pixels, and where those go on the page, in page units.
@@ -68,6 +70,7 @@ fn needs_pixels(paint: &Paint) -> bool {
             paint.shader,
             Some(Shader::Image { .. } | Shader::Runtime(_))
         )
+        || paint.shader.as_ref().and_then(Shader::spread) == Some(SpreadMode::Decal)
 }
 
 /// `holds_a_mask` is whether a mask layer opens directly inside the layer `scope` opens: a mask

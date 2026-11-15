@@ -38,7 +38,7 @@ One short linear gradient, three spread modes: Pad, Repeat, Reflect.
 
 - **Linear** — along a line from `start` to `end`
 - **Radial** — between a start circle (optional focus) and an end circle
-- **Sweep** — one clockwise turn around a centre, angles in radians from +x
+- **Sweep** — around a centre, from a start angle to an end angle, in radians clockwise from +x. In Rust, angles outside the two take their colour from the spread mode; `Shader.sweepGradient` sweeps one full turn from its start angle
 
 Shader coordinates begin in the draw's local space, so they follow the same
 transforms as the geometry. `setTransform` on a JS shader (or `local` in
@@ -57,6 +57,7 @@ What happens outside the `0..=1` span:
 | `Pad` | Nearest edge colour |
 | `Repeat` | Tile in the same direction |
 | `Reflect` | Tile, reversing each cycle |
+| `Decal` | Nothing: transparent |
 
 Canvas2D gradients only pad.
 
