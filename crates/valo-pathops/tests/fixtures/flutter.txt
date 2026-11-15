@@ -1,0 +1,29 @@
+# Skia's PathOps results for Flutter's Path.combine calls, Skia d45969a5752ed559261ad982690e5b927186d12e.
+# Written by tests/reference/build.sh; recorder.cpp there describes the format.
+# label-gap: ShapedInputBorder(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))), gapPadding 4, BorderSide() of width 1, painted in Rect.fromLTWH(0, 0, 300, 56) with gapStart 16, gapExtent 32, gapPercentage 1, ltr: _gapBorderPath(rect.deflate(0.5), start 12, extent 40) is Path.combine(difference, Path()..addRRect(0.5, 0.5, 299.5, 55.5, radius 4), Path()..addRect(Rect.fromLTRB(12, -0.5, 52, 1.5))). (OutlineInputBorder draws its gap as an open stroked path, without Path.combine.)
+case label-gap
+kind op difference
+helper flutter
+expect yes
+skia-runs yes
+input winding MLKLKLKLKZ 3f000000:424e0000,3f000000:40900000,3f000000:3f000000,40900000:3f000000,4393c000:3f000000,4395c000:3f000000,4395c000:40900000,4395c000:424e0000,4395c000:425e0000,4393c000:425e0000,40900000:425e0000,3f000000:425e0000,3f000000:424e0000 3f3504f3,3f3504f3,3f3504f3,3f3504f3
+input winding MLLLZ 41400000:bf000000,42500000:bf000000,42500000:3fc00000,41400000:3fc00000 -
+result evenodd MLKLKLKLKLLLLZ 41400000:3f000000,40900000:3f000000,3f000000:3f000000,3f000000:40900000,3f000000:424e0000,3f000000:425e0000,40900000:425e0000,4393c000:425e0000,4395c000:425e0000,4395c000:424e0000,4395c000:40900000,4395c000:3f000000,4393c000:3f000000,42500000:3f000000,42500000:3fc00000,41400000:3fc00000,41400000:3f000000 3f3504f3,3f3504f3,3f3504f3,3f3504f3
+# circle-notch: AutomaticNotchedShape(RoundedRectangleBorder(), CircleBorder()).getOuterPath(Rect.fromLTWH(0, 0, 360, 56), guest) for a BottomAppBar, guest the 56x56 centerDocked FloatingActionButton (152, -28, 208, 28) inflated by notchMargin 4: Path.combine(difference, Path()..addRRect(0, 0, 360, 56, radius 0), Path()..addOval(Rect.fromLTRB(148, -32, 212, 32))). (CircularNotchedRectangle cuts its notch with its own curves, without Path.combine.)
+case circle-notch
+kind op difference
+helper flutter
+expect yes
+skia-runs yes
+input winding MLLLZ 00000000:42600000,00000000:00000000,43b40000:00000000,43b40000:42600000 -
+input winding MKKKKZ 43540000:00000000,43540000:42000000,43340000:42000000,43140000:42000000,43140000:00000000,43140000:c2000000,43340000:c2000000,43540000:c2000000,43540000:00000000 3f3504f3,3f3504f3,3f3504f3,3f3504f3
+result evenodd MKLLLLLKZ 43340000:42000000,43540000:42000000,43540000:00000000,43b40000:00000000,43b40000:42600000,00000000:42600000,00000000:00000000,43140000:00000000,43140000:42000000,43340000:42000000 3f3504f3,3f3504f3
+# rounded-rectangle-notch: AutomaticNotchedShape(RoundedRectangleBorder(), RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))).getOuterPath(Rect.fromLTWH(0, 0, 360, 56), guest), guest the 56x56 centerDocked FloatingActionButton inflated by notchMargin 4: Path.combine(difference, Path()..addRRect(0, 0, 360, 56, radius 0), Path()..addRRect(148, -32, 212, 32, radius 16)).
+case rounded-rectangle-notch
+kind op difference
+helper flutter
+expect yes
+skia-runs yes
+input winding MLLLZ 00000000:42600000,00000000:00000000,43b40000:00000000,43b40000:42600000 -
+input winding MLKLKLKLKZ 43140000:41800000,43140000:c1800000,43140000:c2000000,43240000:c2000000,43440000:c2000000,43540000:c2000000,43540000:c1800000,43540000:41800000,43540000:42000000,43440000:42000000,43240000:42000000,43140000:42000000,43140000:41800000 3f3504f3,3f3504f3,3f3504f3,3f3504f3
+result evenodd MLKLKLLLLLLZ 43140000:00000000,43140000:41800000,43140000:42000000,43240000:42000000,43440000:42000000,43540000:42000000,43540000:41800000,43540000:00000000,43b40000:00000000,43b40000:42600000,00000000:42600000,00000000:00000000,43140000:00000000 3f3504f3,3f3504f3

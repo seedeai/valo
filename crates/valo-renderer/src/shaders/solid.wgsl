@@ -93,22 +93,26 @@ fn gradient_point(p: vec2<f32>) -> vec2<f32> {
     return vec2(m.x * p.x + m.z * p.y + t.x, m.y * p.x + m.w * p.y + t.y);
 }
 
-/// What lives outside 0..1 (misc.z): pad (clamp), repeat (tile), reflect
-/// (mirror every other tile). fract() handles negative t for both periodic
-/// modes.
-fn spread(t: f32) -> f32 {
+/// What lives outside 0..1 (misc.z), as the ramp's `t` and the coverage
+/// there: pad (clamp), repeat (tile), reflect (mirror every other tile),
+/// decal (nothing at all, Impeller's transparent `decal_border_color`).
+/// fract() handles negative t for both periodic modes.
+fn spread(t: f32) -> vec2<f32> {
     let mode = u32(valo_draw.payload[PAYLOAD_MISC].z);
     if mode == SPREAD_REPEAT {
-        return fract(t);
+        return vec2(fract(t), 1.0);
     }
     if mode == SPREAD_REFLECT {
         let f = fract(t * 0.5) * 2.0;
-        return 1.0 - abs(f - 1.0);
+        return vec2(1.0 - abs(f - 1.0), 1.0);
     }
-    return clamp(t, 0.0, 1.0);
+    if mode == SPREAD_DECAL {
+        return vec2(t, f32(t >= 0.0 && t <= 1.0));
+    }
+    return vec2(clamp(t, 0.0, 1.0), 1.0);
 }
 
-fn linear_t(local: vec2<f32>) -> f32 {
+fn linear_t(local: vec2<f32>) -> vec2<f32> {
     let g = valo_draw.payload[PAYLOAD_GEOM]; // (ax, ay, bx, by), gradient space
     let p = gradient_point(local);
     let d = g.zw - g.xy;
@@ -117,7 +121,8 @@ fn linear_t(local: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_linear(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(ramp(linear_t(in.local))) * valo_draw.color;
+    let solved = linear_t(in.local);
+    return premultiply(ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 /// Two-point conical `t`, plus a validity flag: some points of a general
@@ -137,7 +142,7 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
         let start_radius = setup.y;
         let end_radius = setup.z;
         let distance = length(p - g.xy);
-        return vec2(spread((distance - start_radius) / (end_radius - start_radius)), 1.0);
+        return spread((distance - start_radius) / (end_radius - start_radius));
     }
     // Identical circles paint nothing at all.
     if kind == CONICAL_EMPTY {
@@ -151,7 +156,7 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
         if half_span < 0.0 {
             return vec2(0.0, 0.0);
         }
-        return vec2(spread(p.x + sqrt(half_span)), 1.0);
+        return spread(p.x + sqrt(half_span));
     }
 
     // The general case, continuing Skia's algorithm from step 5.
@@ -188,7 +193,7 @@ fn radial_t(local: vec2<f32>) -> vec2<f32> {
     if is_swapped {
         t = 1.0 - t;
     }
-    return vec2(spread(t), 1.0);
+    return spread(t);
 }
 
 @fragment
@@ -199,15 +204,20 @@ fn fs_radial(in: VsOut) -> @location(0) vec4<f32> {
 
 const TAU: f32 = 6.28318530718;
 
-fn sweep_t(local: vec2<f32>) -> f32 {
-    let g = valo_draw.payload[PAYLOAD_GEOM]; // (cx, cy, _, _); start angle in misc.y
+/// Impeller's `sweep_gradient_fill.frag`: the turn from +x, clockwise in
+/// y-down space, as a fraction in 0..1, biased and scaled so the start
+/// angle is 0 and the end angle 1.
+fn sweep_t(local: vec2<f32>) -> vec2<f32> {
+    let g = valo_draw.payload[PAYLOAD_GEOM]; // (cx, cy, bias, scale)
     let v = gradient_point(local) - g.xy;
-    return fract((atan2(v.y, v.x) - valo_draw.payload[PAYLOAD_MISC].y) / TAU);
+    let turn = atan2(-v.y, -v.x) / TAU + 0.5;
+    return spread((turn + g.z) * g.w);
 }
 
 @fragment
 fn fs_sweep(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(ramp(sweep_t(in.local))) * valo_draw.color;
+    let solved = sweep_t(in.local);
+    return premultiply(ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 // ── ramp gradients (>8 stops): Impeller's texture path ──────────────────────
@@ -223,7 +233,8 @@ fn sample_ramp(t: f32) -> vec4<f32> {
 
 @fragment
 fn fs_linear_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(sample_ramp(linear_t(in.local))) * valo_draw.color;
+    let solved = linear_t(in.local);
+    return premultiply(sample_ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 @fragment
@@ -234,7 +245,8 @@ fn fs_radial_ramp(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_sweep_ramp(in: VsOut) -> @location(0) vec4<f32> {
-    return premultiply(sample_ramp(sweep_t(in.local))) * valo_draw.color;
+    let solved = sweep_t(in.local);
+    return premultiply(sample_ramp(solved.x)) * valo_draw.color * solved.y;
 }
 
 // ── mask composite ──────────────────────────────────────────────────────────

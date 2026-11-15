@@ -1,0 +1,591 @@
+# Skia's PathOps results for tests/PathOpsSimplifyFailTest.cpp, Skia d45969a5752ed559261ad982690e5b927186d12e.
+# Written by tests/reference/build.sh; recorder.cpp there describes the format.
+case fuzz_k1
+kind simplify
+helper testSimplifyFuzz
+expect flaky
+skia-runs yes
+input winding MKLCMCCMLCMCLCMCCCMCCCQLZMQLZMQ 00000000:00000000,2073732f:73f17f00,737b7b73:73916773,5803736d:807b5ba1,7b7f7f7b:7373737b,1b617380:48541b10,73817373:00717373,7373739a:50001073,7b738364:73607380,7b738362:00007180,7373739a:50001073,7b737364:73607380,7b738366:73737380,73738873:96737353,00640000:73737373,40005d7b:58435460,7b7f7f7b:7373737b,1b617380:48400010,73817373:00717373,06737376:50001073,7b737364:73737373,53737388:00967373,00640000:73737373,40005d7b:5843546d,7b7f7f7b:7373737b,1b617380:4840001e,73817373:007e7373,06737376:50001073,7b737364:73607380,01008366:73737380,737d8873:7b4e7b53,667b7b7b:73737b7b,73739167:40007387,5803736d:807b5ba1,7b7f7f7b:7373737b,1b617380:48401b10,73817373:00717373,7373739a:50001073,7b737364:73607380,7b738366:00007180,7373739a:50001073,7b737364:73607380,79738366:79797979,ff000079:f2f2f2ff,6579796a:79795979,4d4d7b57:4d574d66,7968ac4d:79797979,f2f27b79:867b9c7b,ddf2f2f2:1379796a,7373739a:50001073,7373739a:50001073,e7797979:f2794d4d,79a8ddf2:13132513,7373739a:50001073,7373739a:50001073,7b9c7b79:f4f2d886,f4f4f4f4:f4f4f4f4 00738773
+result evenodd MLLLCLLLLZMLZ f4f4f4f4:f4f4f4f4,7373739a:50001073,72ef0ac4:73031015,7ad86692:72ea6f2c,7ad86692:72d8669f,7aa24cee:72a24cf8,00000000:50001073,72ef0ac4:73031015,7373739a:50001073,73736a9d:ecffe2df,f4f4f4f4:f4f4f4f4,776b8852:6f606d3d,7759da64:6f4e9fdd -
+case fuzz_x3
+kind simplify
+helper testSimplifyFuzz
+expect flaky
+skia-runs yes
+input winding MCKQKC 00000000:00000000,92743420:74747474,0f747c74:ff538565,74744374:20437474,7474926d:7c747474,00170f74:3a7410d7,203a3a3a:7459f43a,74747474:2043ad6e,7474b374:74747474,0f747c74:ff537065,3a3a3a3a:3a2c103a,7474263a:74976507,000000ff:00000000 3a3a3a3a,74744374
+result evenodd MLLCZ 00000000:ff537065,74747474:00000000,6fdab002:6fb4da87,7473dd44:6f1c2c3c,3a3a1e65:f9fcd02b,00000000:ff537065 -
+case fuzz763_2s
+kind simplify
+helper testSimplifyFuzz
+expect flaky
+skia-runs yes
+input winding MCLZMQMCLZMKMZMQLZMKLZMQLZMCLLZMLKLZMQLZMQMZMCLZMCLZ 00000000:00000000,76773011:5d66fe78,bbeeff66:637677a2,205266fe:ec296fdf,00000000:00000000,00000000:00000000,ec4eecec:6e6f10ec,b6b6ecf7:b6b6b6b6,73737300:73735273,1616ece4:df020018,77772965:1009db73,80ececec:f7ffffff,73737300:73735273,73737300:73735273,ec0700ec:ecececec,ececccec:772965ec,fe817477:df665266,fe817477:df665266,29ec02ec:1009ecec,80ececec:f7ffffff,fe817477:df665266,fe817477:df665266,ff003aff:dbec2300,ecececec:6fdf6052,fe817477:df665266,fe817477:df665266,ecf76e6f:eccfddec,ecececcc:66000066,fe817477:df665266,fe817477:df665266,772965df:77777377,77777876:665266fe,ecececdf:0285806e,ecececeb:ecec0700,fe817477:df665266,fe817477:df665266,65ecfaec:de777729,74777777:66fe7876,ecdf6660:726eecec,fe817477:df665266,d0ecec10:6e6eecdb,003affec:ec2300ef,ecececdb:cfececec,d0ecec10:6e6eecdb,d0ecec10:6e6eecdb,ecccec80:fa66ecec,66fa0000:772965df,77777790:00807677,77777790:00807677,ecececec:fe66eaec,ecdf1452:806eecec,10ececec:ec000000,77777790:00807677,77777790:00807677,52668062:2965df66,77777377:76777773,1697fe78:eebfff00,77777790:00807677 77777377,41ecec29,29d610ec
+result evenodd MLCCLZMLCLLLZMQZMLZMLCZ 73737300:73735273,77777790:00000000,76d1b0dd:00000000,76fd3916:75a46487,76f692c1:75d0f1d4,76f1af51:75f1b236,76d1ad64:75d1af0a,00000000:eebfff00,73737300:73735273,00000000:ec000000,7692a5a1:fdcd4299,76dbf877:fdcd4299,7724fa5d:fd99f1f3,77777790:00000000,7509505e:ebf71f39,737371ac:737085a2,00000000:f7ffffff,65ecfad8:61974673,65ecfaec:de777729,65ecfaec:de777729,d0ecec10:6e6eecdb,e8dae7ab:6e6e101a,73737300:73735273,7372bf80:7371ebcc,7372bf7c:7371747f,7372fafd:7370fd30,737371ac:737085a2 -
+case fuzz763_1
+kind simplify
+helper testSimplifyFuzz
+expect flaky
+skia-runs yes
+input winding MCQQQQQCQMQQQQQQQMZMQMQ 00000000:00000000,bcb63000:b6b6b6b7,38b6b6b6:afb63a5a,ca000087:e93ae9e9,b6007fb6:b69fb6b6,e9e964b6:e9e9e9e9,b6b6b8b7:b60000b6,b6b6b6b6:e9e92064,000200e9:e9e9d100,e93ae9e9:e964b6e9,40b6e9e9:e9b60000,00b6b8e9:e9000001,e9d3b6b2:40404540,803d4043:e9e9e9ff,00000000:e8b3b6b6,e90a0003:4040403c,803d4040:e9e80900,e9e910e9:e9e93ae9,0000b6b6:b6b6aab6,e9e92064:e9e9d106,e9e93ae9:0000abb6,b6b6bdb6:e92064b6,0000e9e9:b6b6b6e9,05ffff05:e9ea06e9,e93ae9e9:02007fe9,b8b7b600:e9e9b6b6,e9e9e9b6:edb6b6b6,5a38a1b6:e93ae9e9,0000b6b6:b6b6b6b6,e9e9e9b6:e9e9e954,b6e9e93a:375837ff,ceb6b6b6:0039e94f,e9e9e9e9:e9e6e9e9,b6b641b6:ede9e9e9,e9b6b6b6:e9b6b8e9,e9b6b6b6:e9b6b8e9,e93ae9e9:e964b6e9,0000203a:b6000000,64b6b6b6:e9e9e900,b6b6b6e9:b6b6b6b6,e9e9b6ce:e9e93ae9 -
+result none
+case fuzz_x2
+kind simplify
+helper testSimplify
+expect yes
+skia-runs yes
+input winding MCMCC 00000000:00000000,1931204a:2ba1a14a,4a4a08ff:4a4a08ff,4a4a4a34:4a4a4a4a,000010a1:19312000,4a6a4a4a:4a4a4a4a,a14a4a4a:08ff2ba1,08ff4a4a:4a344a4a,4a4a4a4a:4a4a4a4a,2ba1a14a:4e4a08ff,4a4a4a4a:a1a181ff -
+result evenodd MCLCCCCCZ 49cfc3e7:49c3255d,49d5d3dc:49b89f57,49a50cd3:498e81d1,00000000:00000000,4a4a4a4a:00000000,4a4a06dd:4986af4b,4a49c39d:4a06827d,4a498089:4a49809c,4a06839b:4d8761e9,49e07b13:4db3fdbe,49d1ab2b:4db3fdb4,49b40aac:4db3fda0,4a06b045:4a42f02e,00000000:4a344a4a,00000000:49981e12,499c9dd5:49c76622,49c636f5:49c636fa,49cb399c:49c61276,49ce9118:49c539f4,49cfc3e7:49c3255d -
+case fuzz_x1
+kind simplify
+helper testSimplify
+expect yes
+skia-runs yes
+input winding MCMCC 00000000:00000000,1931204a:2ba1a14a,4a4a08ff:4a4a08ff,4a4a4a34:4a4a4a4a,000010a1:19312000,4a6a4a4a:4a4a4a4a,a14a4a4a:08ff2ba1,08ff4a4a:4a344a4a,4a4a4a4a:4a4a4a4a,2ba1a14a:4e4a08ff,4a4a4a4a:a1a181ff -
+result evenodd MCLCCCCCZ 49cfc3e7:49c3255d,49d5d3dc:49b89f57,49a50cd3:498e81d1,00000000:00000000,4a4a4a4a:00000000,4a4a06dd:4986af4b,4a49c39d:4a06827d,4a498089:4a49809c,4a06839b:4d8761e9,49e07b13:4db3fdbe,49d1ab2b:4db3fdb4,49b40aac:4db3fda0,4a06b045:4a42f02e,00000000:4a344a4a,00000000:49981e12,499c9dd5:49c76622,49c636f5:49c636fa,49cb399c:49c61276,49ce9118:49c539f4,49cfc3e7:49c3255d -
+case fuzz_59
+kind simplify
+helper testSimplifyFuzz
+expect flaky
+skia-runs yes
+input winding MLLLLLZ 430c0000:ce58f41c,43480000:ce58f419,42200000:ce58f41b,43700000:ce58f41b,428c0000:ce58f419,430c0000:ce58f41c -
+result evenodd - - -
+case PathOpsSimplifyFail
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#2
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#3
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:7f7fffff,7f7fffff:7f7fffff -
+result evenodd MQLZ 7f7fffff:7f7fffff,00000000:7f7fffff,00000000:00000000,7f7fffff:7f7fffff -
+case PathOpsSimplifyFail#4
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:00000000,7f7fffff:7f7fffff -
+result evenodd MLZ 7f7fffff:7f7fffff,00000000:00000000 -
+case PathOpsSimplifyFail#5
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,ff7fffff:00000000,ff7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#6
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,00000000:ff7fffff,ff7fffff:ff7fffff -
+result evenodd MCLZ ff7fffff:ff7fffff,00000000:ff7fffff,00000000:ff7fffff,00000000:00000000,ff7fffff:ff7fffff -
+case PathOpsSimplifyFail#7
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,00000000:00000000,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#8
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,7f7fffff:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#9
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,7f7fffff:00000000,7f7fffff:00000000 -
+result evenodd MCLZ 7f7fffff:00000000,7f7fffff:00000000,00000000:7f7fffff,00000000:00000000,7f7fffff:00000000 -
+case PathOpsSimplifyFail#10
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,00000000:7f7fffff,7f7fffff:7f7fffff -
+result evenodd MLZ 7f7fffff:7f7fffff,00000000:00000000 -
+case PathOpsSimplifyFail#11
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M 7f7fffff:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#12
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,ff7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#13
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:ff7fffff,00000000:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#14
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:ff7fffff,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#15
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#16
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,7f7fffff:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#17
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,00000000:7f7fffff,7f7fffff:7f7fffff -
+result evenodd MCLZ 7f7fffff:7f7fffff,00000000:7f7fffff,00000000:7f7fffff,00000000:00000000,7f7fffff:7f7fffff -
+case PathOpsSimplifyFail#18
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,ff7fffff:00000000,7f7fffff:7f7fffff -
+result evenodd MCLZ 7d8c4223:7f01e4de,7da806c0:7ef09202,7f1f6ca9:7f1f6ca9,00000000:00000000,7d8c4223:7f01e4de -
+case PathOpsSimplifyFail#19
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,00000000:ff7fffff,00000000:ff7fffff -
+result evenodd MCLZ 00000000:ff7fffff,00000000:ff7fffff,ff7fffff:00000000,00000000:00000000,00000000:ff7fffff -
+case PathOpsSimplifyFail#20
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,00000000:ff7fffff,00000000:ff7fffff -
+result evenodd MCLZ 00000000:ff7fffff,00000000:ff7fffff,ff7fffff:ff7fffff,00000000:00000000,00000000:ff7fffff -
+case PathOpsSimplifyFail#21
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,ff7fffff:ff7fffff,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#22
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M 00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#23
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#24
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:7f7fffff,00000000:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#25
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:7f7fffff,ff7fffff:00000000 -
+result evenodd MQLZ ff7fffff:00000000,7f7fffff:7f7fffff,00000000:00000000,ff7fffff:00000000 -
+case PathOpsSimplifyFail#26
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:ff7fffff,ff7fffff:00000000 -
+result evenodd MQLZ ff7fffff:00000000,00000000:ff7fffff,00000000:00000000,ff7fffff:00000000 -
+case PathOpsSimplifyFail#27
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,00000000:ff7fffff,00000000:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#28
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,ff7fffff:ff7fffff,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#29
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,7f7fffff:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#30
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,00000000:7f7fffff,00000000:7f7fffff -
+result evenodd MCLZ 00000000:7f7fffff,00000000:7f7fffff,7f7fffff:00000000,00000000:00000000,00000000:7f7fffff -
+case PathOpsSimplifyFail#31
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,00000000:7f7fffff,00000000:7f7fffff -
+result evenodd MCLZ 00000000:7f7fffff,00000000:7f7fffff,7f7fffff:7f7fffff,00000000:00000000,00000000:7f7fffff -
+case PathOpsSimplifyFail#32
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,7f7fffff:7f7fffff,ff7fffff:00000000 -
+result evenodd MCLLZ fd8cb4d7:7ee29402,fd495049:7ed271f0,ff241ff6:00000000,00000000:00000000,ff7fffff:00000000,fd8cb4d7:7ee29402 -
+case PathOpsSimplifyFail#33
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M ff7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#34
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,00000000:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#35
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:ff7fffff,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#36
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#37
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:7f7fffff,7f7fffff:00000000 -
+result evenodd MQLZ 7f7fffff:00000000,00000000:7f7fffff,00000000:00000000,7f7fffff:00000000 -
+case PathOpsSimplifyFail#38
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,00000000:7f7fffff,00000000:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#39
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,7f7fffff:7f7fffff,ff7fffff:00000000 -
+result evenodd MCLLZ 7f274b9b:7f3d704a,7f305cb2:7f305cb2,7ee26e88:7ee26e88,00000000:00000000,ff7fffff:00000000,7f274b9b:7f3d704a -
+case PathOpsSimplifyFail#40
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,00000000:ff7fffff,ff7fffff:00000000 -
+result evenodd MCLLZ ff02e33d:fee2973d,feeb8f90:fed28e1f,ff242af3:00000000,00000000:00000000,ff7fffff:00000000,ff02e33d:fee2973d -
+case PathOpsSimplifyFail#41
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,ff7fffff:ff7fffff,ff7fffff:ff7fffff -
+result evenodd MCLZ ff7fffff:ff7fffff,ff7fffff:ff7fffff,00000000:ff7fffff,00000000:00000000,ff7fffff:ff7fffff -
+case PathOpsSimplifyFail#42
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,ff7fffff:ff7fffff,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#43
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,00000000:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#44
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M 7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#45
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,00000000:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#46
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:7f7fffff,7f7fffff:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#47
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:00000000,00000000:ff7fffff -
+result evenodd MQLZ 00000000:ff7fffff,ff7fffff:00000000,00000000:00000000,00000000:ff7fffff -
+case PathOpsSimplifyFail#48
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:ff7fffff,00000000:ff7fffff -
+result evenodd MQLZ 00000000:ff7fffff,ff7fffff:ff7fffff,00000000:00000000,00000000:ff7fffff -
+case PathOpsSimplifyFail#49
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,ff7fffff:ff7fffff,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#50
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,00000000:00000000,7f7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#51
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,00000000:7f7fffff,7f7fffff:00000000 -
+result evenodd MCLLZ 7f02e33d:7ee2973d,7eeb8f90:7ed28e1f,7f242af3:00000000,00000000:00000000,7f7fffff:00000000,7f02e33d:7ee2973d -
+case PathOpsSimplifyFail#52
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,7f7fffff:7f7fffff,7f7fffff:7f7fffff -
+result evenodd MCLZ 7f7fffff:7f7fffff,7f7fffff:7f7fffff,00000000:7f7fffff,00000000:00000000,7f7fffff:7f7fffff -
+case PathOpsSimplifyFail#53
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,7f7fffff:7f7fffff,7f7fffff:7f7fffff -
+result evenodd MLZ 7f7fffff:7f7fffff,00000000:00000000 -
+case PathOpsSimplifyFail#54
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,ff7fffff:00000000,00000000:ff7fffff -
+result evenodd MCLLZ fee2973d:ff02e33d,fed28e1f:feeb8f90,00000000:ff242af3,00000000:00000000,00000000:ff7fffff,fee2973d:ff02e33d -
+case PathOpsSimplifyFail#55
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M 00000000:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#56
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#57
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#58
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:00000000,00000000:7f7fffff -
+result evenodd MQLZ 00000000:7f7fffff,7f7fffff:00000000,00000000:00000000,00000000:7f7fffff -
+case PathOpsSimplifyFail#59
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,7f7fffff:7f7fffff,00000000:7f7fffff -
+result evenodd MQLZ 00000000:7f7fffff,7f7fffff:7f7fffff,00000000:00000000,00000000:7f7fffff -
+case PathOpsSimplifyFail#60
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,7f7fffff:7f7fffff,7f7fffff:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#61
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:00000000,ff7fffff:00000000,00000000:ff7fffff -
+result evenodd MLLLZ ff3e5502:fdbee21b,00000000:00000000,00000000:ff7fffff,ff3e5502:fdbee21b -
+case PathOpsSimplifyFail#62
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,ff7fffff:ff7fffff,00000000:ff7fffff -
+result evenodd MCLCZ fee33377:ff77bf76,feedf739:ff66121e,00000000:ff2e86dd,00000000:00000000,00000000:ff7fffff,fea2f243:ff7fffff,fede2d04:ff7fffff,fee33377:ff77bf76 -
+case PathOpsSimplifyFail#63
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,00000000:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#64
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,00000000:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#65
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,7f7fffff:00000000,00000000:7f7fffff -
+result evenodd MCLLZ 7ee2973d:7f02e33d,7ed28e1f:7eeb8f90,00000000:7f242af3,00000000:00000000,00000000:7f7fffff,7ee2973d:7f02e33d -
+case PathOpsSimplifyFail#66
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M 00000000:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#67
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding ML 00000000:00000000,7f7fffff:7f7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#68
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,ff7fffff:00000000,ff7fffff:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#69
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:ff7fffff,ff7fffff:ff7fffff -
+result evenodd MQLZ ff7fffff:ff7fffff,00000000:ff7fffff,00000000:00000000,ff7fffff:ff7fffff -
+case PathOpsSimplifyFail#70
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MQ 00000000:00000000,00000000:00000000,ff7fffff:ff7fffff -
+result evenodd - - -
+case PathOpsSimplifyFail#71
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:00000000,00000000:00000000,00000000:00000000 -
+result evenodd - - -
+case PathOpsSimplifyFail#72
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:00000000,7f7fffff:00000000,00000000:7f7fffff -
+result evenodd MLLLZ 7f3e5502:7dbee21b,00000000:00000000,00000000:7f7fffff,7f3e5502:7dbee21b -
+case PathOpsSimplifyFail#73
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:7f7fffff,7f7fffff:7f7fffff,00000000:7f7fffff -
+result evenodd MCLCZ 7ee33377:7f77bf76,7eedf739:7f66121e,00000000:7f2e86dd,00000000:00000000,00000000:7f7fffff,7ea2f243:7f7fffff,7ede2d04:7f7fffff,7ee33377:7f77bf76 -
+case PathOpsSimplifyFail#74
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,7f7fffff:7f7fffff,ff7fffff:00000000,ff7fffff:00000000 -
+result evenodd MCLZ ff7fffff:00000000,ff7fffff:00000000,7f7fffff:7f7fffff,00000000:00000000,ff7fffff:00000000 -
+case PathOpsSimplifyFail#75
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,00000000:ff7fffff,ff7fffff:00000000,ff7fffff:00000000 -
+result evenodd MCLZ ff7fffff:00000000,ff7fffff:00000000,00000000:ff7fffff,00000000:00000000,ff7fffff:00000000 -
+case PathOpsSimplifyFail#76
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding MC 00000000:00000000,ff7fffff:ff7fffff,00000000:ff7fffff,ff7fffff:ff7fffff -
+result evenodd MLZ ff7fffff:ff7fffff,00000000:00000000 -
+case PathOpsSimplifyFail#77
+kind simplify
+helper direct
+expect unchecked
+skia-runs yes
+input winding M ff7fffff:ff7fffff -
+result evenodd - - -
+# not captured: PathOpsSimplifyDontFailOne, a repeat of PathOpsSimplifyFail's dontFailOne(17)

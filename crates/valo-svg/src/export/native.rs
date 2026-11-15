@@ -2,7 +2,8 @@
 //! walk a list by, and the filters SVG says effects with.
 
 use valo::{
-    Backdrop, BlendMode, BlurStyle, Color, ColorFilter, ImageFilter, Op, Paint, Shader, TileMode,
+    Backdrop, BlendMode, BlurStyle, Color, ColorFilter, ImageFilter, Op, Paint, Shader, SpreadMode,
+    TileMode,
 };
 
 use super::NativeEffects;
@@ -89,6 +90,7 @@ fn paints_natively(paint: &Paint, native: NativeEffects) -> bool {
             paint.shader,
             None | Some(Shader::Linear { .. } | Shader::Radial { .. })
         )
+        && paint.shader.as_ref().and_then(Shader::spread) != Some(SpreadMode::Decal)
         && draw_filter(paint, native).is_some()
 }
 

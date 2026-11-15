@@ -15,4 +15,5 @@ serde = ["dep:serde", "glam/serde"]
 
 [dependencies]
 glam = { workspace = true }
+valo-pathops = { workspace = true }
 serde = { workspace = true, optional = true }

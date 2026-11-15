@@ -379,6 +379,27 @@ impl<'a> StepEmitter<'a> {
         view: &wgpu::TextureView,
         tile_mode: TileMode,
     ) -> wgpu::BindGroup {
+        self.texture_bind_with(view, self.samplers.for_tile_mode(tile_mode))
+    }
+
+    /// `sampled_texture_bind` is [`StepEmitter::texture_bind`] with the
+    /// sampler that reads as `sampling` says.
+    pub fn sampled_texture_bind(
+        &mut self,
+        view: &wgpu::TextureView,
+        sampling: Sampling,
+    ) -> wgpu::BindGroup {
+        let sampler = self.images.sampler(sampling).clone();
+        self.texture_bind_with(view, &sampler)
+    }
+
+    /// `texture_bind_with` is a group-1 bind of one sampled view and
+    /// `sampler`.
+    fn texture_bind_with(
+        &self,
+        view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("valo.step.texture"),
             layout: self.pipelines.texture_bind_layout(),
@@ -389,9 +410,7 @@ impl<'a> StepEmitter<'a> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(
-                        self.samplers.for_tile_mode(tile_mode),
-                    ),
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         })

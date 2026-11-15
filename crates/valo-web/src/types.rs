@@ -86,10 +86,15 @@ pub(crate) fn clip_op(value: u32) -> ClipOp {
 }
 
 pub(crate) fn spread_mode(value: u32) -> SpreadMode {
-    [SpreadMode::Pad, SpreadMode::Repeat, SpreadMode::Reflect]
-        .get(value as usize)
-        .copied()
-        .unwrap_or_default()
+    [
+        SpreadMode::Pad,
+        SpreadMode::Repeat,
+        SpreadMode::Reflect,
+        SpreadMode::Decal,
+    ]
+    .get(value as usize)
+    .copied()
+    .unwrap_or_default()
 }
 
 pub(crate) fn sampling(filter: u32, mipmap: u32, tile_x: u32, tile_y: u32) -> Sampling {

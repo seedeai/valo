@@ -250,10 +250,12 @@ fn rect_scene(ctx: &mut Context) -> valo::DisplayList {
         &Paint::from_shader(Shader::Sweep {
             center: Point::new(385.0, 505.0),
             start_angle: 0.7,
+            end_angle: 0.7 + std::f32::consts::TAU,
             stops: stops(&[
                 (0.0, Color::rgb(0.9, 0.9, 0.1)),
                 (1.0, Color::rgb(0.5, 0.1, 0.6)),
             ]),
+            spread: valo::SpreadMode::Repeat,
             local: valo::Matrix::IDENTITY,
         }),
     );

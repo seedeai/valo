@@ -8,6 +8,7 @@ mod color;
 mod matrix;
 mod measure;
 mod path;
+mod path_operation;
 mod point;
 mod rect;
 mod stroke;
@@ -21,6 +22,7 @@ pub use path::{
     constrain_radii, constrain_radii_elliptical, local_tolerance, Contour, FillRule, Path,
     PathBuilder, PathElement, Winding,
 };
+pub use path_operation::{PathOperation, PathOperationError};
 pub use point::{Point, Size};
 pub use rect::Rect;
 pub use stroke::{dash_contours, stroke_contains, stroke_strip, Cap, Dash, Join, Stroke};

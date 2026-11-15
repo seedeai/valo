@@ -1,6 +1,6 @@
 use valo::{
     Color, ColorFilter, Dash, FocalCircle, GradientStop, ImageFilter, MaskBlur, Matrix, Paint,
-    PaintStyle, Point, Shader, Stroke, TileMode,
+    PaintStyle, Point, Shader, SpreadMode, Stroke, TileMode,
 };
 use wasm_bindgen::prelude::*;
 
@@ -113,6 +113,25 @@ impl WebImageFilter {
         }
     }
 
+    /// `matrix` creates a filter that draws its input moved by a transform:
+    /// dart:ui's `ImageFilter.matrix`.
+    ///
+    /// The content is drawn first and its pixels then moved, so a scale
+    /// enlarges pixels rather than redrawing at the new size. `values` must
+    /// be 6 affine numbers `[a, b, c, d, tx, ty]` or 16 column-major matrix
+    /// values, in local units; any other length throws. `filter` is `0`
+    /// linear or `1` nearest; any other value uses linear. `mipmap` is `0`
+    /// none, `1` nearest, or `2` linear; any other value uses linear. An
+    /// identity matrix leaves the input as it is.
+    #[wasm_bindgen(js_name = matrix)]
+    pub fn matrix(values: &[f32], filter: u32, mipmap: u32) -> Result<WebImageFilter, JsValue> {
+        let matrix = types::matrix(values)?;
+        let sampling = types::sampling(filter, mipmap, 0, 0);
+        Ok(WebImageFilter {
+            inner: ImageFilter::matrix(matrix, sampling),
+        })
+    }
+
     /// `compose` applies `inner` first and `outer` second.
     #[wasm_bindgen(js_name = compose)]
     pub fn compose(outer: &WebImageFilter, inner: &WebImageFilter) -> WebImageFilter {
@@ -138,7 +157,7 @@ impl WebShader {
     /// `offsets` are stop positions from zero to one, in nondecreasing order.
     /// `colors` is four straight-alpha RGBA values per offset. Empty offsets or
     /// a color length other than `offsets.length × 4` throws. `spread` is `0`
-    /// pad, `1` repeat, or `2` reflect; any other value uses pad.
+    /// pad, `1` repeat, `2` reflect, or `3` decal; any other value uses pad.
     #[wasm_bindgen(js_name = linearGradient)]
     pub fn linear_gradient(
         start_x: f32,
@@ -164,8 +183,8 @@ impl WebShader {
     ///
     /// `(startX, startY, startRadius)` is the focus circle; a zero radius is a
     /// focal point. `(endX, endY, endRadius)` is the end circle. Stop arrays
-    /// follow [`Self::linear_gradient`]. `spread` is `0` pad, `1` repeat, or
-    /// `2` reflect; any other value uses pad.
+    /// follow [`Self::linear_gradient`]. `spread` is `0` pad, `1` repeat,
+    /// `2` reflect, or `3` decal; any other value uses pad.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = radialGradient)]
     pub fn radial_gradient(
@@ -207,10 +226,14 @@ impl WebShader {
         colors: &[f32],
     ) -> Result<WebShader, JsValue> {
         Ok(WebShader {
+            // One full turn from the start angle, repeated round the rest of
+            // the circle: the whole circle, rotated to begin there.
             inner: Shader::Sweep {
                 center: Point::new(center_x, center_y),
                 start_angle,
+                end_angle: start_angle + std::f32::consts::TAU,
                 stops: gradient_stops(offsets, colors)?,
+                spread: SpreadMode::Repeat,
                 local: Matrix::IDENTITY,
             },
         })

@@ -128,6 +128,64 @@ impl BuiltShape {
             BuiltShape::RoundRect { rect, radii }
         }
     }
+
+    /// `transformed` is what a path built as this shape is once `transform`
+    /// maps its points: the same kind of shape under a transform that keeps
+    /// rectangles rectangles, a general path under any other, as Skia's
+    /// `SkPathBuilder::transform` keeps `isOval` and `isRRect` only when the
+    /// matrix `rectStaysRect` (its other condition, points that only ever
+    /// move along one axis, holds for every oval and rounded rectangle a
+    /// builder traces).
+    fn transformed(self, transform: &Matrix) -> Self {
+        if !transform.rect_stays_rect() {
+            return BuiltShape::General;
+        }
+        match self {
+            BuiltShape::General => BuiltShape::General,
+            BuiltShape::Oval(rect) => BuiltShape::Oval(transform.map_rect(&rect)),
+            BuiltShape::RoundRect { rect, radii } => BuiltShape::of_round_rect(
+                transform.map_rect(&rect),
+                transformed_radii(&rect, radii, transform),
+            ),
+        }
+    }
+}
+
+/// `transformed_radii` is where the per-corner `radii` of a rounded
+/// rectangle over `rect` land under `transform`, which keeps rectangles
+/// rectangles: each corner goes to the corner of the mapped rectangle its
+/// point lands on, its radii scaled by the axis lengths, and swapped by a
+/// quarter turn, which carries each axis onto the other.
+fn transformed_radii(rect: &Rect, radii: [[f32; 2]; 4], transform: &Matrix) -> [[f32; 2]; 4] {
+    let [a, b, c, d, ..] = transform.to_affine();
+    let quarter_turn = a == 0.0 && d == 0.0;
+    let mapped = transform.map_rect(rect);
+    let centre = Point::new(
+        mapped.x + mapped.width * 0.5,
+        mapped.y + mapped.height * 0.5,
+    );
+    let corners = [
+        Point::new(rect.x, rect.y),
+        Point::new(rect.right(), rect.y),
+        Point::new(rect.right(), rect.bottom()),
+        Point::new(rect.x, rect.bottom()),
+    ];
+    let mut moved = [[0.0; 2]; 4];
+    for (corner, [x, y]) in corners.into_iter().zip(radii) {
+        let landed = transform.map_point(corner);
+        let index = match (landed.x < centre.x, landed.y < centre.y) {
+            (true, true) => 0,
+            (false, true) => 1,
+            (false, false) => 2,
+            (true, false) => 3,
+        };
+        moved[index] = if quarter_turn {
+            [y * c.abs(), x * b.abs()]
+        } else {
+            [x * a.abs(), y * d.abs()]
+        };
+    }
+    moved
 }
 
 impl Path {
@@ -153,6 +211,32 @@ impl Path {
             BuiltShape::RoundRect { rect, radii } => Some((rect, radii)),
             _ => None,
         }
+    }
+
+    /// `transformed` is this path with every point mapped by `transform`:
+    /// Skia's `SkPath::makeTransform`, which dart:ui's `Path.shift` and
+    /// `Path.transform` run.
+    ///
+    /// A path built as an oval or a rounded rectangle ([`Self::as_oval`],
+    /// [`Self::as_round_rect`]) stays one under a transform that keeps
+    /// rectangles rectangles — a translation, a scale, a mirror, a quarter
+    /// turn, or any of them together — and is a general path under any
+    /// other, as Skia keeps it. [`PathBuilder::append`] is Skia's `addPath`
+    /// instead, which makes a general path whatever it appends. Under
+    /// perspective the control points are mapped as `append` maps them.
+    pub fn transformed(&self, transform: &Matrix) -> Arc<Path> {
+        let points: Vec<Point> = self
+            .points
+            .iter()
+            .map(|point| transform.map_point(*point))
+            .collect();
+        Arc::new(Path {
+            verbs: self.verbs.clone(),
+            bounds: control_point_bounds(&points),
+            points,
+            weights: self.weights.clone(),
+            shape: self.shape.transformed(transform),
+        })
     }
 
     /// `elements` walks the path's verbs with their points, for a consumer that
@@ -1130,19 +1214,33 @@ impl PathBuilder {
     fn push_point(&mut self, p: Point) {
         self.shape = BuiltShape::General;
         self.points.push(p);
-        // Plain min/max accumulation — a zero-size seed rect is a valid
-        // bound, wherever it sits (a rect-union "empty = identity" rule
-        // would drop a first point at the origin).
-        self.bounds = Some(match self.bounds {
-            Some(b) => Rect::from_ltrb(
-                b.x.min(p.x),
-                b.y.min(p.y),
-                b.right().max(p.x),
-                b.bottom().max(p.y),
-            ),
-            None => Rect::new(p.x, p.y, 0.0, 0.0),
-        });
+        self.bounds = Some(grown_bounds(self.bounds, p));
     }
+}
+
+/// `grown_bounds` is `bounds` grown to hold `p`, or the point itself when
+/// there are none yet. Plain min/max accumulation — a zero-size seed rect is
+/// a valid bound, wherever it sits (a rect-union "empty = identity" rule
+/// would drop a first point at the origin).
+fn grown_bounds(bounds: Option<Rect>, p: Point) -> Rect {
+    match bounds {
+        Some(b) => Rect::from_ltrb(
+            b.x.min(p.x),
+            b.y.min(p.y),
+            b.right().max(p.x),
+            b.bottom().max(p.y),
+        ),
+        None => Rect::new(p.x, p.y, 0.0, 0.0),
+    }
+}
+
+/// `control_point_bounds` is the bounds of `points`, as a builder
+/// accumulates them; the default rect when there are none.
+fn control_point_bounds(points: &[Point]) -> Rect {
+    points
+        .iter()
+        .fold(None, |bounds, point| Some(grown_bounds(bounds, *point)))
+        .unwrap_or_default()
 }
 
 /// `unit_circle_point` returns the point at `angle` on the unit circle.
@@ -1427,6 +1525,116 @@ mod tests {
             after_a_move.as_round_rect().is_some(),
             "a move adds no segment"
         );
+    }
+
+    fn round_rect_path(r: Rect, radii: [[f32; 2]; 4]) -> Arc<Path> {
+        let mut path = PathBuilder::new();
+        path.rrect_radii_elliptical(r, radii);
+        path.build()
+    }
+
+    const ROUND_RECT: Rect = Rect {
+        x: 10.0,
+        y: 20.0,
+        width: 40.0,
+        height: 30.0,
+    };
+    const RADII: [[f32; 2]; 4] = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]];
+
+    /// Skia's `SkPath::offset`: a moved rounded rectangle is still one, so a
+    /// shadow of it keeps its closed form.
+    #[test]
+    fn a_translated_round_rect_or_oval_keeps_its_shape() {
+        let moved = round_rect_path(ROUND_RECT, RADII).transformed(&Matrix::translation(5.0, -3.0));
+        assert_eq!(
+            moved.as_round_rect(),
+            Some((Rect::new(15.0, 17.0, 40.0, 30.0), RADII))
+        );
+        assert_eq!(moved.bounds(), Rect::new(15.0, 17.0, 40.0, 30.0));
+
+        let mut circle = PathBuilder::new();
+        circle.circle((5.0, 5.0), 5.0);
+        let moved = circle.build().transformed(&Matrix::translation(10.0, 0.0));
+        assert_eq!(moved.as_oval(), Some(Rect::new(10.0, 0.0, 10.0, 10.0)));
+    }
+
+    /// Under a scale, a mirror or a quarter turn the corners land on other
+    /// corners, and a quarter turn swaps each corner's radii, as the points
+    /// Skia maps would trace them.
+    #[test]
+    fn a_rect_staying_transform_moves_the_corners_with_their_radii() {
+        let path = round_rect_path(ROUND_RECT, RADII);
+        let scaled = path.transformed(&Matrix::scale(2.0, 0.5));
+        assert_eq!(
+            scaled.as_round_rect(),
+            Some((
+                Rect::new(20.0, 10.0, 80.0, 15.0),
+                [[2.0, 1.0], [6.0, 2.0], [10.0, 3.0], [14.0, 4.0]]
+            ))
+        );
+        let mirrored = path.transformed(&Matrix::scale(-1.0, 1.0));
+        assert_eq!(
+            mirrored.as_round_rect(),
+            Some((
+                Rect::new(-50.0, 20.0, 40.0, 30.0),
+                [RADII[1], RADII[0], RADII[3], RADII[2]]
+            ))
+        );
+        // A clockwise quarter turn takes (x, y) to (-y, x): the top left
+        // corner goes to the top right.
+        let turned = path.transformed(&Matrix::from_affine(0.0, 1.0, -1.0, 0.0, 0.0, 0.0));
+        let swapped = RADII.map(|[x, y]| [y, x]);
+        assert_eq!(
+            turned.as_round_rect(),
+            Some((
+                Rect::new(-50.0, 10.0, 30.0, 40.0),
+                [swapped[3], swapped[0], swapped[1], swapped[2]]
+            ))
+        );
+    }
+
+    /// Where Skia drops the shape: a turn that is not a quarter, a shear,
+    /// perspective, a flattening scale, and `addPath`, which `append` is.
+    #[test]
+    fn any_other_transform_or_an_append_makes_a_general_path() {
+        let path = round_rect_path(ROUND_RECT, RADII);
+        let mut perspective = Matrix::IDENTITY.to_flutter_array();
+        perspective[3] = 0.001;
+        for transform in [
+            Matrix::rotation(0.3),
+            Matrix::from_affine(1.0, 0.0, 0.5, 1.0, 0.0, 0.0),
+            Matrix::from_flutter_array(&perspective),
+            Matrix::scale(0.0, 1.0),
+        ] {
+            let moved = path.transformed(&transform);
+            assert_eq!((moved.as_oval(), moved.as_round_rect()), (None, None));
+        }
+        let mut appended = PathBuilder::new();
+        appended.append(&path, &Matrix::translation(5.0, 0.0));
+        assert_eq!(appended.build().as_round_rect(), None);
+    }
+
+    /// A transformed path holds the same verbs and weights as the path, its
+    /// points mapped: what `append` makes of it on an empty builder, without
+    /// the move `append` adds after a closed contour.
+    #[test]
+    fn a_transformed_path_maps_every_point() {
+        let mut built = PathBuilder::new();
+        built
+            .move_to((0.0, 0.0))
+            .line_to((10.0, 0.0))
+            .conic_to((10.0, 10.0), (0.0, 10.0), 0.5)
+            .close();
+        let path = built.build();
+        let transform = Matrix::rotation(0.4).then(&Matrix::scale(2.0, 3.0));
+        let mut appended = PathBuilder::new();
+        appended.append(&path, &transform);
+        let appended = appended.build();
+        let transformed = path.transformed(&transform);
+        let elements: Vec<PathElement> = transformed.elements().collect();
+        let appended_elements: Vec<PathElement> = appended.elements().collect();
+        assert_eq!(elements, appended_elements[..elements.len()]);
+        assert_eq!(transformed.bounds(), appended.bounds());
     }
 
     use super::*;

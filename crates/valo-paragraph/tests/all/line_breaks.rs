@@ -465,6 +465,7 @@ fn a_blank_lines_height_does_not_depend_on_the_fallback_faces_loaded() {
     let alone = blank_line_height(false);
     let beside_a_newline_face = blank_line_height(true);
     assert_close(beside_a_newline_face, alone);
-    // Three lines of Fira Sans: 0.935 + 0.265 of 16 px each.
-    assert_close(alone, 3.0 * 1.2 * 16.0);
+    // Three lines of Fira Sans, 0.935 + 0.265 of 16 px each, each rounded to a whole pixel as
+    // skparagraph rounds a line's height.
+    assert_close(alone, 3.0 * (1.2f32 * 16.0).round());
 }

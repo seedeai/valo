@@ -1,8 +1,8 @@
 //! Filter rendering: a filter tree (`filter_tree`) walked from its source
 //! out, each node over what the node beneath it made — Gaussian blurs
-//! (planned by `gaussian`), colour filters, drop shadows, a mask blur and
-//! its fill. A node made of passes goes through [`FilterPasses`], which
-//! touch no target; a fill is a target of its own (`render_to_snapshot`),
+//! (planned by `gaussian`), colour filters, drop shadows, matrices, a mask
+//! blur and its fill. A node made of passes goes through [`FilterPasses`],
+//! which touch no target; a fill is a target of its own (`render_to_snapshot`),
 //! Impeller's blend subpass. A node hands on a [`Snapshot`]: a texture of
 //! exactly what it made, and where that goes in the tree's space (a
 //! target's replay coordinates, or a draw's source space). A node's pass
@@ -25,9 +25,11 @@ use crate::pipelines::{Blend, PipelineBlend};
 use valo_geometry::{Color, Matrix, Rect};
 
 use super::draw_state::DrawState;
-use super::filter_output::{FilterOutput, Merge, RuntimeOutput, StyleClip};
+use super::filter_output::{FilterOutput, Merge, MovedOutput, RuntimeOutput, StyleClip};
 use super::filter_passes::FilterPasses;
-use super::filter_tree::{device_offset, Fill, Filter, FilterInput, FilterTree, StyleShape};
+use super::filter_tree::{
+    device_offset, tree_matrix, Fill, Filter, FilterInput, FilterTree, StyleShape,
+};
 use super::gaussian::{BlurBounds, BlurPlan};
 use super::layers::SourceSpace;
 use super::snapshot::{Placement, Snapshot};
@@ -195,6 +197,15 @@ impl Planner<'_> {
                 };
                 drop_shadow(input, shadow, device_offset(effect_transform, *offset))
             }
+            Filter::Matrix { matrix, sampling } => match tree_matrix(matrix, effect_transform) {
+                Some(transform) => FilterOutput::Moved(MovedOutput {
+                    input,
+                    transform,
+                    sampling: *sampling,
+                    limit: hints.output,
+                }),
+                None => FilterOutput::Snapshot(input),
+            },
             Filter::Runtime(shader) => {
                 let Some(inputs) = shader.effect.filter_inputs() else {
                     return self.render_shader_filter(shader, input, hints.output);

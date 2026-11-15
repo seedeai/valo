@@ -548,6 +548,8 @@ impl Writer<'_> {
             SpreadMode::Pad => {}
             SpreadMode::Repeat => attributes.push_str(r#" spreadMethod="repeat""#),
             SpreadMode::Reflect => attributes.push_str(r#" spreadMethod="reflect""#),
+            // SVG has no decal spread: `paints_natively` leaves such a gradient to a picture.
+            SpreadMode::Decal => return None,
         }
         let _ = write!(
             self.defs,

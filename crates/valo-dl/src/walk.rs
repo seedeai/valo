@@ -190,11 +190,9 @@ impl MatrixClipState {
                 if *floods_clip || backdrop.is_some() {
                     *clip_bounds
                 } else {
-                    let padding = paint.device_effect_padding(&self.transform());
-                    match scope_bounds.rect() {
-                        Some(rect) => Bounds::of(rect.expand(padding)).intersect(clip_bounds),
-                        None => *scope_bounds,
-                    }
+                    paint
+                        .device_effect_bounds(scope_bounds, &self.transform())
+                        .intersect(clip_bounds)
                 }
             }
             Op::DrawPaint { bounds, .. }

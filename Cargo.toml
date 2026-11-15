@@ -21,6 +21,7 @@ categories = ["graphics", "rendering::engine"]
 # version. valo-harness stays version-less on purpose: it is dev-only and a
 # version-less dev-dependency is stripped at publish instead of published.
 valo-geometry = { path = "crates/valo-geometry", version = "0.23.0" }
+valo-pathops = { path = "crates/valo-pathops", version = "0.23.0" }
 valo-dl = { path = "crates/valo-dl", version = "0.23.0" }
 valo-text = { path = "crates/valo-text", version = "0.23.0" }
 valo-paragraph = { path = "crates/valo-paragraph", version = "0.23.0" }

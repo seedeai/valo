@@ -477,7 +477,7 @@ fn paint_of(paint: &Paint) -> Option<PdfPaint> {
             x2: end.x,
             y2: end.y,
             transform: transform_of(local),
-            spread_method: spread_of(*spread),
+            spread_method: spread_of(*spread)?,
             stops: stops_of(stops),
             anti_alias: false,
         }
@@ -501,7 +501,7 @@ fn paint_of(paint: &Paint) -> Option<PdfPaint> {
                 cy: center.y,
                 cr: *radius,
                 transform: transform_of(local),
-                spread_method: spread_of(*spread),
+                spread_method: spread_of(*spread)?,
                 stops: stops_of(stops),
                 anti_alias: false,
             }
@@ -510,22 +510,21 @@ fn paint_of(paint: &Paint) -> Option<PdfPaint> {
         Shader::Sweep {
             center,
             start_angle,
+            end_angle,
             stops,
+            spread,
             local,
-        } => {
-            let start = start_angle.to_degrees();
-            SweepGradient {
-                cx: center.x,
-                cy: center.y,
-                start_angle: start,
-                end_angle: start + 360.0,
-                transform: transform_of(local),
-                spread_method: SpreadMethod::Pad,
-                stops: stops_of(stops),
-                anti_alias: false,
-            }
-            .into()
+        } => SweepGradient {
+            cx: center.x,
+            cy: center.y,
+            start_angle: start_angle.to_degrees(),
+            end_angle: end_angle.to_degrees(),
+            transform: transform_of(local),
+            spread_method: spread_of(*spread)?,
+            stops: stops_of(stops),
+            anti_alias: false,
         }
+        .into(),
         Shader::Image { .. } | Shader::Runtime(_) => return None,
     })
 }
@@ -639,11 +638,14 @@ fn stops_of(stops: &[valo::GradientStop]) -> Vec<Stop> {
         .collect()
 }
 
-fn spread_of(spread: SpreadMode) -> SpreadMethod {
+/// `spread_of` is PDF's spread for valo's; `None` for decal, which PDF has no way to say, so a
+/// decal gradient is drawn as pixels (`raster::needs_pixels`).
+fn spread_of(spread: SpreadMode) -> Option<SpreadMethod> {
     match spread {
-        SpreadMode::Pad => SpreadMethod::Pad,
-        SpreadMode::Repeat => SpreadMethod::Repeat,
-        SpreadMode::Reflect => SpreadMethod::Reflect,
+        SpreadMode::Pad => Some(SpreadMethod::Pad),
+        SpreadMode::Repeat => Some(SpreadMethod::Repeat),
+        SpreadMode::Reflect => Some(SpreadMethod::Reflect),
+        SpreadMode::Decal => None,
     }
 }
 

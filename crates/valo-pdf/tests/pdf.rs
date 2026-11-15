@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use valo::{Color, Context, DisplayList, DisplayListBuilder, MaskBlur, Paint, Point, Rect, Shader};
+use valo::{
+    Color, Context, DisplayList, DisplayListBuilder, GradientStop, MaskBlur, Matrix, Paint, Point,
+    Rect, Shader, SpreadMode,
+};
 use valo_paragraph::{DrawParagraphExt, ParagraphBuilder, TextStyle};
 use valo_pdf::{draw_page, PageSettings, PdfDocument};
 use valo_text::FontCollection;
@@ -127,4 +130,48 @@ fn b2() -> DisplayList {
         &Paint::from_color(Color::rgb(0.2, 0.4, 0.8)),
     );
     b.build()
+}
+
+/// PDF has no decal spread: a decal gradient goes in as a picture, see-through past its span,
+/// where a padded one stays a shading.
+#[test]
+fn a_decal_gradient_goes_in_as_a_picture() {
+    let Some(mut context) = context("a_decal_gradient_goes_in_as_a_picture") else {
+        return;
+    };
+    let gradient = |spread| {
+        let mut b = DisplayListBuilder::new();
+        b.draw_rect(
+            Rect::new(0.0, 0.0, 200.0, 100.0),
+            &Paint::from_shader(Shader::Linear {
+                start: Point::new(60.0, 0.0),
+                end: Point::new(140.0, 0.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::rgb(0.9, 0.2, 0.2),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::rgb(0.2, 0.2, 0.9),
+                    },
+                ],
+                spread,
+                local: Matrix::IDENTITY,
+            }),
+        );
+        b.build()
+    };
+    let padded = pdf_of(
+        &mut context,
+        vec![gradient(SpreadMode::Pad)],
+        [200.0, 100.0],
+    );
+    assert_eq!(images(&padded), 0, "a padded gradient is PDF's own");
+    let decal = pdf_of(
+        &mut context,
+        vec![gradient(SpreadMode::Decal)],
+        [200.0, 100.0],
+    );
+    assert_eq!(images(&decal), 1, "a decal gradient is a picture");
 }

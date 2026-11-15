@@ -15,7 +15,8 @@ submit    stats: cpu/plan/encode ms, draws, culled, passes, atlas churn, GPU tim
 
 | crate | role |
 |---|---|
-| `valo-geometry` | pure math: points, rects, paths, 4×4 matrices, strokes, color. No GPU, no unicode, no deps beyond glam |
+| `valo-geometry` | pure math: points, rects, paths and their boolean operations (`Path::combine`), 4×4 matrices, strokes, color. No GPU, no unicode, no deps beyond glam and `valo-pathops` |
+| `valo-pathops` | Skia's PathOps ported line for line, in Skia's names: `Op` and `Simplify`, giving Skia's results bit for bit (checked against cases recorded from real Skia). No deps |
 | `valo-dl` | recording: `DisplayListBuilder`, ops, paints, shaders, and walking a list (`DisplayList::walk`, a `DisplayListWalker` iterator keeping the transform and clips in force as a `MatrixClipState`, which gives an op's bounds and any ops alone in their place, as vector writers need). GPU-free and `Send + Sync` |
 | `valo-text` | fonts and their collections, fallback, the shaper, glyph raster, SDF, COLR: Skia's core and `skshaper`. GPU-free |
 | `valo-paragraph` | styled paragraphs: spans, bidi, wrapping, and recording them into a display list. Above `valo-dl`, so a style can hold a paint, as `skparagraph` sits above Skia's core |

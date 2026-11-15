@@ -70,7 +70,7 @@ export const FillRule = { NonZero: 0, EvenOdd: 1 } as const;
 export const ClipOp = { Intersect: 0, Difference: 1 } as const;
 
 /** Order of `types::spread_mode`: what a gradient does outside its own range. */
-export const SpreadMode = { Pad: 0, Repeat: 1, Reflect: 2 } as const;
+export const SpreadMode = { Pad: 0, Repeat: 1, Reflect: 2, Decal: 3 } as const;
 
 /** Order of `types::sampling`'s filter argument. */
 export const Filter = { Linear: 0, Nearest: 1 } as const;

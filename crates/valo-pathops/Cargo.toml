@@ -1,0 +1,13 @@
+[package]
+name = "valo-pathops"
+description = "Skia's PathOps for valo: boolean operations on paths, ported from Skia"
+version.workspace = true
+edition.workspace = true
+license = "MIT AND BSD-3-Clause"
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
