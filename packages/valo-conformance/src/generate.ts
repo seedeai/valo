@@ -747,8 +747,24 @@ const imagePattern = fc
     { type: "restore" },
   ]);
 
-const fixedTextParameters = fc
-  .record({
+/**
+ * A `maxWidth` that may condense the text: narrower than most of the strings
+ * at most sizes.
+ */
+const condensingMaximumWidth = fc.option(measure(30, 110), { nil: undefined });
+
+/**
+ * A `maxWidth` wider than any string here at any size and spacing, so the
+ * text is measured against it and never condensed. Stroked text gets this
+ * one: condensed, Valo strokes it as Impeller does, rastered upright at one
+ * scale and squeezed, where Canvas2D strokes the squeezed outline, which
+ * would fail most runs and mask the rest. The README's known divergences say
+ * why it is kept.
+ */
+const uncondensingMaximumWidth = fc.option(measure(400, 500), { nil: undefined });
+
+function fixedTextParameters(maximumWidth: fc.Arbitrary<number | undefined>) {
+  return fc.record({
     color,
     text: fc.constantFrom("Valo", "Canvas", "fuzz test", "A quick fox", "Valo ", "a\tb", "a\nb"),
     size: fc.integer({ min: 12, max: 34 }),
@@ -766,7 +782,7 @@ const fixedTextParameters = fc
       "ideographic",
       "bottom",
     ),
-    maximumWidth: fc.option(measure(30, 110), { nil: undefined }),
+    maximumWidth,
     letterSpacing: measure(-1, 2),
     wordSpacing: measure(0, 3),
     translationX: measure(-8, 8),
@@ -784,9 +800,11 @@ const fixedTextParameters = fc
       "multiply",
     ),
   });
+}
 
 function fixedText(stroke: boolean): fc.Arbitrary<CommandBlock> {
-  return fixedTextParameters.map((text): CommandBlock => [
+  const maximumWidth = stroke ? uncondensingMaximumWidth : condensingMaximumWidth;
+  return fixedTextParameters(maximumWidth).map((text): CommandBlock => [
     { type: "save" },
     { type: "translate", x: text.translationX, y: text.translationY },
     { type: "rotate", radians: text.rotation },
