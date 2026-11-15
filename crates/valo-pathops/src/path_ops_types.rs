@@ -603,13 +603,13 @@ pub(crate) fn sk_d_interp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 /* Returns -1 if negative, 0 if zero, 1 if positive
-*/
+ */
 
 /* Returns 0 if negative, 1 if zero, 2 if positive
-*/
+ */
 
 /* Returns 1 if negative, 2 if zero, 4 if positive
-*/
+ */
 
 pub(crate) fn sk_pin_t(t: f64) -> f64 {
     if precisely_less_than_zero(t) {

@@ -183,12 +183,7 @@ impl SkPathBuilder {
     }
 
     /// `cubic_to` adds a cubic through control points `pt1` and `pt2` to `pt3`.
-    pub fn cubic_to(
-        &mut self,
-        pt1: SkPoint,
-        pt2: SkPoint,
-        pt3: SkPoint,
-    ) -> &mut SkPathBuilder {
+    pub fn cubic_to(&mut self, pt1: SkPoint, pt2: SkPoint, pt3: SkPoint) -> &mut SkPathBuilder {
         self.ensure_move();
         self.pts.push(pt1);
         self.pts.push(pt2);
