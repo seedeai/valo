@@ -40,6 +40,7 @@ mod shader_filters;
 mod shadows;
 mod shared_device;
 mod split_targets;
+mod stroke_overdraw;
 mod text_group_alpha;
 mod text_paints;
 

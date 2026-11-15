@@ -122,6 +122,8 @@ pub(super) struct StencilWrite {
 pub(super) enum Marking {
     Fan(FillRule),
     Strip,
+    /// A strip zeroing every sample it lands on: the reset after a stroke.
+    StripReset,
 }
 
 /// `Cover` is what a draw covers.
@@ -146,7 +148,10 @@ pub(super) enum Role {
     Fill,
     /// A quad drawn where its stencil was marked, resetting it.
     StencilledFill,
-    /// A depth-tested triangle strip.
+    /// A depth-tested triangle strip drawing each sample once, however
+    /// often it overlaps itself, as Impeller draws a stroke
+    /// (`GeometryResult::Mode::kPreventOverdraw`): it counts what it draws
+    /// in the stencil, and its strip again resets that count after it.
     Stroke,
     /// Depth-tested glyph quads.
     Glyphs,
@@ -244,6 +249,7 @@ impl<'a> StepEmitter<'a> {
         } = entity;
         let scissor = clip.scissor(&context.area)?;
         let stencil = stencil.map(|stencil| self.stencil(context, stencil));
+        let stencil_reset = self.stencil_reset(context, role, &cover);
         let geometry = match cover {
             Cover::Quad { transform, rect } => {
                 shading.record.set(slot::RECT, rect_payload(&rect));
@@ -271,6 +277,7 @@ impl<'a> StepEmitter<'a> {
         Some(Draw {
             scissor,
             stencil,
+            stencil_reset,
             key: PipelineKey::new(self.format, blend, kind),
             uniforms: self.host.alloc_uniform(shading.record.bytes()),
             bindings: shading.bindings,
@@ -289,12 +296,35 @@ impl<'a> StepEmitter<'a> {
                 even_odd: rule == FillRule::EvenOdd,
             },
             Marking::Strip => PipelineKind::StencilStrip,
+            Marking::StripReset => PipelineKind::StencilStripReset,
         };
         Stencil {
             key: PipelineKey::new(self.format, PipelineBlend::SrcOver, kind),
             uniforms: self.host.alloc_uniform(record.bytes()),
             mesh: write.mesh,
         }
+    }
+
+    /// `stencil_reset` is the reset a draw of `role` covering `cover` needs
+    /// after it: a stroke's strip zeroing what the stroke counted, as
+    /// Impeller restores after a geometry that prevents overdraw. Impeller
+    /// restores over the stroke's coverage rectangle; the strip itself is
+    /// every sample the stroke could have counted.
+    fn stencil_reset(
+        &mut self,
+        context: &DrawContext,
+        role: Role,
+        cover: &Cover,
+    ) -> Option<Stencil> {
+        let (Role::Stroke, Cover::Mesh { transform, mesh }) = (role, cover) else {
+            return None;
+        };
+        let reset = StencilWrite {
+            transform: *transform,
+            mesh: *mesh,
+            marking: Marking::StripReset,
+        };
+        Some(self.stencil(context, reset))
     }
 
     /// `filter_draw` is the one draw of a filter pass into a texture of
@@ -327,6 +357,7 @@ impl<'a> StepEmitter<'a> {
         Draw {
             scissor: Scissor::whole(extent),
             stencil: None,
+            stencil_reset: None,
             key: PipelineKey::new(
                 format,
                 PipelineBlend::SrcOver,

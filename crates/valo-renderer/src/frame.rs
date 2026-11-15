@@ -30,11 +30,9 @@ impl FramePlan {
             .iter()
             .flat_map(|pass| pass.target.draws())
             .flat_map(|draw| {
-                draw.stencil
-                    .as_ref()
-                    .map(|stencil| stencil.key)
-                    .into_iter()
-                    .chain([draw.key])
+                let stencil = draw.stencil.as_ref().map(|stencil| stencil.key);
+                let reset = draw.stencil_reset.as_ref().map(|reset| reset.key);
+                stencil.into_iter().chain([draw.key]).chain(reset)
             })
     }
 }
@@ -116,7 +114,8 @@ impl Scissor {
 
 /// `Draw` is one draw as the encoder runs it, built whole and moved whole,
 /// Impeller's `Entity`: the stencil its cover tests, if it has one, drawn
-/// right before it, then the draw itself.
+/// right before it, then the draw itself, then the reset of what it counted
+/// in the stencil, if it counted anything.
 #[derive(Clone)]
 pub(crate) struct Draw {
     /// The texels the draw and its stencil may write.
@@ -124,6 +123,10 @@ pub(crate) struct Draw {
     /// The stencil half of stencil-then-cover: a path's fan wound by its
     /// rule, or a stroke's strip counted.
     pub stencil: Option<Stencil>,
+    /// The stencil reset drawn right after it: a stroke's strip again,
+    /// zeroing what the stroke counted to draw each sample once
+    /// (Impeller's overdraw-prevention restore).
+    pub stencil_reset: Option<Stencil>,
     /// The pipeline the draw runs.
     pub key: PipelineKey,
     /// Its uniform record.
@@ -137,8 +140,8 @@ pub(crate) struct Draw {
     pub z: f32,
 }
 
-/// `Stencil` is the stencil write a draw's cover tests: its pipeline, its
-/// record and its mesh.
+/// `Stencil` is a stencil write drawn with a draw — the one its cover
+/// tests, or the reset after it: its pipeline, its record and its mesh.
 #[derive(Clone)]
 pub(crate) struct Stencil {
     pub key: PipelineKey,
