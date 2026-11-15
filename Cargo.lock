@@ -3252,6 +3252,7 @@ version = "0.23.0"
 dependencies = [
  "glam",
  "serde",
+ "valo-pathops",
 ]
 
 [[package]]
@@ -3277,6 +3278,10 @@ dependencies = [
  "valo-geometry",
  "valo-text",
 ]
+
+[[package]]
+name = "valo-pathops"
+version = "0.23.0"
 
 [[package]]
 name = "valo-pdf"

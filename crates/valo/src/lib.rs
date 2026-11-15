@@ -49,8 +49,8 @@ pub use valo_dl::{
 };
 pub use valo_geometry::{
     constrain_radii, constrain_radii_elliptical, dash_contours, local_tolerance, stroke_contains,
-    Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathSample, Point,
-    Rect, Size, Stroke, Winding,
+    Cap, Color, ContourMeasure, Dash, FillRule, Join, Matrix, Path, PathBuilder, PathOperation,
+    PathOperationError, PathSample, Point, Rect, Size, Stroke, Winding,
 };
 pub use valo_paragraph::{
     Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, LeadingDistribution, Line,
