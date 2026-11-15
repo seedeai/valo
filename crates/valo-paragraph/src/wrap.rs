@@ -901,7 +901,7 @@ fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<LineHeights
 /// `LineHeights` is a line's room above and below its baseline, as its text asks for it
 /// (`ascent`, `descent`) and as its fonts alone have it, at no height multiplier and with no
 /// line gap (`raw_ascent`, `raw_descent`): skparagraph's `InternalLineMetrics`, its correct and
-/// raw sets. A line is `ascent + descent` tall.
+/// raw sets. A line is `ascent + descent` tall, rounded to a whole pixel ([`height`](Self::height)).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LineHeights {
     pub ascent: f32,
@@ -919,9 +919,10 @@ impl LineHeights {
         raw_descent: 4.0,
     };
 
-    /// `height` is how tall the line is.
+    /// `height` is how tall the line is, its room rounded to the nearest whole pixel, as
+    /// skparagraph's `InternalLineMetrics::height` rounds it; the baseline keeps its exact place.
     pub fn height(&self) -> f32 {
-        self.ascent + self.descent
+        (f64::from(self.ascent) + f64::from(self.descent)).round() as f32
     }
 
     /// `max` is room for both: each side the larger of the two, as a line takes its runs'.

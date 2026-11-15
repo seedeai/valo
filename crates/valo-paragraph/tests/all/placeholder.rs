@@ -137,7 +137,8 @@ fn a_tall_placeholder_makes_its_line_tall_enough() {
     let line = &p.lines()[0];
     assert_eq!(line.ascent, 100.0, "the box rises 100 above the baseline");
     assert_eq!(line.descent, descent);
-    assert!(p.height() >= 100.0 + descent && ascent < 100.0);
+    assert_eq!(p.height(), (100.0 + descent).round(), "the line's height, to the whole pixel");
+    assert!(ascent < 100.0);
     let rect = p.placeholder_boxes()[0].rect;
     assert!(rect.y >= 0.0, "the box is inside the paragraph");
 }

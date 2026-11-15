@@ -721,7 +721,7 @@ fn ellipsis_without_max_lines_cuts_at_the_first_overflowing_line() {
     let ellipsis = ellipsized.runs.last().expect("the ellipsis run");
     assert!(ellipsis.glyphs.iter().all(|g| g.cluster >= 5));
     assert!(ellipsized.width <= 50.0, "{} fits", ellipsized.width);
-    let line_height = |line: &valo_paragraph::Line| line.ascent + line.descent;
+    let line_height = |line: &valo_paragraph::Line| (line.ascent + line.descent).round();
     assert_close(p.height(), line_height(&lines[0]) + line_height(ellipsized));
 }
 
