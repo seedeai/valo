@@ -6,6 +6,7 @@
 mod font_fallback;
 mod font_synthesis;
 mod line_breaks;
+mod long_words;
 mod paints;
 mod paragraph;
 mod placeholder;
