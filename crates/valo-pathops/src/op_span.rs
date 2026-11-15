@@ -884,9 +884,8 @@ impl SkOpSpan {
                 break;
             }
             if next.segment(state) == segment {
-                let span: SkOpSpan;
                 let base = next.span(state);
-                if !ordered {
+                let span = if !ordered {
                     let span_end_pt_t = state[self]
                         .next
                         .expect("a span has a next span")
@@ -899,18 +898,18 @@ impl SkOpSpan {
                     if start.span(state).up_castable(state).is_none() {
                         return false;
                     }
-                    span = start.span(state).up_cast();
+                    start.span(state).up_cast()
                 } else if flipped {
                     let Some(prev) = base.prev(state) else {
                         return false;
                     };
-                    span = prev;
+                    prev
                 } else {
                     if base.up_castable(state).is_none() {
                         return false;
                     }
-                    span = base.up_cast();
-                }
+                    base.up_cast()
+                };
                 self.insert_coincidence(state, span);
                 return true;
             }

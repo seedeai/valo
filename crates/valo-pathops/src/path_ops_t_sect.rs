@@ -1617,10 +1617,7 @@ impl SkTSect {
             if Some(work) == *last_ptr {
                 return first;
             }
-            match heap[work].next {
-                Some(next) => work = next,
-                None => return None,
-            }
+            work = heap[work].next?;
         }
         if last_candidate.is_some() {
             *last_ptr = last_candidate;

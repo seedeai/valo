@@ -221,8 +221,8 @@ impl HostBuffer {
 
     /// `effect_bind_group_layout` returns the group-2 layout for a runtime effect's uniforms.
     ///
-    /// Binding 0 is a dynamic-offset uniform buffer [`EFFECT_UNIFORM_SIZE`] long, read from the
-    /// same blocks as the draw records.
+    /// Binding 0 is a dynamic-offset uniform buffer [`valo_dl::MAX_UNIFORM_BYTES`] long, read from
+    /// the same blocks as the draw records.
     pub fn effect_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.factory.effect_layout
     }
