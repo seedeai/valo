@@ -186,42 +186,32 @@ impl SkDConic {
     pub(crate) fn sub_divide(&self, t1: f64, t2: f64) -> SkDConic {
         let coords = self.pts.coords();
         let (px, py) = (&coords[0..], &coords[1..]);
-        let ax;
-        let ay;
-        let az;
-        if t1 == 0.0 {
-            ax = self.pts[0].x;
-            ay = self.pts[0].y;
-            az = 1.0;
+        let (ax, ay, az) = if t1 == 0.0 {
+            (self.pts[0].x, self.pts[0].y, 1.0)
         } else if t1 != 1.0 {
-            ax = conic_eval_numerator(px, self.weight, t1);
-            ay = conic_eval_numerator(py, self.weight, t1);
-            az = conic_eval_denominator(self.weight, t1);
+            (
+                conic_eval_numerator(px, self.weight, t1),
+                conic_eval_numerator(py, self.weight, t1),
+                conic_eval_denominator(self.weight, t1),
+            )
         } else {
-            ax = self.pts[2].x;
-            ay = self.pts[2].y;
-            az = 1.0;
-        }
+            (self.pts[2].x, self.pts[2].y, 1.0)
+        };
         let mid_t = (t1 + t2) / 2.0;
         let dx = conic_eval_numerator(px, self.weight, mid_t);
         let dy = conic_eval_numerator(py, self.weight, mid_t);
         let dz = conic_eval_denominator(self.weight, mid_t);
-        let cx;
-        let cy;
-        let cz;
-        if t2 == 1.0 {
-            cx = self.pts[2].x;
-            cy = self.pts[2].y;
-            cz = 1.0;
+        let (cx, cy, cz) = if t2 == 1.0 {
+            (self.pts[2].x, self.pts[2].y, 1.0)
         } else if t2 != 0.0 {
-            cx = conic_eval_numerator(px, self.weight, t2);
-            cy = conic_eval_numerator(py, self.weight, t2);
-            cz = conic_eval_denominator(self.weight, t2);
+            (
+                conic_eval_numerator(px, self.weight, t2),
+                conic_eval_numerator(py, self.weight, t2),
+                conic_eval_denominator(self.weight, t2),
+            )
         } else {
-            cx = self.pts[0].x;
-            cy = self.pts[0].y;
-            cz = 1.0;
-        }
+            (self.pts[0].x, self.pts[0].y, 1.0)
+        };
         let bx = 2.0 * dx - (ax + cx) / 2.0;
         let by = 2.0 * dy - (ay + cy) / 2.0;
         let mut bz = 2.0 * dz - (az + cz) / 2.0;

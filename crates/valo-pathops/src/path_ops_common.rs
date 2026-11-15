@@ -363,8 +363,5 @@ pub(crate) fn handle_coincidence(
         }
     }
     calc_angles(state, contour_list);
-    if !sort_angles(state, contour_list) {
-        return false;
-    }
-    true
+    sort_angles(state, contour_list)
 }

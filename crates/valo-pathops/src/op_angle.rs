@@ -524,20 +524,18 @@ impl SkOpAngle {
 
     pub(crate) fn check_parallel(self, state: &mut SkOpGlobalState, rh: SkOpAngle) -> bool {
         let mut scratch = [SkDVector::default(); 2];
-        let sweep;
-        let tweep;
-        if state[self].part.is_ordered() {
-            sweep = state[self].part.sweep[0];
+        let sweep = if state[self].part.is_ordered() {
+            state[self].part.sweep[0]
         } else {
             scratch[0] = state[self].part.curve[1] - state[self].part.curve[0];
-            sweep = scratch[0];
-        }
-        if state[rh].part.is_ordered() {
-            tweep = state[rh].part.sweep[0];
+            scratch[0]
+        };
+        let tweep = if state[rh].part.is_ordered() {
+            state[rh].part.sweep[0]
         } else {
             scratch[1] = state[rh].part.curve[1] - state[rh].part.curve[0];
-            tweep = scratch[1];
-        }
+            scratch[1]
+        };
         let s0xt0 = sweep.cross_check(&tweep);
         if self.tangents_diverge(state, rh, s0xt0) {
             return s0xt0 < 0.0;
@@ -851,8 +849,7 @@ impl SkOpAngle {
                     computed_end.t(state)
                 });
             let mut t = if test_ascends { 0.0 } else { 1.0 };
-            for idx2 in 0..i.used() as usize {
-                let test_t = i[0][idx2];
+            for &test_t in i[0].iter().take(i.used() as usize) {
                 if !approximately_between_orderable(t_start, test_t, t_end) {
                     continue;
                 }
