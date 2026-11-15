@@ -239,6 +239,54 @@ const nonFiniteArguments: CanvasScene[] = [
 ];
 
 /**
+ * The smallest Gaussian sigma, in device pixels, that Valo blurs with — and
+ * Impeller, whose blur Valo keeps. Impeller's `CalculateBlurRadius` makes a
+ * radius of (σ − 0.5)·√3 from a sigma `ScaleSigma` has shrunk by a fraction of
+ * a percent, and `ScaleBlurRadius` rounds it to whole taps, so up to σ ≈ 0.7908
+ * the kernel is a single tap and the draw is left as it is. Skia, and so
+ * Canvas2D in Chrome, blurs every sigma past 0.03. This sits a little past
+ * Impeller's edge, so float rounding at the edge never decides a run.
+ */
+export const smallestBlurringSigma = 0.8;
+
+/**
+ * Blurs below `smallestBlurringSigma`, as a CSS filter and as a shadow,
+ * whose sigma is half its blur. Valo leaves each draw as it is, so each is
+ * held to Canvas2D drawing the same scene unblurred.
+ */
+export interface UnblurredScene {
+  scene: CanvasScene;
+  unblurred: CanvasScene;
+}
+
+function filterBlurScene(pixels: number): CanvasScene {
+  return scene(`filter-blur-${pixels}px`, [
+    { type: "setFilter", value: `blur(${pixels}px)` },
+    { type: "setFillColor", color: "#ff4f79" },
+    { type: "fillRect", x: 30, y: 32, width: 62, height: 54 },
+  ]);
+}
+
+function shadowBlurScene(pixels: number): CanvasScene {
+  return scene(`shadow-blur-${pixels}px`, [
+    { type: "setShadow", color: "#d2ff45", blur: pixels, offsetX: 6, offsetY: 5 },
+    { type: "setFillColor", color: "#ff4f79" },
+    { type: "fillRect", x: 34, y: 34, width: 52, height: 48 },
+  ]);
+}
+
+export const unblurredScenes: UnblurredScene[] = [
+  ...[0.25, 0.63, 0.79].map((pixels) => ({
+    scene: filterBlurScene(pixels),
+    unblurred: filterBlurScene(0),
+  })),
+  ...[0.5, 1.26, 1.58].map((pixels) => ({
+    scene: shadowBlurScene(pixels),
+    unblurred: shadowBlurScene(0),
+  })),
+];
+
+/**
  * Sigma sweeps across `blur_scale`'s switch to a downsampled blur, which is at
  * 4√2 ≈ 5.657 for a CSS filter and at twice that for `shadowBlur`, since a
  * shadow's sigma is half its blur.

@@ -45,8 +45,21 @@ export async function createConformanceHarness(): Promise<ConformanceHarness> {
 }
 
 export async function renderBoth(harness: ConformanceHarness, scene: CanvasScene): Promise<void> {
-  renderNative(harness.nativeCanvas, scene, harness.nativeAssets);
-  renderValo(harness.valoContext, scene, harness.valoAssets);
+  await renderEach(harness, scene, scene);
+}
+
+/**
+ * `renderEach` draws `native` with Canvas2D and `valo` with Valo: for a scene
+ * where Valo keeps an answer of its own, `native` is the scene Canvas2D draws
+ * that answer with.
+ */
+export async function renderEach(
+  harness: ConformanceHarness,
+  native: CanvasScene,
+  valo: CanvasScene,
+): Promise<void> {
+  renderNative(harness.nativeCanvas, native, harness.nativeAssets);
+  renderValo(harness.valoContext, valo, harness.valoAssets);
   await settlePresentation();
 }
 
