@@ -21,46 +21,86 @@ pub struct Wrapped {
     pub max_intrinsic: f32,
 }
 
-/// Cluster widths + prefix sums, built once per layout: every width query
-/// is a binary search instead of a scan over all glyphs — the wrapper walk
-/// is O(n log n) instead of O(n²) (Skia wraps over a cluster table too).
+/// The paragraph's cluster table, in text order, built once per layout: each cluster's first
+/// byte, with prefix sums of the widths and glyph counts, so every width query is a binary
+/// search instead of a scan over all glyphs — the wrapper walk is O(n log n) instead of O(n²)
+/// (Skia wraps over a cluster table too). A line breaks inside a word only between clusters.
 pub(crate) struct Measure {
     bytes: Vec<usize>,
     prefix: Vec<f32>,
+    glyph_prefix: Vec<usize>,
+    placeholders: Vec<bool>,
 }
 
 impl Measure {
     pub(crate) fn new(runs: &[ShapedRun]) -> Self {
-        let mut widths: Vec<(usize, f32)> = runs
+        let mut glyphs: Vec<(usize, f32, bool)> = runs
             .iter()
-            .flat_map(|run| run.glyphs.iter())
-            .map(|g| (g.cluster, g.x_advance))
+            .flat_map(|run| {
+                let placeholder = run.placeholder.is_some();
+                run.glyphs
+                    .iter()
+                    .map(move |g| (g.cluster, g.x_advance, placeholder))
+            })
             .collect();
-        widths.sort_by_key(|&(cluster, _)| cluster);
-        let mut bytes = Vec::with_capacity(widths.len());
-        let mut prefix = vec![0.0f32];
-        for (cluster, advance) in widths {
-            if bytes.last() == Some(&cluster) {
-                *prefix.last_mut().expect("nonempty") += advance;
-            } else {
-                bytes.push(cluster);
-                let total = prefix.last().copied().expect("nonempty") + advance;
-                prefix.push(total);
-            }
+        glyphs.sort_by_key(|&(cluster, _, _)| cluster);
+        let mut measure = Self {
+            bytes: Vec::with_capacity(glyphs.len()),
+            prefix: vec![0.0],
+            glyph_prefix: vec![0],
+            placeholders: Vec::with_capacity(glyphs.len()),
+        };
+        for (cluster, advance, placeholder) in glyphs {
+            measure.add_glyph(cluster, advance, placeholder);
         }
-        Self { bytes, prefix }
+        measure
+    }
+
+    fn add_glyph(&mut self, cluster: usize, advance: f32, placeholder: bool) {
+        if self.bytes.last() != Some(&cluster) {
+            self.bytes.push(cluster);
+            self.placeholders.push(placeholder);
+            self.prefix.push(*self.prefix.last().expect("nonempty"));
+            self.glyph_prefix
+                .push(*self.glyph_prefix.last().expect("nonempty"));
+        }
+        *self.prefix.last_mut().expect("nonempty") += advance;
+        *self.glyph_prefix.last_mut().expect("nonempty") += 1;
     }
 
     /// Total advance of clusters starting in `[start, end)`.
     pub(crate) fn width(&self, start: usize, end: usize) -> f32 {
-        let a = self.bytes.partition_point(|&b| b < start);
-        let b = self.bytes.partition_point(|&b| b < end);
-        self.prefix[b] - self.prefix[a]
+        self.prefix[self.index(end)] - self.prefix[self.index(start)]
+    }
+
+    /// The number of glyphs of the clusters starting in `[start, end)`.
+    fn glyphs(&self, start: usize, end: usize) -> usize {
+        self.glyph_prefix[self.index(end)] - self.glyph_prefix[self.index(start)]
+    }
+
+    /// The index of the first cluster starting at or after `byte`.
+    fn index(&self, byte: usize) -> usize {
+        self.bytes.partition_point(|&b| b < byte)
+    }
+
+    /// The clusters starting in `[start, end)`, each as its byte range (up to the next
+    /// cluster's start, or `end` for the last) and whether it is a placeholder.
+    fn clusters(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> impl DoubleEndedIterator<Item = (Range<usize>, bool)> + '_ {
+        let (first, past) = (self.index(start), self.index(end));
+        (first..past).map(move |index| {
+            let next = self.bytes.get(index + 1).copied().unwrap_or(end).min(end);
+            (self.bytes[index]..next, self.placeholders[index])
+        })
     }
 }
 
 /// Greedy UAX #14 wrapping over the endless-line shaping: walk
-/// break opportunities, commit a line at the last one that still fit.
+/// break opportunities, commit a line at the last one that still fit, or inside the word
+/// that overflows as skparagraph's `TextWrapper` breaks one (see [`Overflow`]).
 /// Trailing whitespace rides the line and normally does not count toward its
 /// width. Canvas-style callers can preserve its advance.
 /// Min/max intrinsic widths ride the same walk, which goes on over the text
@@ -89,16 +129,28 @@ pub fn wrap_lines(
             preserve_trailing_whitespace,
         );
         if !full {
-            if measured_width(text, &measure, start..at, preserve_trailing_whitespace) > max_width
-                && committed > start
+            // A word wider than a line takes several, so one word can end several lines.
+            while !full
+                && start < at
+                && measured_width(text, &measure, start..at, preserve_trailing_whitespace)
+                    > max_width
             {
-                ranges.push(start..committed);
-                start = committed;
+                let overflow = Overflow {
+                    line_start: start,
+                    word: committed.max(start)..at,
+                    ellipsized: limit.ellipsizes_line(ranges.len() + 1),
+                };
+                let end =
+                    overflow.line_end(text, &measure, max_width, preserve_trailing_whitespace);
+                ranges.push(start..end);
+                start = end;
                 full = limit.is_reached(ranges.len(), LineEnd::Soft);
             }
             // Re-check the limit: the overflow push above may have just reached it
             // (one iteration can otherwise push TWICE and overshoot max_lines).
-            if kind == unicode_linebreak::BreakOpportunity::Mandatory && !full {
+            // A line the overflow ended with this word's whitespace, the break too, has no
+            // more to end here.
+            if kind == unicode_linebreak::BreakOpportunity::Mandatory && !full && start < at {
                 ranges.push(start..at);
                 start = at;
                 full = limit.is_reached(ranges.len(), LineEnd::Hard);
@@ -156,9 +208,11 @@ fn line_breaks(
 /// `max_lines`, after the first line that overflows the width (Flutter's `ellipsis` contract).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineLimit {
-    /// At most this many lines; `usize::MAX` for no limit.
-    Lines(usize),
-    /// Lines a hard break ends go on; the first one a soft break ends is the last.
+    /// At most `count` lines (`usize::MAX` for no limit), the last one cut ending with an
+    /// ellipsis when `ellipsized`.
+    Lines { count: usize, ellipsized: bool },
+    /// Lines a hard break ends go on; the first one a soft break ends is the last, and ends
+    /// with an ellipsis.
     FirstOverflow,
 }
 
@@ -175,23 +229,150 @@ impl LineLimit {
     pub fn of(style: &ParagraphStyle) -> Self {
         let ellipsized = style.ellipsis.as_deref().is_some_and(|e| !e.is_empty());
         match style.max_lines {
-            Some(lines) => Self::Lines(lines.max(1) as usize),
+            Some(lines) => Self::Lines {
+                count: lines.max(1) as usize,
+                ellipsized,
+            },
             None if ellipsized => Self::FirstOverflow,
-            None => Self::Lines(usize::MAX),
+            None => Self::Lines {
+                count: usize::MAX,
+                ellipsized: false,
+            },
         }
     }
 
     fn is_reached(self, lines: usize, end: LineEnd) -> bool {
         match self {
-            Self::Lines(limit) => lines >= limit,
+            Self::Lines { count, .. } => lines >= count,
             Self::FirstOverflow => end == LineEnd::Soft,
+        }
+    }
+
+    /// `ellipsizes_line` is whether the line numbered `line` (from 1) ends with an ellipsis if
+    /// a soft break cuts it: skparagraph's `needEllipsis` in `TextWrapper::breakTextIntoLines`.
+    fn ellipsizes_line(self, line: usize) -> bool {
+        match self {
+            Self::Lines { count, ellipsized } => ellipsized && line >= count,
+            Self::FirstOverflow => true,
         }
     }
 
     /// `never_soft_wraps` is whether a soft break always ends the paragraph rather than
     /// starting a line, as on a single line or at an ellipsis without `max_lines`.
     fn never_soft_wraps(self) -> bool {
-        matches!(self, Self::Lines(1) | Self::FirstOverflow)
+        matches!(self, Self::Lines { count: 1, .. } | Self::FirstOverflow)
+    }
+}
+
+/// `Overflow` is a line that a word overflows: where the line starts, and the word from the
+/// break opportunity before it, or from the line's start when the line starts inside it.
+///
+/// [`Self::line_end`] ends the line as skparagraph's `TextWrapper::lookAhead` and
+/// `moveForward` do. A line ends before the word, unless the word is too long for a line or
+/// the line ends with an ellipsis: then it takes the clusters of the word that fit, so a word
+/// wider than its line breaks between clusters, as many times as it takes.
+struct Overflow {
+    line_start: usize,
+    word: Range<usize>,
+    /// The line ends with an ellipsis if it is cut.
+    ellipsized: bool,
+}
+
+impl Overflow {
+    fn line_end(
+        &self,
+        text: &str,
+        measure: &Measure,
+        max_width: f32,
+        preserve_trailing_whitespace: bool,
+    ) -> usize {
+        let content_end = content_end(text, &self.word, preserve_trailing_whitespace);
+        let Some((overflowing, placeholder)) =
+            self.overflowing_cluster(measure, content_end, max_width)
+        else {
+            return self.word.end;
+        };
+        let end = self.kept_end(text, measure, overflowing, placeholder, max_width);
+        // The whitespace after a line's last word rides the line as its ghosts, the next line
+        // starting after it (`TextWrapper::trimStartSpaces`).
+        if end >= content_end {
+            self.word.end
+        } else {
+            end
+        }
+    }
+
+    /// `kept_end` is where the line's text ends, given the first cluster of the word that
+    /// overflows it.
+    fn kept_end(
+        &self,
+        text: &str,
+        measure: &Measure,
+        overflowing: Range<usize>,
+        placeholder: bool,
+        max_width: f32,
+    ) -> usize {
+        let line_is_empty = self.word.start == self.line_start;
+        if placeholder {
+            // A placeholder never breaks: alone on a line it overflows, it stays there.
+            return if line_is_empty {
+                overflowing.end
+            } else {
+                self.word.start
+            };
+        }
+        let fitted_end = overflowing.start;
+        let too_long_cluster = measure.width(overflowing.start, overflowing.end) > max_width;
+        // skparagraph breaks a too-long word on a line that holds words before it only when
+        // more than one glyph of it fits there; otherwise the word starts the next line.
+        let too_long_word = too_long_cluster
+            || (self.is_too_long(text, measure, &overflowing, max_width)
+                && (line_is_empty || measure.glyphs(self.word.start, fitted_end) > 1));
+        if !line_is_empty && !too_long_word && !self.ellipsized {
+            return self.word.start;
+        }
+        // A cluster wider than any line goes on this one, after what fits.
+        if too_long_cluster {
+            overflowing.end
+        } else {
+            fitted_end
+        }
+    }
+
+    /// The first cluster of the word that does not fit on the line, and whether it is a
+    /// placeholder; `None` when the whole word fits.
+    fn overflowing_cluster(
+        &self,
+        measure: &Measure,
+        content_end: usize,
+        max_width: f32,
+    ) -> Option<(Range<usize>, bool)> {
+        measure
+            .clusters(self.word.start, content_end)
+            .find(|(cluster, _)| measure.width(self.line_start, cluster.end) > max_width)
+    }
+
+    /// `is_too_long` is whether the word is wider than a line, as skparagraph's `lookAhead`
+    /// measures it: up to its trailing whitespace, or, when a break follows the word directly,
+    /// up to its last cluster, which skparagraph's walk stops before
+    /// (`Cluster::isSoftBreak` is a break after the cluster).
+    fn is_too_long(
+        &self,
+        text: &str,
+        measure: &Measure,
+        overflowing: &Range<usize>,
+        max_width: f32,
+    ) -> bool {
+        let trimmed_end = trimmed_end(text, &self.word);
+        let measured_end = if trimmed_end < self.word.end {
+            trimmed_end
+        } else {
+            measure
+                .clusters(self.word.start, self.word.end)
+                .next_back()
+                .map_or(self.word.start, |(last, _)| last.start)
+        };
+        measure.width(self.word.start, measured_end.max(overflowing.start)) > max_width
     }
 }
 
@@ -436,9 +617,11 @@ fn place_line(
         .unwrap_or(0.0);
     let drawn_end = drawn_end(text, line);
     let (content_end, placed_end) = match ellipsis {
-        // The ellipsis replaces the ghosts too (skparagraph's `TextLine::createEllipsis`).
+        // The ellipsis follows the line's trailing whitespace when it fits after it, and
+        // replaces the ghosts too (skparagraph's `TextWrapper::breakTextIntoLines` restores the
+        // break before `TextLine::createEllipsis` takes clusters off the end).
         Some(_) => {
-            let end = fit_for_ellipsis(runs, line, drawn_end, ellipsis_width);
+            let end = fit_for_ellipsis(runs, line, line.range.end, ellipsis_width);
             (end, end)
         }
         None => (drawn_end, line.range.end),
