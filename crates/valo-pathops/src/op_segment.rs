@@ -257,21 +257,21 @@ impl SkOpSegment {
             &mut opp_max_winding,
             &mut opp_sum_winding,
         );
-        let mi_from;
-        let mi_to;
-        let su_from;
-        let su_to;
-        if self.operand(state) {
-            mi_from = (opp_max_winding & xor_mi_mask) != 0;
-            mi_to = (opp_sum_winding & xor_mi_mask) != 0;
-            su_from = (max_winding & xor_su_mask) != 0;
-            su_to = (sum_winding & xor_su_mask) != 0;
+        let (mi_from, mi_to, su_from, su_to) = if self.operand(state) {
+            (
+                (opp_max_winding & xor_mi_mask) != 0,
+                (opp_sum_winding & xor_mi_mask) != 0,
+                (max_winding & xor_su_mask) != 0,
+                (sum_winding & xor_su_mask) != 0,
+            )
         } else {
-            mi_from = (max_winding & xor_mi_mask) != 0;
-            mi_to = (sum_winding & xor_mi_mask) != 0;
-            su_from = (opp_max_winding & xor_su_mask) != 0;
-            su_to = (opp_sum_winding & xor_su_mask) != 0;
-        }
+            (
+                (max_winding & xor_mi_mask) != 0,
+                (sum_winding & xor_mi_mask) != 0,
+                (opp_max_winding & xor_su_mask) != 0,
+                (opp_sum_winding & xor_su_mask) != 0,
+            )
+        };
         K_ACTIVE_EDGE[op as usize][mi_from as usize][mi_to as usize][su_from as usize]
             [su_to as usize]
     }
@@ -1559,16 +1559,13 @@ impl SkOpSegment {
         if SkOpSegment::use_inner_winding(max_winding, sum_winding) {
             max_winding = sum_winding;
         }
-        if !self.mark_and_chase_winding(
+        self.mark_and_chase_winding(
             state,
             angle.start(state),
             angle.end(state),
             max_winding,
             result,
-        ) {
-            return false;
-        }
-        true
+        )
     }
 
     /// `markAngle(maxWinding, sumWinding, oppMaxWinding, oppSumWinding, angle, result)`.
@@ -1594,17 +1591,14 @@ impl SkOpSegment {
             opp_max_winding = opp_sum_winding;
         }
         // caller doesn't require that this marks anything
-        if !self.mark_and_chase_winding_opp(
+        self.mark_and_chase_winding_opp(
             state,
             angle.start(state),
             angle.end(state),
             max_winding,
             opp_max_winding,
             result,
-        ) {
-            return false;
-        }
-        true
+        )
     }
 
     pub(crate) fn mark_done(self, state: &mut SkOpGlobalState, span: SkOpSpan) {

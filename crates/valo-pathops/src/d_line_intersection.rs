@@ -57,8 +57,7 @@ impl SkIntersections {
                  byLen  * axLen         -   ayLen          * bxLen == 0 ( == denom )
          */
         let denom = b_len.y * a_len.x - a_len.y * b_len.x;
-        let used;
-        if !approximately_zero(denom) {
+        let used = if !approximately_zero(denom) {
             let ab0 = a[0] - b[0];
             let mut numer_a = ab0.y * b_len.x - b_len.y * ab0.x;
             let mut numer_b = ab0.y * a_len.x - a_len.y * ab0.x;
@@ -66,7 +65,7 @@ impl SkIntersections {
             numer_b /= denom;
             self.t[0][0] = numer_a;
             self.t[1][0] = numer_b;
-            used = 1;
+            1
         } else {
             /* See if the axis intercepts match:
                       ay - ax * ayLen / axLen  ==          by - bx * ayLen / axLen
@@ -85,8 +84,8 @@ impl SkIntersections {
             self.t[0][0] = 0.0;
             self.t[1][1] = 1.0;
             self.t[1][0] = 1.0;
-            used = 2;
-        }
+            2
+        };
         self.compute_points(a, used);
         self.used as i32
     }
@@ -265,8 +264,8 @@ impl SkIntersections {
                 self.t[1][0] = (x_intercept - left) / (right - left);
                 if flipped {
                     // OPTIMIZATION: ? instead of swapping, pass original line, use [1].fX - [0].fX
-                    for index in 0..result as usize {
-                        self.t[1][index] = 1.0 - self.t[1][index];
+                    for t in self.t[1].iter_mut().take(result as usize) {
+                        *t = 1.0 - *t;
                     }
                 }
                 self.pt[0].x = x_intercept;
@@ -366,8 +365,8 @@ impl SkIntersections {
                 self.t[1][0] = (y_intercept - top) / (bottom - top);
                 if flipped {
                     // OPTIMIZATION: instead of swapping, pass original line, use [1].fY - [0].fY
-                    for index in 0..result as usize {
-                        self.t[1][index] = 1.0 - self.t[1][index];
+                    for t in self.t[1].iter_mut().take(result as usize) {
+                        *t = 1.0 - *t;
                     }
                 }
                 self.pt[0].x = x;

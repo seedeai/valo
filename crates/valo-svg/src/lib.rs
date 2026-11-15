@@ -1,5 +1,5 @@
 //! SVG to and from Valo display lists: parsing and translating SVG documents, and writing a
-//! list as an SVG document ([`write`]).
+//! list as an SVG document ([`write()`]).
 //!
 //! Translation is best-effort. Unsupported features degrade only the affected
 //! element and are reported through [`Svg::missing`]; they do not reject the

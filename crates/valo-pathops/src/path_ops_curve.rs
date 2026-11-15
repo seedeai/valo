@@ -101,18 +101,18 @@ impl SkDCurve {
         let count = sk_path_ops_verb_to_points(verb) as usize;
         let mut min_x = self.pts[0].x;
         let mut max_x = min_x;
-        for index in 1..=count {
-            min_x = std_min(min_x, self.pts[index].x);
-            max_x = std_max(max_x, self.pts[index].x);
+        for pt in &self.pts[1..=count] {
+            min_x = std_min(min_x, pt.x);
+            max_x = std_max(max_x, pt.x);
         }
         if !almost_between_ulps(min_x, xy.x, max_x) {
             return -1.0;
         }
         let mut min_y = self.pts[0].y;
         let mut max_y = min_y;
-        for index in 1..=count {
-            min_y = std_min(min_y, self.pts[index].y);
-            max_y = std_max(max_y, self.pts[index].y);
+        for pt in &self.pts[1..=count] {
+            min_y = std_min(min_y, pt.y);
+            max_y = std_max(max_y, pt.y);
         }
         if !almost_between_ulps(min_y, xy.y, max_y) {
             return -1.0;

@@ -271,7 +271,9 @@ fn read_float_texture(
         .flat_map(|row| {
             let start = (row * bytes_per_row) as usize;
             data[start..start + (width * BYTES_PER_PIXEL) as usize]
-                .chunks_exact(BYTES_PER_PIXEL as usize)
+                .as_chunks::<{ BYTES_PER_PIXEL as usize }>()
+                .0
+                .iter()
                 .map(|pixel| {
                     std::array::from_fn(|channel| {
                         half_to_f32(u16::from_le_bytes([
