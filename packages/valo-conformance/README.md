@@ -56,7 +56,10 @@ Every one is covered by name instead, in `degenerate-scenes.ts` or as its own
 test in `query.browser.test.ts`, with a comment at the generator saying where.
 When the divergence closes, widen the generator and delete the comment.
 
-One divergence is kept on purpose: Valo blurs as Impeller does, which leaves a draw unblurred below a sigma of about 0.79 (`smallestBlurringSigma` in `degenerate-scenes.ts`), where Canvas2D blurs it. The generators skip that band, and `degenerate.browser.test.ts` holds it, by name, to Canvas2D drawing the same scene unblurred.
+Two divergences are kept on purpose, because Valo draws as Impeller does there:
+
+- Valo blurs as Impeller does, which leaves a draw unblurred below a sigma of about 0.79 (`smallestBlurringSigma` in `degenerate-scenes.ts`), where Canvas2D blurs it. The generators skip that band, and `degenerate.browser.test.ts` holds it, by name, to Canvas2D drawing the same scene unblurred.
+- Valo strokes text whose transform scales one axis more than the other, as `maxWidth` does when it condenses a line, as Impeller does: each glyph is rastered upright at one scale, the transform's larger axis, with the stroke's width scaled by it, and the raster is squeezed onto the text (`typographer_context_skia.cc`'s `DrawGlyph` rasters at `ScaledFont::scale`, which `text_contents.cc` takes from `RoundScaledFontSize(GetMaxBasisLengthXY())` and squeezes back by `unscaled_basis`, sampling bilinearly). Canvas2D strokes the squeezed outline itself, so the two differ in stroke weight and edge softness. The stroked-text generator gives `maxWidth` only values too wide to condense. No scene holds it by name: Canvas2D has no drawing of Impeller's answer to compare it with.
 
 ## Why these scripts build `valo-web` first
 
