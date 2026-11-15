@@ -164,6 +164,30 @@ fn a_hard_break_widens_nothing() {
     assert_close(paragraph.max_intrinsic_width(), three);
 }
 
+/// A line's trailing whitespace counts in the max intrinsic width, at the text's end and before
+/// a hard break, and stays out of the min and of the line's width: skparagraph's max sums each
+/// line's `widthWithSpaces` (`TextWrapper::breakTextIntoLines`, its one-line fast path the
+/// whole run's advance), its min trims each word (`TextWrapper::getClustersTrimmedWidth`).
+#[test]
+fn trailing_whitespace_counts_in_the_max_intrinsic_width_alone() {
+    let a = advance();
+    // (text, max width, min and max intrinsic and longest line in characters)
+    let rows = [
+        ("ab  ", f32::INFINITY, 2.0, 4.0, 2.0),
+        ("ab  \ncd", f32::INFINITY, 2.0, 4.0, 2.0),
+        ("ab   \ncdef", f32::INFINITY, 4.0, 5.0, 4.0),
+        ("cdef\nab   ", f32::INFINITY, 4.0, 5.0, 4.0),
+        ("aaa bbb  ", 5.0 * a, 3.0, 9.0, 3.0),
+        ("aaa bbb  \ncd", 5.0 * a, 3.0, 9.0, 3.0),
+    ];
+    for (text, max_width, min, max, longest) in rows {
+        let paragraph = mono_in(text, ParagraphStyle::default(), max_width);
+        assert_close(paragraph.min_intrinsic_width(), min * a);
+        assert_close(paragraph.max_intrinsic_width(), max * a);
+        assert_close(paragraph.longest_line(), longest * a);
+    }
+}
+
 /// Nothing is drawn for a hard break, nor for trailing spaces: skparagraph paints a line's
 /// trimmed text alone (`TextLine::paint`).
 #[test]
@@ -338,6 +362,7 @@ fn preserved_trailing_whitespace_stops_before_the_hard_break() {
             .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.cluster))
             .collect();
         assert_eq!(drawn, [0, 1, 2], "{text:?}");
+        assert_close(paragraph.max_intrinsic_width(), 3.0 * a);
         assert_close(
             paragraph.ink_bounds().unwrap().x,
             mono("ab").ink_bounds().unwrap().x,

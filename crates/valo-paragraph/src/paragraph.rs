@@ -403,7 +403,9 @@ impl Paragraph {
 
     /// `max_intrinsic_width` returns the width required to avoid soft wrapping.
     ///
-    /// It is zero before [`Self::layout`] is called.
+    /// It is the widest line a hard break ends, with all its whitespace, trailing too, as
+    /// skparagraph measures it, so text padded with spaces is sized with its padding though a
+    /// line's width leaves trailing whitespace out. It is zero before [`Self::layout`] is called.
     pub fn max_intrinsic_width(&self) -> f32 {
         self.layout
             .as_ref()

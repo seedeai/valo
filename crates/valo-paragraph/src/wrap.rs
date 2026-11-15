@@ -17,7 +17,7 @@ pub struct Wrapped {
     pub truncated: bool,
     /// Widest unbreakable segment (auto-sizing's lower bound).
     pub min_intrinsic: f32,
-    /// Widest hard-break line when nothing wraps (the upper bound).
+    /// Widest hard-break line when nothing wraps, its trailing whitespace included (the upper bound).
     pub max_intrinsic: f32,
 }
 
@@ -195,13 +195,14 @@ impl LineLimit {
     }
 }
 
-/// Accumulates skparagraph's intrinsic widths during the wrap walk: min =
-/// the widest unbreakable segment, max = the widest hard-break line.
+/// Accumulates skparagraph's intrinsic widths during the wrap walk: min = the widest
+/// unbreakable segment, its trailing whitespace left out (`TextWrapper::getClustersTrimmedWidth`);
+/// max = the widest hard-break line with its whitespace, trailing too, and without the break
+/// (the `widthWithSpaces` that `TextWrapper::breakTextIntoLines` sums over a hard line's lines).
 #[derive(Default)]
 struct Intrinsics {
     min: f32,
     max: f32,
-    line: f32,
     line_start: usize,
 }
 
@@ -222,13 +223,9 @@ impl Intrinsics {
             preserve_trailing_whitespace,
         ));
         if kind == unicode_linebreak::BreakOpportunity::Mandatory {
-            self.line = measured_width(
-                text,
-                measure,
-                self.line_start..to,
-                preserve_trailing_whitespace,
-            );
-            self.max = self.max.max(self.line);
+            let line = self.line_start..to;
+            let line_width = measure.width(line.start, text_end(text, &line));
+            self.max = self.max.max(line_width);
             self.line_start = to;
         }
     }
