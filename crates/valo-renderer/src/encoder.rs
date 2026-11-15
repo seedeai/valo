@@ -10,7 +10,8 @@
 //! [`PipelineCache::compile`]: crate::PipelineCache::compile
 
 use crate::frame::{
-    Bindings, ContextAttachments, Draw, FramePlan, Geometry, Mesh, PassTarget, Scissor, TextureCopy,
+    Bindings, ContextAttachments, Draw, FramePlan, Geometry, Mesh, PassTarget, Scissor, Stencil,
+    TextureCopy,
 };
 use crate::gpu_timer::GpuTimer;
 use crate::host_buffer::{HostBuffer, UniformSlot};
@@ -71,15 +72,28 @@ struct DrawRecorder<'e, 'r> {
 }
 
 impl DrawRecorder<'_, '_> {
-    /// `draw` records one draw inside its scissor: its stencil, then the
-    /// draw itself.
+    /// `draw` records one draw inside its scissor: its stencil, the draw
+    /// itself, then its stencil reset.
     fn draw(&mut self, draw: &Draw) {
         self.use_scissor(draw.scissor);
         if let Some(stencil) = &draw.stencil {
-            self.use_pipeline(stencil.key);
-            self.bind_uniforms(stencil.uniforms);
-            self.draw_mesh(stencil.mesh);
+            self.draw_stencil(stencil);
         }
+        self.draw_itself(draw);
+        if let Some(reset) = &draw.stencil_reset {
+            self.draw_stencil(reset);
+        }
+    }
+
+    /// `draw_stencil` records a stencil write drawn with a draw.
+    fn draw_stencil(&mut self, stencil: &Stencil) {
+        self.use_pipeline(stencil.key);
+        self.bind_uniforms(stencil.uniforms);
+        self.draw_mesh(stencil.mesh);
+    }
+
+    /// `draw_itself` records `draw`'s own pipeline, bindings and geometry.
+    fn draw_itself(&mut self, draw: &Draw) {
         self.use_pipeline(draw.key);
         self.bind_uniforms(draw.uniforms);
         self.bind(&draw.bindings);

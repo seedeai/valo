@@ -203,6 +203,10 @@ pub enum PipelineKind {
     /// triangle counting up where it lands: the stencil half of a clip to a
     /// stroke, whose triangles overlap.
     StencilStrip,
+    /// A stroke's triangle strip into the STENCIL buffer only, zeroing
+    /// every sample it lands on: the reset after a `Strip`, which counted
+    /// each sample it drew (Impeller's `kOverdrawPreventionRestore`).
+    StencilStripReset,
     /// Depth-clip ceiling: z=expiry written outside (Intersect) or
     /// inside (Difference) the stenciled shape; no color.
     ClipCover { difference: bool },
@@ -210,7 +214,10 @@ pub enum PipelineKind {
     /// 1-sample, no depth/stencil, output replaces the target.
     Filter(Frag),
     /// Stroke geometry: a CPU triangle STRIP along the path;
-    /// depth-tested like a draw, any fragment family composes.
+    /// depth-tested like a draw, any fragment family composes. Each sample
+    /// is drawn once where the strip overlaps itself: drawing it counts it
+    /// in the stencil, which a drawn sample then fails until the strip's
+    /// `StencilStripReset` (Impeller's `kOverdrawPreventionIncrement`).
     Strip(Frag),
     /// Atlas-masked glyph quads (pos + uv vertices), one of the glyph
     /// fragments.
@@ -242,6 +249,7 @@ impl PipelineKind {
             | PipelineKind::Glyphs(f) => Some(f),
             PipelineKind::StencilFan { .. }
             | PipelineKind::StencilStrip
+            | PipelineKind::StencilStripReset
             | PipelineKind::ClipCover { .. } => None,
         }
     }
@@ -275,6 +283,7 @@ impl PipelineKind {
         match self {
             PipelineKind::StencilFan { .. }
             | PipelineKind::StencilStrip
+            | PipelineKind::StencilStripReset
             | PipelineKind::Strip(_) => "vs_mesh",
             PipelineKind::Glyphs(_) => "vs_text",
             _ => "vs_quad",
@@ -776,9 +785,9 @@ impl PipelineCache {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: match key.kind {
-                    PipelineKind::Strip(_) | PipelineKind::StencilStrip => {
-                        wgpu::PrimitiveTopology::TriangleStrip
-                    }
+                    PipelineKind::Strip(_)
+                    | PipelineKind::StencilStrip
+                    | PipelineKind::StencilStripReset => wgpu::PrimitiveTopology::TriangleStrip,
                     _ => wgpu::PrimitiveTopology::TriangleList,
                 },
                 ..Default::default()
@@ -860,9 +869,10 @@ const GLYPH_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] =
 
 fn vertex_buffers(kind: PipelineKind) -> &'static [Option<wgpu::VertexBufferLayout<'static>>] {
     match kind {
-        PipelineKind::StencilFan { .. } | PipelineKind::StencilStrip | PipelineKind::Strip(_) => {
-            &MESH_LAYOUT
-        }
+        PipelineKind::StencilFan { .. }
+        | PipelineKind::StencilStrip
+        | PipelineKind::StencilStripReset
+        | PipelineKind::Strip(_) => &MESH_LAYOUT,
         PipelineKind::Glyphs(_) => &GLYPH_LAYOUT,
         _ => &[],
     }
@@ -888,10 +898,22 @@ fn color_target(key: PipelineKey) -> wgpu::ColorTargetState {
 /// A filter pass has no depth attachment.
 fn depth_stencil(kind: PipelineKind) -> Option<wgpu::DepthStencilState> {
     let (depth_write_enabled, depth_compare, stencil) = match kind {
-        PipelineKind::Draw(_) | PipelineKind::Strip(_) => (
+        PipelineKind::Draw(_) => (
             false,
             wgpu::CompareFunction::GreaterEqual,
             face_pair(ALWAYS_KEEP),
+        ),
+        // A stroke draws a sample only while its count is 0 and counts it,
+        // so where the strip overlaps itself the sample blends once.
+        PipelineKind::Strip(_) => (
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            face_pair(wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Equal,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::IncrementClamp,
+            }),
         ),
         // Opaque draws WRITE their z: everything painter-below that they
         // cover fails early-z instead of blending.
@@ -941,6 +963,18 @@ fn depth_stencil(kind: PipelineKind) -> Option<wgpu::DepthStencilState> {
                 fail_op: wgpu::StencilOperation::Keep,
                 depth_fail_op: wgpu::StencilOperation::Keep,
                 pass_op: wgpu::StencilOperation::IncrementClamp,
+            }),
+        ),
+        // The stroke's reset, untested: every sample its strip counted
+        // returns to 0 for the next draw.
+        PipelineKind::StencilStripReset => (
+            false,
+            wgpu::CompareFunction::Always,
+            face_pair(wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Always,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Zero,
             }),
         ),
         PipelineKind::Filter(_) => return None,

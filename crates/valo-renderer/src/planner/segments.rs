@@ -226,6 +226,7 @@ mod tests {
         Draw {
             scissor: Scissor::whole([1, 1]),
             stencil,
+            stencil_reset: None,
             key: PipelineKey::new(FORMAT, PipelineBlend::SrcOver, kind),
             uniforms,
             bindings: Bindings::Plain,
