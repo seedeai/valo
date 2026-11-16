@@ -186,6 +186,12 @@ impl DisplayListBuilder {
 
     /// `save` preserves the current transform and clip until the matching `restore`.
     pub fn save(&mut self) {
+        self.push_save();
+    }
+
+    /// `push_save` opens a save scope: [`Self::save`]'s recording, for the
+    /// builder's own calls.
+    fn push_save(&mut self) {
         let top = self.top();
         let scope = Scope {
             transform: top.transform,
@@ -264,7 +270,7 @@ impl DisplayListBuilder {
         if self.top().clip.is_nop() || paint.is_invisible() {
             // Nothing the layer holds could show: a nop scope (Flutter's
             // `saveLayer` with no effect).
-            self.save();
+            self.push_save();
             self.top_mut().clip = ClipState::NOWHERE;
             return;
         }
@@ -323,6 +329,12 @@ impl DisplayListBuilder {
     /// between a save and its restore, as Flutter's does when a child composites, restores on the
     /// next picture's fresh canvas.
     pub fn restore(&mut self) {
+        self.close_scope();
+    }
+
+    /// `close_scope` closes the innermost scope, ignoring the base level:
+    /// [`Self::restore`]'s recording, for the builder's own calls.
+    fn close_scope(&mut self) {
         if self.scopes.len() == 1 {
             return;
         }
@@ -336,23 +348,29 @@ impl DisplayListBuilder {
 
     /// `translate` offsets subsequent drawing and clipping operations.
     pub fn translate(&mut self, tx: f32, ty: f32) {
-        self.concat(&Matrix::translation(tx, ty));
+        self.push_transform(&Matrix::translation(tx, ty));
     }
 
     /// `scale` scales subsequent drawing and clipping operations.
     pub fn scale(&mut self, sx: f32, sy: f32) {
-        self.concat(&Matrix::scale(sx, sy));
+        self.push_transform(&Matrix::scale(sx, sy));
     }
 
     /// `rotate` rotates subsequent drawing and clipping operations clockwise.
     ///
     /// Positive angles rotate clockwise in Valo's y-down coordinate system.
     pub fn rotate(&mut self, radians: f32) {
-        self.concat(&Matrix::rotation(radians));
+        self.push_transform(&Matrix::rotation(radians));
     }
 
     /// `concat` appends a transform for subsequent drawing and clipping operations.
     pub fn concat(&mut self, local: &Matrix) {
+        self.push_transform(local);
+    }
+
+    /// `push_transform` appends `local` to the current transform: every
+    /// transform call's recording.
+    fn push_transform(&mut self, local: &Matrix) {
         let top = self.top_mut();
         top.transform = top.transform.then(local);
         self.ops.push(Op::Transform(*local));
@@ -370,7 +388,7 @@ impl DisplayListBuilder {
     /// covers the pixels its edges cross in part.
     pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
-        self.clip_path(&rect_path(rect), FillRule::NonZero, op, anti_alias);
+        self.record_clip_path(&rect_path(rect), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_rrect` applies a rounded-rectangle clip with one corner radius.
@@ -379,7 +397,7 @@ impl DisplayListBuilder {
     /// rectangle's edge is anti-aliased either way, as in Impeller.
     pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
-        self.clip_rrect_radii(rect, [radius; 4], op, anti_alias);
+        self.record_clip_rrect(rect, [radius; 4], op, anti_alias);
     }
 
     /// `clip_rrect_radii` applies a rounded-rectangle clip with per-corner radii.
@@ -393,10 +411,16 @@ impl DisplayListBuilder {
         op: ClipOp,
         anti_alias: bool,
     ) {
-        let rect = positive_rect(rect.into());
+        self.record_clip_rrect(rect.into(), radii, op, anti_alias);
+    }
+
+    /// `record_clip_rrect` clips to a rounded rectangle with circular corners,
+    /// its edges put in order first: the rounded-rect clips' recording.
+    fn record_clip_rrect(&mut self, rect: Rect, radii: [f32; 4], op: ClipOp, anti_alias: bool) {
+        let rect = positive_rect(rect);
         let mut p = PathBuilder::new();
         p.rrect_radii(rect, radii);
-        self.clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
+        self.record_clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_rrect_radii_elliptical` applies per-corner elliptical radii.
@@ -412,11 +436,11 @@ impl DisplayListBuilder {
     ) {
         let rect = positive_rect(rect.into());
         if let Some(circular) = circular_radii(radii) {
-            return self.clip_rrect_radii(rect, circular, op, anti_alias);
+            return self.record_clip_rrect(rect, circular, op, anti_alias);
         }
         let mut p = PathBuilder::new();
         p.rrect_radii_elliptical(rect, radii);
-        self.clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
+        self.record_clip_path(&p.build(), FillRule::NonZero, op, anti_alias);
     }
 
     /// `clip_path` applies a path clip until the current scope ends.
@@ -434,6 +458,17 @@ impl DisplayListBuilder {
     /// dialog depends on this — fade → clip → backdrop must keep the fade
     /// elidable or the glass snapshots a cleared offscreen.
     pub fn clip_path(
+        &mut self,
+        path: &Arc<Path>,
+        fill_rule: FillRule,
+        op: ClipOp,
+        anti_alias: bool,
+    ) {
+        self.record_clip_path(path, fill_rule, op, anti_alias);
+    }
+
+    /// `record_clip_path` applies a path clip: every clip call's recording.
+    fn record_clip_path(
         &mut self,
         path: &Arc<Path>,
         fill_rule: FillRule,
@@ -550,7 +585,7 @@ impl DisplayListBuilder {
         if matches!(paint.style, crate::PaintStyle::Stroke(_)) {
             // Stroked rects are stroked paths — one geometry pipeline.
             // Zero-area rects still stroke: Skia draws them as a line.
-            return self.draw_path(&rect_path(rect), FillRule::NonZero, paint);
+            return self.record_path(&rect_path(rect), FillRule::NonZero, paint);
         }
         if rect.is_empty() {
             return;
@@ -571,6 +606,12 @@ impl DisplayListBuilder {
 
     /// `draw_path` records a filled or stroked path.
     pub fn draw_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, paint: &Paint) {
+        self.record_path(path, fill_rule, paint);
+    }
+
+    /// `record_path` records a filled or stroked path: the recording every
+    /// shape lowered to a path ends in.
+    fn record_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, paint: &Paint) {
         if path.is_empty() {
             return;
         }
@@ -600,20 +641,26 @@ impl DisplayListBuilder {
     ) {
         let mut p = PathBuilder::new();
         p.circle(center, radius);
-        self.draw_path(&p.build(), FillRule::NonZero, paint);
+        self.record_path(&p.build(), FillRule::NonZero, paint);
     }
 
     /// `draw_rrect` records a rounded rectangle with one corner radius.
     pub fn draw_rrect(&mut self, rect: impl Into<Rect>, radius: f32, paint: &Paint) {
         let rect = rect.into();
-        self.draw_rrect_radii(rect, [radius; 4], paint);
+        self.record_rrect(rect, [radius; 4], paint);
     }
 
     /// `draw_rrect_radii` records a rounded rectangle with per-corner radii.
     ///
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
-        let rect = positive_rect(rect.into());
+        self.record_rrect(rect.into(), radii, paint);
+    }
+
+    /// `record_rrect` records a rounded rectangle with circular corners, its
+    /// edges put in order first: the rounded-rect draws' recording.
+    fn record_rrect(&mut self, rect: Rect, radii: [f32; 4], paint: &Paint) {
+        let rect = positive_rect(rect);
         if rect.is_empty() {
             return;
         }
@@ -623,7 +670,7 @@ impl DisplayListBuilder {
         }
         let mut p = PathBuilder::new();
         p.rrect_radii(rect, radii);
-        self.draw_path(&p.build(), FillRule::NonZero, paint);
+        self.record_path(&p.build(), FillRule::NonZero, paint);
     }
 
     /// `draw_rrect_radii_elliptical` records per-corner elliptical radii.
@@ -637,14 +684,14 @@ impl DisplayListBuilder {
     ) {
         let rect = positive_rect(rect.into());
         if let Some(circular) = circular_radii(radii) {
-            return self.draw_rrect_radii(rect, circular, paint);
+            return self.record_rrect(rect, circular, paint);
         }
         if rect.is_empty() {
             return;
         }
         let mut p = PathBuilder::new();
         p.rrect_radii_elliptical(rect, radii);
-        self.draw_path(&p.build(), FillRule::NonZero, paint);
+        self.record_path(&p.build(), FillRule::NonZero, paint);
     }
 
     /// `draw_image` records the whole image into `dst`.
@@ -652,7 +699,7 @@ impl DisplayListBuilder {
     /// It uses linear filtering and clamps at the image edges.
     pub fn draw_image(&mut self, image: &Image, dst: Rect, paint: &Paint) {
         let src = Rect::new(0.0, 0.0, image.width(), image.height());
-        self.draw_image_rect(image, src, dst, Sampling::default(), paint);
+        self.record_image(image, src, dst, Sampling::default(), paint);
     }
 
     /// `draw_image_rect` records a source region into `dst` with explicit sampling.
@@ -660,6 +707,19 @@ impl DisplayListBuilder {
     /// `src` is measured in source pixels. Tiling applies when `src` extends
     /// beyond the image bounds.
     pub fn draw_image_rect(
+        &mut self,
+        image: &Image,
+        src: Rect,
+        dst: Rect,
+        sampling: Sampling,
+        paint: &Paint,
+    ) {
+        self.record_image(image, src, dst, sampling, paint);
+    }
+
+    /// `record_image` records a source region of `image` into `dst`: both
+    /// image draws' recording.
+    fn record_image(
         &mut self,
         image: &Image,
         src: Rect,
@@ -851,7 +911,7 @@ impl DisplayListBuilder {
         // Unbalanced saves are a recording bug, but a recoverable one: close
         // them so replay's stack discipline holds.
         while self.scopes.len() > 1 {
-            self.restore();
+            self.close_scope();
         }
         let root = self.scopes.pop().expect("the root scope is never restored");
         self.expire_clips(root.pending_clips); // root-scope clips live to end-of-list
