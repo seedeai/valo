@@ -4,7 +4,8 @@ use valo_geometry::{Color, FillRule, Matrix, Path, PathBuilder, PathElement, Poi
 
 use crate::list::Recording;
 use crate::{
-    Backdrop, Bounds, ClipOp, DisplayList, Image, MaskKind, Op, Paint, Sampling, SpotShadow,
+    Backdrop, Bounds, Call, ClipOp, DisplayList, Image, MaskKind, Op, Paint, RRectRadii, Sampling,
+    SpotShadow,
 };
 
 /// `DisplayListBuilder` records drawing commands into an immutable display list.
@@ -24,6 +25,9 @@ pub struct DisplayListBuilder {
     /// The root's group-opacity oracle: what an enclosing layer that embeds
     /// this list learns about its children.
     root: GroupOpacity,
+    /// Every call made, as made, for a builder made by
+    /// [`DisplayListBuilder::with_call_log`]; `None`, and nothing built, otherwise.
+    call_log: Option<Vec<Call>>,
 }
 
 /// `Scope` is one open scope — the root, a save, or a save layer — and
@@ -179,6 +183,35 @@ impl DisplayListBuilder {
             slots: 0,
             bounds: Bounds::Empty,
             root: GroupOpacity::new(),
+            call_log: None,
+        }
+    }
+
+    /// `with_call_log` creates an empty builder that also logs every call made to it, with
+    /// its arguments as given, before the builder simplifies or drops it.
+    ///
+    /// The log is for tests that check what was asked of a canvas, as Flutter's tests read a
+    /// recording canvas and Skia's `SkRecorder` keeps one record per call: a draw the builder
+    /// drops for changing nothing, a rounded rectangle it lowers to a path, a restore with no
+    /// save to close are all in it as made. [`Self::replay`] logs the calls it makes. A
+    /// builder made by [`Self::new`] logs nothing and pays nothing for it.
+    pub fn with_call_log() -> Self {
+        Self {
+            call_log: Some(Vec::new()),
+            ..Self::new()
+        }
+    }
+
+    /// `call_log` returns the calls logged so far, in the order made; empty for a builder
+    /// made by [`Self::new`].
+    pub fn call_log(&self) -> &[Call] {
+        self.call_log.as_deref().unwrap_or_default()
+    }
+
+    /// `log_call` appends the call `call` makes, building it only when the builder logs.
+    fn log_call(&mut self, call: impl FnOnce() -> Call) {
+        if let Some(log) = &mut self.call_log {
+            log.push(call());
         }
     }
 
@@ -186,6 +219,7 @@ impl DisplayListBuilder {
 
     /// `save` preserves the current transform and clip until the matching `restore`.
     pub fn save(&mut self) {
+        self.log_call(|| Call::Save);
         self.push_save();
     }
 
@@ -218,6 +252,10 @@ impl DisplayListBuilder {
     /// content outside it is discarded. Pass `None` to derive bounds from the
     /// recorded children and active clip.
     pub fn save_layer(&mut self, bounds_hint: Option<Rect>, paint: &Paint) {
+        self.log_call(|| Call::SaveLayer {
+            bounds_hint,
+            paint: paint.clone(),
+        });
         self.save_layer_inner(bounds_hint, paint, None, None);
     }
 
@@ -227,6 +265,7 @@ impl DisplayListBuilder {
     /// `kind`, retaining enclosing content only where the mask has coverage.
     /// `bounds_hint` crops the mask in local space.
     pub fn save_layer_mask(&mut self, bounds_hint: Option<Rect>, kind: MaskKind) {
+        self.log_call(|| Call::SaveLayerMask { bounds_hint, kind });
         let paint = Paint {
             blend_mode: crate::BlendMode::DstIn,
             ..Paint::default()
@@ -249,6 +288,11 @@ impl DisplayListBuilder {
         paint: &Paint,
         backdrop: Backdrop,
     ) {
+        self.log_call(|| Call::SaveLayerBackdrop {
+            bounds_hint,
+            paint: paint.clone(),
+            backdrop: backdrop.clone(),
+        });
         let backdrop = (!backdrop.filter.is_nop()).then_some(backdrop);
         self.save_layer_inner(bounds_hint, paint, None, backdrop);
     }
@@ -329,6 +373,7 @@ impl DisplayListBuilder {
     /// between a save and its restore, as Flutter's does when a child composites, restores on the
     /// next picture's fresh canvas.
     pub fn restore(&mut self) {
+        self.log_call(|| Call::Restore);
         self.close_scope();
     }
 
@@ -348,11 +393,13 @@ impl DisplayListBuilder {
 
     /// `translate` offsets subsequent drawing and clipping operations.
     pub fn translate(&mut self, tx: f32, ty: f32) {
+        self.log_call(|| Call::Translate { tx, ty });
         self.push_transform(&Matrix::translation(tx, ty));
     }
 
     /// `scale` scales subsequent drawing and clipping operations.
     pub fn scale(&mut self, sx: f32, sy: f32) {
+        self.log_call(|| Call::Scale { sx, sy });
         self.push_transform(&Matrix::scale(sx, sy));
     }
 
@@ -360,11 +407,13 @@ impl DisplayListBuilder {
     ///
     /// Positive angles rotate clockwise in Valo's y-down coordinate system.
     pub fn rotate(&mut self, radians: f32) {
+        self.log_call(|| Call::Rotate { radians });
         self.push_transform(&Matrix::rotation(radians));
     }
 
     /// `concat` appends a transform for subsequent drawing and clipping operations.
     pub fn concat(&mut self, local: &Matrix) {
+        self.log_call(|| Call::Concat { matrix: *local });
         self.push_transform(local);
     }
 
@@ -388,6 +437,11 @@ impl DisplayListBuilder {
     /// covers the pixels its edges cross in part.
     pub fn clip_rect(&mut self, rect: impl Into<Rect>, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
+        self.log_call(|| Call::ClipRect {
+            rect,
+            op,
+            anti_alias,
+        });
         self.record_clip_path(&rect_path(rect), FillRule::NonZero, op, anti_alias);
     }
 
@@ -397,6 +451,12 @@ impl DisplayListBuilder {
     /// rectangle's edge is anti-aliased either way, as in Impeller.
     pub fn clip_rrect(&mut self, rect: impl Into<Rect>, radius: f32, op: ClipOp, anti_alias: bool) {
         let rect = rect.into();
+        self.log_call(|| Call::ClipRRect {
+            rect,
+            radii: RRectRadii::Uniform(radius),
+            op,
+            anti_alias,
+        });
         self.record_clip_rrect(rect, [radius; 4], op, anti_alias);
     }
 
@@ -411,7 +471,14 @@ impl DisplayListBuilder {
         op: ClipOp,
         anti_alias: bool,
     ) {
-        self.record_clip_rrect(rect.into(), radii, op, anti_alias);
+        let rect = rect.into();
+        self.log_call(|| Call::ClipRRect {
+            rect,
+            radii: RRectRadii::Circular(radii),
+            op,
+            anti_alias,
+        });
+        self.record_clip_rrect(rect, radii, op, anti_alias);
     }
 
     /// `record_clip_rrect` clips to a rounded rectangle with circular corners,
@@ -434,7 +501,14 @@ impl DisplayListBuilder {
         op: ClipOp,
         anti_alias: bool,
     ) {
-        let rect = positive_rect(rect.into());
+        let rect = rect.into();
+        self.log_call(|| Call::ClipRRect {
+            rect,
+            radii: RRectRadii::Elliptical(radii),
+            op,
+            anti_alias,
+        });
+        let rect = positive_rect(rect);
         if let Some(circular) = circular_radii(radii) {
             return self.record_clip_rrect(rect, circular, op, anti_alias);
         }
@@ -464,6 +538,12 @@ impl DisplayListBuilder {
         op: ClipOp,
         anti_alias: bool,
     ) {
+        self.log_call(|| Call::ClipPath {
+            path: Arc::clone(path),
+            fill_rule,
+            op,
+            anti_alias,
+        });
         self.record_clip_path(path, fill_rule, op, anti_alias);
     }
 
@@ -511,6 +591,9 @@ impl DisplayListBuilder {
     /// filters and blend apply. Where no clip bounds it, the list's bounds
     /// become unbounded, and a save layer around it covers its own clip.
     pub fn draw_paint(&mut self, paint: &Paint) {
+        self.log_call(|| Call::DrawPaint {
+            paint: paint.clone(),
+        });
         let paint = Paint {
             style: crate::PaintStyle::Fill,
             mask_blur: None,
@@ -552,6 +635,14 @@ impl DisplayListBuilder {
         transparent_occluder: bool,
         device_pixel_ratio: f32,
     ) {
+        self.log_call(|| Call::DrawShadow {
+            path: Arc::clone(path),
+            fill_rule,
+            color,
+            elevation,
+            transparent_occluder,
+            device_pixel_ratio,
+        });
         if path.is_empty() || Paint::from_color(color).is_nop() {
             return;
         }
@@ -582,6 +673,10 @@ impl DisplayListBuilder {
     /// `draw_rect` records a filled or stroked rectangle.
     pub fn draw_rect(&mut self, rect: impl Into<Rect>, paint: &Paint) {
         let rect = rect.into();
+        self.log_call(|| Call::DrawRect {
+            rect,
+            paint: paint.clone(),
+        });
         if matches!(paint.style, crate::PaintStyle::Stroke(_)) {
             // Stroked rects are stroked paths — one geometry pipeline.
             // Zero-area rects still stroke: Skia draws them as a line.
@@ -606,6 +701,11 @@ impl DisplayListBuilder {
 
     /// `draw_path` records a filled or stroked path.
     pub fn draw_path(&mut self, path: &Arc<Path>, fill_rule: FillRule, paint: &Paint) {
+        self.log_call(|| Call::DrawPath {
+            path: Arc::clone(path),
+            fill_rule,
+            paint: paint.clone(),
+        });
         self.record_path(path, fill_rule, paint);
     }
 
@@ -639,6 +739,12 @@ impl DisplayListBuilder {
         radius: f32,
         paint: &Paint,
     ) {
+        let center = center.into();
+        self.log_call(|| Call::DrawCircle {
+            center,
+            radius,
+            paint: paint.clone(),
+        });
         let mut p = PathBuilder::new();
         p.circle(center, radius);
         self.record_path(&p.build(), FillRule::NonZero, paint);
@@ -647,6 +753,11 @@ impl DisplayListBuilder {
     /// `draw_rrect` records a rounded rectangle with one corner radius.
     pub fn draw_rrect(&mut self, rect: impl Into<Rect>, radius: f32, paint: &Paint) {
         let rect = rect.into();
+        self.log_call(|| Call::DrawRRect {
+            rect,
+            radii: RRectRadii::Uniform(radius),
+            paint: paint.clone(),
+        });
         self.record_rrect(rect, [radius; 4], paint);
     }
 
@@ -654,7 +765,13 @@ impl DisplayListBuilder {
     ///
     /// `radii` is ordered clockwise as `[top-left, top-right, bottom-right, bottom-left]`.
     pub fn draw_rrect_radii(&mut self, rect: impl Into<Rect>, radii: [f32; 4], paint: &Paint) {
-        self.record_rrect(rect.into(), radii, paint);
+        let rect = rect.into();
+        self.log_call(|| Call::DrawRRect {
+            rect,
+            radii: RRectRadii::Circular(radii),
+            paint: paint.clone(),
+        });
+        self.record_rrect(rect, radii, paint);
     }
 
     /// `record_rrect` records a rounded rectangle with circular corners, its
@@ -682,7 +799,13 @@ impl DisplayListBuilder {
         radii: [[f32; 2]; 4],
         paint: &Paint,
     ) {
-        let rect = positive_rect(rect.into());
+        let rect = rect.into();
+        self.log_call(|| Call::DrawRRect {
+            rect,
+            radii: RRectRadii::Elliptical(radii),
+            paint: paint.clone(),
+        });
+        let rect = positive_rect(rect);
         if let Some(circular) = circular_radii(radii) {
             return self.record_rrect(rect, circular, paint);
         }
@@ -698,6 +821,11 @@ impl DisplayListBuilder {
     ///
     /// It uses linear filtering and clamps at the image edges.
     pub fn draw_image(&mut self, image: &Image, dst: Rect, paint: &Paint) {
+        self.log_call(|| Call::DrawImage {
+            image: image.clone(),
+            dst,
+            paint: paint.clone(),
+        });
         let src = Rect::new(0.0, 0.0, image.width(), image.height());
         self.record_image(image, src, dst, Sampling::default(), paint);
     }
@@ -714,6 +842,13 @@ impl DisplayListBuilder {
         sampling: Sampling,
         paint: &Paint,
     ) {
+        self.log_call(|| Call::DrawImageRect {
+            image: image.clone(),
+            src,
+            dst,
+            sampling,
+            paint: paint.clone(),
+        });
         self.record_image(image, src, dst, sampling, paint);
     }
 
@@ -758,6 +893,13 @@ impl DisplayListBuilder {
         text: Option<crate::RunText>,
         local_bounds: Rect,
     ) {
+        self.log_call(|| Call::DrawGlyphRun {
+            font: font.clone(),
+            paint: paint.clone(),
+            glyphs: Arc::clone(&glyphs),
+            text: text.clone(),
+            local_bounds,
+        });
         if glyphs.is_empty() {
             return;
         }
@@ -873,6 +1015,10 @@ impl DisplayListBuilder {
 
     /// `draw_display_list` records a nested display list by shared reference.
     pub fn draw_display_list(&mut self, list: &Arc<DisplayList>) {
+        self.log_call(|| Call::DrawDisplayList {
+            list: Arc::clone(list),
+            cached: false,
+        });
         self.embed_display_list(list, false);
     }
 
@@ -881,6 +1027,10 @@ impl DisplayListBuilder {
     /// Use it for stable, repeatedly drawn lists whose recording is expensive.
     /// The renderer may still replay the list directly when caching is unsuitable.
     pub fn draw_display_list_cached(&mut self, list: &Arc<DisplayList>) {
+        self.log_call(|| Call::DrawDisplayList {
+            list: Arc::clone(list),
+            cached: true,
+        });
         self.embed_display_list(list, true);
     }
 
@@ -907,7 +1057,20 @@ impl DisplayListBuilder {
     /// `build` consumes the builder and returns its immutable display list.
     ///
     /// Any unmatched save scopes are closed before the list is finalized.
-    pub fn build(mut self) -> DisplayList {
+    pub fn build(self) -> DisplayList {
+        self.build_with_call_log().0
+    }
+
+    /// `build_with_call_log` consumes the builder and returns its display list with the
+    /// calls it logged, as [`Self::build`] and [`Self::call_log`] would; the log is empty for
+    /// a builder made by [`Self::new`].
+    pub fn build_with_call_log(mut self) -> (DisplayList, Vec<Call>) {
+        let calls = self.call_log.take().unwrap_or_default();
+        (self.record_list(), calls)
+    }
+
+    /// `record_list` closes the open scopes and makes the list.
+    fn record_list(mut self) -> DisplayList {
         // Unbalanced saves are a recording bug, but a recoverable one: close
         // them so replay's stack discipline holds.
         while self.scopes.len() > 1 {
