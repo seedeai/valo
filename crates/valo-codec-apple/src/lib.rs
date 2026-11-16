@@ -11,7 +11,9 @@
 //!
 //! Animations are read here too. ImageIO composites them itself: every frame comes back at the
 //! full canvas size with the frames before it already in place and their disposal applied, so
-//! nothing here assembles a canvas.
+//! nothing here assembles a canvas. A container of several images that do not animate, as a
+//! TIFF's pages, an icon's sizes or a HEIF collection's images, is a still image of the one it
+//! names as its primary.
 //!
 //! The same `IOSurface` path is open to a host that already holds such a buffer, from
 //! ScreenCaptureKit or a camera: [`import_pixel_buffer`] wraps it as a texture without a copy.
@@ -118,7 +120,7 @@ impl FrameReader for AppleReader {
 
 impl AppleReader {
     fn decode_next(&mut self) -> Result<DecodedFrame, DecodeError> {
-        let index = self.next as usize;
+        let index = self.source.image_index(self.next);
         self.next = (self.next + 1) % self.info.frame_count.max(1);
         let longest_side = self.info.size[0].max(self.info.size[1]);
         let image = self.source.decode_scaled(index, longest_side)?;
