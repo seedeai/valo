@@ -354,7 +354,11 @@ fn animation_keys() -> Vec<AnimationKeys> {
             },
         ]
     };
-    keys.extend(["WebP", "HEICS"].into_iter().filter_map(run_time_animation_keys));
+    keys.extend(
+        ["WebP", "HEICS"]
+            .into_iter()
+            .filter_map(run_time_animation_keys),
+    );
     keys
 }
 
