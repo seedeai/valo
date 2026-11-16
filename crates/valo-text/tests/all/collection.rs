@@ -178,10 +178,6 @@ impl valo_text::FontSource for ScriptedSource {
         let font = Font::from_bytes(self.fallback_bytes.clone()?)?;
         font.covers(codepoint).then_some(font)
     }
-
-    fn default_face(&mut self, _attrs: FontAttrs) -> Option<Font> {
-        None
-    }
 }
 
 #[test]

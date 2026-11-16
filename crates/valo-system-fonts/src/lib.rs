@@ -1,8 +1,8 @@
 //! The platform's installed fonts as valo's [`FontSource`].
 //!
 //! [`SystemFonts`] adapts a [`FontManager`], the platform's font lookup in Skia's shape,
-//! to the three questions valo's font collection asks a source: the faces of a family, a
-//! face covering a character, and the default face. The manager decides how the platform is asked (CoreText,
+//! to the two questions valo's font collection asks a source: the faces of a family, and
+//! a face covering a character. The manager decides how the platform is asked (CoreText,
 //! a directory scan, or a host across a boundary); this crate parses the answers into
 //! [`Font`]s and picks the instance nearest the request with valo's [`match_style`], so
 //! it builds anywhere `valo-text` does, wasm included.
@@ -102,11 +102,6 @@ impl FontSource for SystemFonts {
             .manager
             .match_character(None, style_of(attrs), &locales, codepoint)?;
         match_instance(typeface, attrs).filter(|font| font.covers(codepoint))
-    }
-
-    fn default_face(&mut self, attrs: FontAttrs) -> Option<Font> {
-        let typeface = self.manager.default_typeface(style_of(attrs))?;
-        match_instance(typeface, attrs)
     }
 }
 

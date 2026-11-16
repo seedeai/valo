@@ -1,6 +1,6 @@
 # valo-fontmgr
 
-A unified API for system font lookup: families, styles, character fallback, the default face, and the system UI font. Returns font bytes and collection indices.
+A unified API for system font lookup: families, styles, character fallback, and the system UI font. Returns font bytes and collection indices.
 
 ## Apple (macOS, iOS, iPadOS)
 

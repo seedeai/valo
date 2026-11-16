@@ -1,11 +1,10 @@
 //! Installed fonts, found the way Skia's `SkFontMgr` finds them.
 //!
 //! A [`FontManager`] answers the questions a text stack asks the platform: which faces a
-//! family has, which face covers a character in a language, which face text naming no
-//! family is set in, and which face is the platform's own user-interface font. Each
-//! platform answers through its font API (CoreText on Apple systems) or, where there is
-//! no API yet, a scan of its font directories, or the configuration the platform
-//! publishes instead of an API (Android);
+//! family has, which face covers a character in a language, and which face is the
+//! platform's own user-interface font. Each platform answers through its font API
+//! (CoreText on Apple systems) or, where there is no API yet, a scan of its font
+//! directories, or the configuration the platform publishes instead of an API (Android);
 //! every answer is a [`Typeface`], the font file's bytes and the face's index in them,
 //! which any font parser reads. The crate carries no text stack of its own, so a
 //! host that only forwards fonts depends on it alone; `valo-system-fonts` turns a manager
@@ -186,11 +185,6 @@ pub trait FontManager: Send {
     /// where the platform has no such notion.
     fn system_font(&mut self, size: f32, style: Style) -> Option<Typeface>;
 
-    /// `default_typeface` returns the platform's default face nearest `style`, the face
-    /// text naming no family it has is set in: Skia's `legacyMakeTypeface(nullptr, style)`.
-    /// `None` when the manager has no face at all.
-    fn default_typeface(&mut self, style: Style) -> Option<Typeface>;
-
     /// `families` lists the installed family names.
     fn families(&self) -> Vec<String>;
 
@@ -228,10 +222,6 @@ impl<M: FontManager + ?Sized> FontManager for Box<M> {
 
     fn system_font(&mut self, size: f32, style: Style) -> Option<Typeface> {
         (**self).system_font(size, style)
-    }
-
-    fn default_typeface(&mut self, style: Style) -> Option<Typeface> {
-        (**self).default_typeface(style)
     }
 
     fn families(&self) -> Vec<String> {

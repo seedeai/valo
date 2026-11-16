@@ -407,9 +407,16 @@ pub trait FontSource {
 
     /// `default_face` returns the source's default face nearest to `attrs`, the face text
     /// is set in when no family it asks for has one: Skia's
-    /// `SkFontMgr::legacyMakeTypeface(nullptr, style)`. `None` when the source has no
-    /// face at all.
-    fn default_face(&mut self, attrs: FontAttrs) -> Option<Font>;
+    /// `SkFontMgr::legacyMakeTypeface(nullptr, style)`. A collection asks for it only while
+    /// it has no face at all.
+    ///
+    /// The default answers `None`: a source without a default leaves an empty collection's
+    /// text to its character lookup, and what that misses to the collection's demand, for a
+    /// host that loads fonts asynchronously.
+    fn default_face(&mut self, attrs: FontAttrs) -> Option<Font> {
+        let _ = attrs;
+        None
+    }
 }
 
 /// `match_style` returns the font nearest `attrs` among `fonts`, by CSS font

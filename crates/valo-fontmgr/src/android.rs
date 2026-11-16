@@ -235,17 +235,6 @@ impl FontManager for Android {
         crate::nearest(self.family(DEFAULT_FAMILY), style)
     }
 
-    /// Skia's `SkFontMgr_Android`: the default family's face nearest `style`, the family
-    /// being `sans-serif`, else the first the configuration lists.
-    fn default_typeface(&mut self, style: Style) -> Option<Typeface> {
-        let first = (!self.families.is_empty()).then_some(Named {
-            family: 0,
-            weight: None,
-        });
-        let default = self.named(DEFAULT_FAMILY).or(first)?;
-        crate::nearest(self.typefaces(default), style)
-    }
-
     fn families(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .families
