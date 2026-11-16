@@ -49,7 +49,27 @@ impl Scan {
         keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         keyed.into_iter().map(|(_, id)| id).collect()
     }
+
+    /// The family text naming none is set in: the first of [`DEFAULT_FAMILIES`] that is
+    /// installed, else the first family the scan found.
+    fn default_family(&self) -> Option<String> {
+        let installed = |name: &str| self.database.faces().any(|face| answers_to(face, name));
+        if let Some(name) = DEFAULT_FAMILIES.into_iter().find(|name| installed(name)) {
+            return Some(name.to_owned());
+        }
+        let first = self.database.faces().next()?;
+        first.families.first().map(|(name, _)| name.clone())
+    }
 }
+
+/// The families the default face is looked for in, in order: Skia's `SkFontMgr_Custom`'s.
+const DEFAULT_FAMILIES: [&str; 5] = [
+    "Arial",
+    "Verdana",
+    "Times New Roman",
+    "Droid Sans",
+    "DejaVu Serif",
+];
 
 impl FontManager for Scan {
     fn family(&mut self, family: &str) -> Vec<Typeface> {
@@ -82,6 +102,13 @@ impl FontManager for Scan {
 
     fn system_font(&mut self, _size: f32, _style: Style) -> Option<Typeface> {
         None
+    }
+
+    /// Skia's `SkFontMgr_Custom`, the directory scan's manager: the face nearest `style`
+    /// of the first of its default families installed, else of the first family found.
+    fn default_typeface(&mut self, style: Style) -> Option<Typeface> {
+        let family = self.default_family()?;
+        self.match_family_style(&family, style)
     }
 
     fn families(&self) -> Vec<String> {

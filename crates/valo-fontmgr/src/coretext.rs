@@ -42,6 +42,9 @@ extern "C" {
 
 /// The point size a lookup that has no size of its own is made at; CoreText needs one.
 const LOOKUP_SIZE: f64 = 12.0;
+/// The family the default face falls back to when the platform's default resolves to
+/// nothing: Skia's CoreText backend's `FONT_DEFAULT_NAME`.
+const LAST_RESORT_FAMILY: &str = "Lucida Sans";
 
 /// `CoreText` is the platform's font manager on macOS and iOS.
 ///
@@ -151,6 +154,14 @@ impl FontManager for CoreText {
             Some(face) => Some(face),
             None => self.typeface_of_font(&ui_font),
         }
+    }
+
+    /// Skia's CoreText backend: what a descriptor naming no family resolves to, at
+    /// `style`, else Lucida Sans in its regular style.
+    fn default_typeface(&mut self, style: Style) -> Option<Typeface> {
+        let faces = self.family(&default_font().family_name());
+        nearest(faces, style)
+            .or_else(|| self.match_family_style(LAST_RESORT_FAMILY, Style::default()))
     }
 
     fn families(&self) -> Vec<String> {

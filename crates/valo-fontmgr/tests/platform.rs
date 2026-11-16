@@ -70,6 +70,44 @@ fn a_character_is_covered_in_its_language() {
     );
 }
 
+/// Skia's `LegacyMakeTypeface` test: the default face keeps the style it was asked for.
+#[test]
+fn the_default_typeface_keeps_its_requested_style() {
+    let Some(mut manager) = manager() else {
+        return;
+    };
+    let italic = Style {
+        slant: Slant::Italic,
+        ..Style::default()
+    };
+    let bold = Style {
+        weight: 700,
+        ..Style::default()
+    };
+    let bold_italic = Style {
+        weight: 700,
+        slant: Slant::Italic,
+        ..Style::default()
+    };
+    let italic = manager.default_typeface(italic);
+    let bold = manager.default_typeface(bold);
+    let bold_italic = manager.default_typeface(bold_italic);
+    if italic.is_some() || bold.is_some() || bold_italic.is_some() {
+        assert!(italic.is_some() && bold.is_some() && bold_italic.is_some());
+    }
+    let is_italic = |style: Style| style.slant != Slant::Upright;
+    let is_bold = |style: Style| style.weight >= 600;
+    if let Some(italic) = italic {
+        assert!(is_italic(italic.style()) && !is_bold(italic.style()));
+    }
+    if let Some(bold) = bold {
+        assert!(!is_italic(bold.style()) && is_bold(bold.style()));
+    }
+    if let Some(bold_italic) = bold_italic {
+        assert!(is_italic(bold_italic.style()) && is_bold(bold_italic.style()));
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[test]
 fn the_system_font_is_answered_at_text_and_display_sizes() {

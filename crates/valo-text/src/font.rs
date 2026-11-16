@@ -404,6 +404,12 @@ pub trait FontSource {
 
     /// `face_for_codepoint` returns a covering face nearest to `attrs`.
     fn face_for_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> Option<Font>;
+
+    /// `default_face` returns the source's default face nearest to `attrs`, the face text
+    /// is set in when no family it asks for has one: Skia's
+    /// `SkFontMgr::legacyMakeTypeface(nullptr, style)`. `None` when the source has no
+    /// face at all.
+    fn default_face(&mut self, attrs: FontAttrs) -> Option<Font>;
 }
 
 /// `match_style` returns the font nearest `attrs` among `fonts`, by CSS font
@@ -1163,6 +1169,33 @@ impl FontCollection {
         }
         self.unanswered.add_family(name);
         false
+    }
+
+    /// `require_default_face` makes sure the collection has a face for a style none of
+    /// whose families answered, asking the sources for their default face when it has
+    /// none.
+    ///
+    /// It is the end of Skia's `findTypefaces`, which, when no requested family matched,
+    /// asks each font manager in order for `legacyMakeTypeface(nullptr, style)`. The
+    /// registered faces come first, as Skia's registered-font provider answers with its
+    /// first family, so the sources are asked only while the collection is empty. Their
+    /// answer joins the fallback chain, so the style's text resolves in it, as it does in
+    /// Skia's default typeface, and is not reported missing where it covers. It returns
+    /// `false` when the collection and every source have no face at all.
+    pub fn require_default_face(&mut self, attrs: FontAttrs) -> bool {
+        if !self.faces.is_empty() {
+            return true;
+        }
+        let Some(font) = self
+            .sources
+            .iter_mut()
+            .find_map(|source| source.default_face(attrs))
+        else {
+            return false;
+        };
+        let id = self.faces.add(font);
+        self.faces.add_fallback(id);
+        true
     }
 
     /// `require_codepoint` makes sure a face that `families` and `attrs`
