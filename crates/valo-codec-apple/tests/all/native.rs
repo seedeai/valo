@@ -310,3 +310,83 @@ fn the_platform_and_software_decoders_agree_on_every_frame() {
     }
     assert_eq!(rendered[0], rendered[1]);
 }
+
+/// A baseline TIFF of one page per colour, each one pixel high and one pixel narrower than the
+/// page before, the last one pixel wide: uncompressed 8-bit RGB, little-endian.
+fn tiff_pages(colours: &[[u8; 3]]) -> Arc<[u8]> {
+    const TAGS: u16 = 10;
+    let mut bytes = b"II\x2a\x00\x00\x00\x00\x00".to_vec();
+    let mut next_page_at = 4;
+    for (index, colour) in colours.iter().enumerate() {
+        let width = (colours.len() - index) as u32;
+        let pixels_at = bytes.len() as u32;
+        bytes.extend(colour.repeat(width as usize));
+        let bits_at = bytes.len() as u32;
+        bytes.extend([8, 0, 8, 0, 8, 0]);
+        let page_at = bytes.len() as u32;
+        bytes[next_page_at..next_page_at + 4].copy_from_slice(&page_at.to_le_bytes());
+        bytes.extend(TAGS.to_le_bytes());
+        for (tag, kind, count, value) in [
+            (256u16, 4u16, 1u32, width), // ImageWidth, a LONG
+            (257, 4, 1, 1),              // ImageLength
+            (258, 3, 3, bits_at),        // BitsPerSample, three SHORTs elsewhere
+            (259, 3, 1, 1),              // Compression: none
+            (262, 3, 1, 2),              // PhotometricInterpretation: RGB
+            (273, 4, 1, pixels_at),      // StripOffsets
+            (277, 3, 1, 3),              // SamplesPerPixel
+            (278, 4, 1, 1),              // RowsPerStrip
+            (279, 4, 1, width * 3),      // StripByteCounts
+            (284, 3, 1, 1),              // PlanarConfiguration: chunky
+        ] {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value.to_le_bytes());
+        }
+        next_page_at = bytes.len();
+        bytes.extend(0u32.to_le_bytes());
+    }
+    bytes.into()
+}
+
+#[test]
+fn a_document_of_pages_is_a_still_image_of_its_primary_page() {
+    let (loader, mut context) = setup(vec![apple(true)]);
+    let pages = tiff_pages(&[[255, 0, 0], [0, 255, 0]]);
+    let mut codec = block_on(loader.open(pages, DecodeOptions::default())).unwrap();
+    assert_eq!(codec.info().frame_count, 1);
+    assert_eq!(codec.info().repetition, Repetition::Once);
+    assert_eq!(codec.info().size, [2, 1], "the first page's size");
+    for request in 0..2 {
+        let frame = block_on(codec.next_frame()).unwrap();
+        assert_eq!(frame.duration, Duration::ZERO);
+        assert_eq!(
+            render(&mut context, &frame.image),
+            [255, 0, 0, 255, 255, 0, 0, 255],
+            "request {request} shows the first page"
+        );
+    }
+}
+
+#[test]
+fn a_gif_without_a_loop_count_plays_its_frames_once() {
+    let mut bytes = Vec::new();
+    {
+        let palette = &[255, 0, 0, 0, 255, 0];
+        let mut encoder = gif::Encoder::new(&mut bytes, 1, 1, palette).unwrap();
+        for index in [0, 1] {
+            let frame = gif::Frame {
+                width: 1,
+                height: 1,
+                delay: 7,
+                buffer: vec![index].into(),
+                ..Default::default()
+            };
+            encoder.write_frame(&frame).unwrap();
+        }
+    }
+    let (loader, _) = setup(vec![apple(true)]);
+    let codec = block_on(loader.open(bytes.into(), DecodeOptions::default())).unwrap();
+    assert_eq!(codec.info().frame_count, 2);
+    assert_eq!(codec.info().repetition, Repetition::Once);
+}

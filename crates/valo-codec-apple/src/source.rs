@@ -1,4 +1,6 @@
-//! An open `CGImageSource` and what its header says.
+//! An open `CGImageSource` and what its header says: its size, and whether its images are the
+//! frames of an animation or pictures of their own, as a TIFF's pages, an icon's sizes or a HEIF
+//! collection's images are, of which one is shown.
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::{CFData, CFDataRef};
@@ -64,7 +66,21 @@ type Properties = CFDictionary<CFString, CFType>;
 /// Source is an open ImageIO source whose header has been read.
 pub(crate) struct Source {
     raw: CGImageSourceRef,
+    pictures: Pictures,
     oriented_size: [u32; 2],
+}
+
+/// How a container's images are shown.
+#[derive(Clone, Copy, Debug)]
+enum Pictures {
+    /// The frames of an animation, played as its loop count says.
+    Animation {
+        frame_count: u32,
+        repetition: Repetition,
+    },
+    /// One image, the container's `index`th: its only one, or, of several that do not animate,
+    /// the one it names as its primary.
+    Still { index: usize },
 }
 
 impl Source {
@@ -79,6 +95,7 @@ impl Source {
         // From here the pointer has an owner that releases it exactly once.
         let mut source = Source {
             raw,
+            pictures: Pictures::Still { index: 0 },
             oriented_size: [0, 0],
         };
         // A source comes back for any bytes at all; only its type says whether ImageIO knows the
@@ -86,6 +103,7 @@ impl Source {
         if unsafe { CGImageSourceGetType(source.raw) }.is_null() {
             return Err(unrecognised());
         }
+        source.pictures = source.read_pictures();
         source.oriented_size = source.read_oriented_size()?;
         Ok(source)
     }
@@ -95,30 +113,29 @@ impl Source {
         self.oriented_size
     }
 
-    /// `frame_count` is how many frames the container holds; one for a still image.
+    /// `frame_count` is how many frames the image plays; one for a still image.
     pub(crate) fn frame_count(&self) -> u32 {
-        unsafe { CGImageSourceGetCount(self.raw) }.max(1) as u32
+        match self.pictures {
+            Pictures::Animation { frame_count, .. } => frame_count,
+            Pictures::Still { .. } => 1,
+        }
     }
 
-    /// `repetition` reads the container's loop count.
-    ///
-    /// A file that gives none but holds several frames loops forever, which is what browsers
-    /// assume of an animation that does not say.
+    /// `repetition` is how many times the image plays: an animation as its loop count says, a
+    /// still image once.
     pub(crate) fn repetition(&self) -> Repetition {
-        let loop_count = self.container_properties().and_then(|properties| {
-            animation_keys()
-                .into_iter()
-                .find_map(|keys| number_in(&nested(&properties, keys.dictionary)?, keys.loop_count))
-        });
-        match loop_count {
-            // Every one of these formats writes zero to mean "never stop".
-            Some(count) if count <= 0.0 => Repetition::Forever,
-            // ImageIO reports how many times an animation plays altogether, where a file — and
-            // every other decoder — counts the passes after the first.
-            Some(count) if count >= 2.0 => Repetition::Times(count as u32 - 1),
-            Some(_) => Repetition::Once,
-            None if self.frame_count() > 1 => Repetition::Forever,
-            None => Repetition::Once,
+        match self.pictures {
+            Pictures::Animation { repetition, .. } => repetition,
+            Pictures::Still { .. } => Repetition::Once,
+        }
+    }
+
+    /// `image_index` is the container's index of the image `frame` decodes from: an animation's
+    /// frame, or a still image's one.
+    pub(crate) fn image_index(&self, frame: u32) -> usize {
+        match self.pictures {
+            Pictures::Animation { .. } => frame as usize,
+            Pictures::Still { index } => index,
         }
     }
 
@@ -181,9 +198,52 @@ impl Source {
         Ok(unsafe { CGImage::from_ptr(image) })
     }
 
+    /// What its images are: an animation where its format's dictionary gives a loop count, which
+    /// ImageIO reads for every animation, a GIF without one included; otherwise one image.
+    fn read_pictures(&self) -> Pictures {
+        match self.loop_count() {
+            Some(count) => Pictures::Animation {
+                frame_count: self.image_count().max(1),
+                repetition: repetition_of(count),
+            },
+            None => Pictures::Still {
+                index: self.primary_index(),
+            },
+        }
+    }
+
+    fn image_count(&self) -> u32 {
+        (unsafe { CGImageSourceGetCount(self.raw) }) as u32
+    }
+
+    /// The loop count the container's animation dictionary gives, where it is an animation.
+    fn loop_count(&self) -> Option<f64> {
+        let properties = self.container_properties()?;
+        animation_keys()
+            .into_iter()
+            .find_map(|keys| number_in(&nested(&properties, keys.dictionary)?, keys.loop_count))
+    }
+
+    /// The image the container names as its primary, which only a HEIF names; the first of any
+    /// other, and of every container on an OS older than the call.
+    fn primary_index(&self) -> usize {
+        let index = imageio_function("CGImageSourceGetPrimaryImageIndex").map_or(0, |address| {
+            // Safety: the symbol is ImageIO's `size_t CGImageSourceGetPrimaryImageIndex(
+            // CGImageSourceRef)`, and the source is live.
+            let primary: unsafe extern "C" fn(CGImageSourceRef) -> usize =
+                unsafe { std::mem::transmute(address) };
+            unsafe { primary(self.raw) }
+        });
+        if index < self.image_count() as usize {
+            index
+        } else {
+            0
+        }
+    }
+
     fn read_oriented_size(&self) -> Result<[u32; 2], OpenError> {
         let properties = self
-            .frame_properties(0)
+            .frame_properties(self.image_index(0))
             .ok_or_else(|| missing("image properties"))?;
         let width = number_in(&properties, unsafe { kCGImagePropertyPixelWidth });
         let height = number_in(&properties, unsafe { kCGImagePropertyPixelHeight });
@@ -219,6 +279,18 @@ impl Drop for Source {
     fn drop(&mut self) {
         // Safety: created by `CGImageSourceCreateWithData`, released exactly once.
         unsafe { CFRelease(self.raw as *const c_void) };
+    }
+}
+
+/// How many times an animation with ImageIO's loop `count` plays after its first pass.
+fn repetition_of(count: f64) -> Repetition {
+    match count {
+        // Every animated format writes zero to mean "never stop".
+        count if count <= 0.0 => Repetition::Forever,
+        // ImageIO reports how many times an animation plays altogether, where a file — and
+        // every other decoder — counts the passes after the first.
+        count if count >= 2.0 => Repetition::Times(count as u32 - 1),
+        _ => Repetition::Once,
     }
 }
 
@@ -263,8 +335,8 @@ struct AnimationKeys {
     unclamped_delay: Option<CFStringRef>,
 }
 
-/// The formats this build can read timing from. WebP's keys are resolved from the ImageIO bundle
-/// at run time so an older OS without them can still load this crate.
+/// The formats this build can read timing from. WebP's and HEIF sequences' keys are resolved from
+/// the ImageIO bundle at run time so an older OS without them can still load this crate.
 fn animation_keys() -> Vec<AnimationKeys> {
     let mut keys = unsafe {
         vec![
@@ -282,25 +354,27 @@ fn animation_keys() -> Vec<AnimationKeys> {
             },
         ]
     };
-    if let (Some(dictionary), Some(loop_count), Some(delay)) = (
-        imageio_symbol("kCGImagePropertyWebPDictionary"),
-        imageio_symbol("kCGImagePropertyWebPLoopCount"),
-        imageio_symbol("kCGImagePropertyWebPDelayTime"),
-    ) {
-        keys.push(AnimationKeys {
-            dictionary,
-            loop_count,
-            delay,
-            unclamped_delay: imageio_symbol("kCGImagePropertyWebPUnclampedDelayTime"),
-        });
-    }
+    keys.extend(
+        ["WebP", "HEICS"]
+            .into_iter()
+            .filter_map(run_time_animation_keys),
+    );
     keys
 }
 
+/// The keys of the animated format ImageIO names `format` in its keys, where this OS has them.
+fn run_time_animation_keys(format: &str) -> Option<AnimationKeys> {
+    let key = |name: &str| imageio_symbol(&format!("kCGImageProperty{format}{name}"));
+    Some(AnimationKeys {
+        dictionary: key("Dictionary")?,
+        loop_count: key("LoopCount")?,
+        delay: key("DelayTime")?,
+        unclamped_delay: key("UnclampedDelayTime"),
+    })
+}
+
 fn imageio_symbol(name: &str) -> Option<CFStringRef> {
-    let bundle = core_foundation::bundle::CFBundle::bundle_with_identifier(CFString::new(
-        "com.apple.ImageIO",
-    ))?;
+    let bundle = imageio_bundle()?;
     let name = CFString::new(name);
     let address = unsafe {
         core_foundation_sys::bundle::CFBundleGetDataPointerForName(
@@ -309,4 +383,21 @@ fn imageio_symbol(name: &str) -> Option<CFStringRef> {
         )
     };
     (!address.is_null()).then(|| unsafe { *address.cast::<CFStringRef>() })
+}
+
+/// The address of ImageIO's function `name`, where this OS has it.
+fn imageio_function(name: &str) -> Option<*const c_void> {
+    let bundle = imageio_bundle()?;
+    let name = CFString::new(name);
+    let address = unsafe {
+        core_foundation_sys::bundle::CFBundleGetFunctionPointerForName(
+            bundle.as_concrete_TypeRef(),
+            name.as_concrete_TypeRef(),
+        )
+    };
+    (!address.is_null()).then_some(address)
+}
+
+fn imageio_bundle() -> Option<core_foundation::bundle::CFBundle> {
+    core_foundation::bundle::CFBundle::bundle_with_identifier(CFString::new("com.apple.ImageIO"))
 }
