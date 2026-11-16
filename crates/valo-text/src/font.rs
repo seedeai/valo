@@ -444,6 +444,9 @@ pub struct FaceSet {
     /// registration order. Resolution asks per character, so a name is a
     /// lookup rather than a walk over every face comparing strings.
     by_name: HashMap<String, Vec<FontId>>,
+    /// The sources' default face, once [`FontCollection::require_default_face`] has
+    /// asked for it: the face a style none of whose families has a face is set in.
+    default_face: Option<FontId>,
 }
 
 /// `StyleFaces` is one text style's font resolution, prepared by
@@ -453,19 +456,22 @@ pub struct FaceSet {
 /// it is stale once a face is added to the set it came from.
 #[derive(Clone, Debug)]
 pub struct StyleFaces {
-    /// The requested families' faces, in request order, nearest-first.
+    /// The requested families' faces, in request order, nearest-first; the
+    /// set's default face alone when none of them has a face.
     families: Vec<Vec<FontId>>,
     /// The fallback chain, nearest-first.
     fallbacks: Vec<FontId>,
     /// Where tofu renders when nothing covers: the style's best variant,
-    /// else the first fallback, else the first face; `None` on an empty set.
+    /// else the default face, else the first fallback, else the first face;
+    /// `None` on an empty set.
     tofu: Option<FontId>,
 }
 
 impl StyleFaces {
     /// `style_face` is the face the style tries first, whatever a character
-    /// needs: its first present family's nearest variant, else the first
-    /// fallback, else the set's first face; `None` on an empty set. It is
+    /// needs: its first present family's nearest variant, else the set's
+    /// default face, else the first fallback, else the set's first face;
+    /// `None` on an empty set. It is
     /// skparagraph's first typeface for a style, in which a control
     /// character such as a hard line break is always resolved
     /// (`OneLineShaper::sortOutGlyphs` never counts one as unresolved), so
@@ -724,13 +730,22 @@ impl FaceSet {
     /// A run of text asks for a font per character; prepared once per style,
     /// each character is a coverage walk over these lists and no name lookup
     /// (Skia's `SkFontCollection::findTypefaces`, done once per text style).
+    /// When no requested family has a face, the set's default face stands in
+    /// for them, as `findTypefaces` answers with the default typeface; a style
+    /// whose family has a face never resolves in the default face.
     pub fn style_faces(&self, families: &[String], attrs: FontAttrs) -> StyleFaces {
         let fallbacks = self.fallbacks.iter().map(|id| (*id, self.get(*id)));
+        let mut requested: Vec<Vec<FontId>> = families
+            .iter()
+            .map(|name| self.nearest_first(self.variants(name), attrs))
+            .collect();
+        if let Some(default_face) = self.default_face {
+            if requested.iter().all(Vec::is_empty) {
+                requested = vec![vec![default_face]];
+            }
+        }
         StyleFaces {
-            families: families
-                .iter()
-                .map(|name| self.nearest_first(self.variants(name), attrs))
-                .collect(),
+            families: requested,
             fallbacks: self.nearest_first(fallbacks, attrs),
             tofu: self.tofu_face_opt(families, attrs),
         }
@@ -784,6 +799,7 @@ impl FaceSet {
         families
             .iter()
             .find_map(|name| self.family_variant(name, attrs))
+            .or(self.default_face)
             .or_else(|| self.fallbacks.first().copied())
             .or_else(|| (!self.fonts.is_empty()).then_some(FontId(0)))
     }
@@ -1179,9 +1195,11 @@ impl FontCollection {
     /// asks each font manager in order for `legacyMakeTypeface(nullptr, style)`. The
     /// registered faces come first, as Skia's registered-font provider answers with its
     /// first family, so the sources are asked only while the collection is empty. Their
-    /// answer joins the fallback chain, so the style's text resolves in it, as it does in
-    /// Skia's default typeface, and is not reported missing where it covers. It returns
-    /// `false` when the collection and every source have no face at all.
+    /// answer becomes the set's default face, which [`FaceSet::style_faces`] gives a
+    /// style only when none of its families has a face, and never joins the fallback
+    /// chain: a character the style's faces miss goes to the sources' character
+    /// lookup, as skparagraph's `defaultFallback(unicode, ..)`. It returns `false` when
+    /// the collection and every source have no face at all.
     pub fn require_default_face(&mut self, attrs: FontAttrs) -> bool {
         if !self.faces.is_empty() {
             return true;
@@ -1194,7 +1212,7 @@ impl FontCollection {
             return false;
         };
         let id = self.faces.add(font);
-        self.faces.add_fallback(id);
+        self.faces.default_face = Some(id);
         true
     }
 

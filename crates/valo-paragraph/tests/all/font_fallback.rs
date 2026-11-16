@@ -221,3 +221,44 @@ fn a_collection_with_no_face_anywhere_keeps_the_stand_in_line() {
     assert!(paragraph.faces().is_empty());
     assert_eq!(paragraph.height(), 24.0, "the stand-in line");
 }
+
+/// The default face is a style's only when none of its families has a face, as
+/// skparagraph's `findTypefaces` answers with it: a style whose family has one asks the
+/// sources' character lookup for what that family misses, as `defaultFallback(unicode, ..)`
+/// does, though the default face covers it.
+#[test]
+fn a_style_whose_family_has_a_face_falls_back_past_the_default_face() {
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: None,
+        fallback_bytes: Some(asset("noto_sans_arabic.ttf")),
+        default_bytes: Some(asset("noto_sans_arabic.ttf")),
+        asked_codepoints: Vec::new(),
+    });
+    let black = valo_geometry::Color::BLACK;
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text("ع", &TextStyle::new("Absent", 16.0, black));
+    let paragraph = b.build();
+    let default_face = paragraph
+        .faces()
+        .family_variant("Noto Sans Arabic", FontAttrs::default())
+        .expect("the default face is in the set");
+    assert!(
+        paragraph.demand().codepoints.is_empty(),
+        "the default face covers it"
+    );
+
+    fonts.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text("ع", &TextStyle::new("Fira Sans", 16.0, black));
+    let paragraph = b.build();
+    let (face, covered) =
+        paragraph
+            .faces()
+            .resolve_covered(&["Fira Sans".to_owned()], FontAttrs::default(), 'ع');
+
+    assert!(covered);
+    assert_ne!(face, default_face, "the source's character lookup answered");
+    assert_eq!(paragraph.faces().len(), 3);
+}
