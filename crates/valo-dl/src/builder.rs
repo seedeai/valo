@@ -318,10 +318,12 @@ impl DisplayListBuilder {
 
     /// `restore` closes the most recent save, layer, or mask scope.
     ///
-    /// An unmatched restore is ignored in release builds and triggers a debug assertion.
+    /// A restore at the base level, with no save to close, is ignored, as Flutter's
+    /// `DisplayListBuilder::Restore` and Skia's canvas ignore it: a framework that ends a picture
+    /// between a save and its restore, as Flutter's does when a child composites, restores on the
+    /// next picture's fresh canvas.
     pub fn restore(&mut self) {
         if self.scopes.len() == 1 {
-            debug_assert!(false, "restore() without matching save()");
             return;
         }
         let scope = self.scopes.pop().expect("checked above");
@@ -1191,6 +1193,20 @@ mod tests {
         assert_eq!(builder.save_count(), 2);
         builder.restore();
         assert_eq!(builder.save_count(), 1);
+    }
+
+    #[test]
+    fn a_restore_with_no_save_to_close_is_ignored_like_flutter() {
+        let mut builder = DisplayListBuilder::new();
+        builder.restore();
+        assert_eq!(builder.save_count(), 1);
+
+        builder.draw_rect(Rect::from_ltrb(0.0, 0.0, 1.0, 1.0), &Paint::default());
+        let list = builder.build();
+        assert!(
+            !list.ops().iter().any(|op| matches!(op, Op::Restore)),
+            "nothing recorded for the ignored restore"
+        );
     }
 
     #[test]
