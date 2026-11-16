@@ -404,6 +404,19 @@ pub trait FontSource {
 
     /// `face_for_codepoint` returns a covering face nearest to `attrs`.
     fn face_for_codepoint(&mut self, codepoint: char, attrs: FontAttrs) -> Option<Font>;
+
+    /// `default_face` returns the source's default face nearest to `attrs`, the face text
+    /// is set in when no family it asks for has one: Skia's
+    /// `SkFontMgr::legacyMakeTypeface(nullptr, style)`. A collection asks for it only while
+    /// it has no face at all.
+    ///
+    /// The default answers `None`: a source without a default leaves an empty collection's
+    /// text to its character lookup, and what that misses to the collection's demand, for a
+    /// host that loads fonts asynchronously.
+    fn default_face(&mut self, attrs: FontAttrs) -> Option<Font> {
+        let _ = attrs;
+        None
+    }
 }
 
 /// `match_style` returns the font nearest `attrs` among `fonts`, by CSS font
@@ -438,6 +451,9 @@ pub struct FaceSet {
     /// registration order. Resolution asks per character, so a name is a
     /// lookup rather than a walk over every face comparing strings.
     by_name: HashMap<String, Vec<FontId>>,
+    /// The sources' default face, once [`FontCollection::require_default_face`] has
+    /// asked for it: the face a style none of whose families has a face is set in.
+    default_face: Option<FontId>,
 }
 
 /// `StyleFaces` is one text style's font resolution, prepared by
@@ -447,19 +463,22 @@ pub struct FaceSet {
 /// it is stale once a face is added to the set it came from.
 #[derive(Clone, Debug)]
 pub struct StyleFaces {
-    /// The requested families' faces, in request order, nearest-first.
+    /// The requested families' faces, in request order, nearest-first; the
+    /// set's default face alone when none of them has a face.
     families: Vec<Vec<FontId>>,
     /// The fallback chain, nearest-first.
     fallbacks: Vec<FontId>,
     /// Where tofu renders when nothing covers: the style's best variant,
-    /// else the first fallback, else the first face; `None` on an empty set.
+    /// else the default face, else the first fallback, else the first face;
+    /// `None` on an empty set.
     tofu: Option<FontId>,
 }
 
 impl StyleFaces {
     /// `style_face` is the face the style tries first, whatever a character
-    /// needs: its first present family's nearest variant, else the first
-    /// fallback, else the set's first face; `None` on an empty set. It is
+    /// needs: its first present family's nearest variant, else the set's
+    /// default face, else the first fallback, else the set's first face;
+    /// `None` on an empty set. It is
     /// skparagraph's first typeface for a style, in which a control
     /// character such as a hard line break is always resolved
     /// (`OneLineShaper::sortOutGlyphs` never counts one as unresolved), so
@@ -718,13 +737,22 @@ impl FaceSet {
     /// A run of text asks for a font per character; prepared once per style,
     /// each character is a coverage walk over these lists and no name lookup
     /// (Skia's `SkFontCollection::findTypefaces`, done once per text style).
+    /// When no requested family has a face, the set's default face stands in
+    /// for them, as `findTypefaces` answers with the default typeface; a style
+    /// whose family has a face never resolves in the default face.
     pub fn style_faces(&self, families: &[String], attrs: FontAttrs) -> StyleFaces {
         let fallbacks = self.fallbacks.iter().map(|id| (*id, self.get(*id)));
+        let mut requested: Vec<Vec<FontId>> = families
+            .iter()
+            .map(|name| self.nearest_first(self.variants(name), attrs))
+            .collect();
+        if let Some(default_face) = self.default_face {
+            if requested.iter().all(Vec::is_empty) {
+                requested = vec![vec![default_face]];
+            }
+        }
         StyleFaces {
-            families: families
-                .iter()
-                .map(|name| self.nearest_first(self.variants(name), attrs))
-                .collect(),
+            families: requested,
             fallbacks: self.nearest_first(fallbacks, attrs),
             tofu: self.tofu_face_opt(families, attrs),
         }
@@ -778,6 +806,7 @@ impl FaceSet {
         families
             .iter()
             .find_map(|name| self.family_variant(name, attrs))
+            .or(self.default_face)
             .or_else(|| self.fallbacks.first().copied())
             .or_else(|| (!self.fonts.is_empty()).then_some(FontId(0)))
     }
@@ -1163,6 +1192,35 @@ impl FontCollection {
         }
         self.unanswered.add_family(name);
         false
+    }
+
+    /// `require_default_face` makes sure the collection has a face for a style none of
+    /// whose families answered, asking the sources for their default face when it has
+    /// none.
+    ///
+    /// It is the end of Skia's `findTypefaces`, which, when no requested family matched,
+    /// asks each font manager in order for `legacyMakeTypeface(nullptr, style)`. The
+    /// registered faces come first, as Skia's registered-font provider answers with its
+    /// first family, so the sources are asked only while the collection is empty. Their
+    /// answer becomes the set's default face, which [`FaceSet::style_faces`] gives a
+    /// style only when none of its families has a face, and never joins the fallback
+    /// chain: a character the style's faces miss goes to the sources' character
+    /// lookup, as skparagraph's `defaultFallback(unicode, ..)`. It returns `false` when
+    /// the collection and every source have no face at all.
+    pub fn require_default_face(&mut self, attrs: FontAttrs) -> bool {
+        if !self.faces.is_empty() {
+            return true;
+        }
+        let Some(font) = self
+            .sources
+            .iter_mut()
+            .find_map(|source| source.default_face(attrs))
+        else {
+            return false;
+        };
+        let id = self.faces.add(font);
+        self.faces.default_face = Some(id);
+        true
     }
 
     /// `require_codepoint` makes sure a face that `families` and `attrs`

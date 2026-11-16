@@ -98,6 +98,7 @@ pub fn shape_runs(
 ) -> Vec<ShapedRun> {
     let mut runs = Vec::new();
     for (span, style) in spans {
+        find_typefaces(collection, style, demand);
         if let Some(index) = placeholders.iter().position(|(at, _)| *at == span.start) {
             let placeholder = placeholders[index].1;
             runs.push(placeholder_run(
@@ -108,13 +109,6 @@ pub fn shape_runs(
                 placeholder,
             ));
             continue;
-        }
-        // The by-name miss point: the collection consults its own sources
-        // (Skia `findTypefaces` walking its managers).
-        for name in &style.families {
-            if !collection.require_family(name) {
-                demand.add_family(name);
-            }
         }
         for segment in segment_span(collection, text, span.clone(), style, bidi, demand) {
             runs.push(shape_segment(
@@ -127,6 +121,19 @@ pub fn shape_runs(
         }
     }
     runs
+}
+
+/// `find_typefaces` makes sure the collection holds the faces `style` asks for, as
+/// skparagraph's `FontCollection::findTypefaces` finds a text or placeholder style's: each
+/// requested family from the sources, recording in `demand` those none has, then, when no
+/// face is there at all, the sources' default face.
+fn find_typefaces(collection: &mut FontCollection, style: &TextStyle, demand: &mut FontDemand) {
+    for name in &style.families {
+        if !collection.require_family(name) {
+            demand.add_family(name);
+        }
+    }
+    collection.require_default_face(style.font_attrs());
 }
 
 struct Segment {
@@ -199,8 +206,9 @@ fn segment_span(
 /// its cmap maps the break, as skparagraph resolves a control character in the
 /// first typeface it tries and never hands one to fallback. Taking the first
 /// face that maps it instead would let whichever fallback faces happen to be
-/// loaded change a blank line's height. When the set has no face yet, a space
-/// asks the sources for the style's. `faces` is renewed when a face is added.
+/// loaded change a blank line's height. When the set has no face yet, no source
+/// having a default face, a space asks the sources for the style's. `faces` is
+/// renewed when a face is added.
 fn hard_break_face(
     collection: &mut FontCollection,
     faces: &mut StyleFaces,
@@ -239,8 +247,9 @@ fn character_face(
             demand.add_codepoint(ch, attrs);
         }
     } else if resolved.is_none() && collection.require_codepoint(&style.families, ' ', attrs) {
-        // Whitespace needs a face and the set has none yet: a space, which
-        // every face covers, asks the sources for the style's face.
+        // Whitespace needs a face and the set has none, no source having a
+        // default face: a space, which every face covers, asks the sources
+        // for the style's face.
         *faces = collection.faces().style_faces(&style.families, attrs);
         resolved = collection.faces().resolve_prepared(faces, ch);
     }

@@ -82,6 +82,7 @@ fn a_face_resolution_cannot_reach_does_not_answer_for_coverage() {
 struct ScriptedSource {
     family_bytes: Option<Vec<u8>>,
     fallback_bytes: Option<Vec<u8>>,
+    default_bytes: Option<Vec<u8>>,
     asked_codepoints: Vec<(char, FontAttrs)>,
 }
 
@@ -98,6 +99,10 @@ impl valo_text::FontSource for ScriptedSource {
         let font = Font::from_bytes(self.fallback_bytes.clone()?)?;
         font.covers(codepoint).then_some(font)
     }
+
+    fn default_face(&mut self, _attrs: FontAttrs) -> Option<Font> {
+        Font::from_bytes(self.default_bytes.clone()?)
+    }
 }
 
 /// A collection that starts empty and answers from its sources still
@@ -109,6 +114,7 @@ fn an_empty_collection_shapes_from_its_sources() {
     fonts.add_source(ScriptedSource {
         family_bytes: Some(asset("fira_sans.ttf")),
         fallback_bytes: None,
+        default_bytes: None,
         asked_codepoints: Vec::new(),
     });
 
@@ -135,6 +141,7 @@ fn an_empty_collection_gives_lone_hard_breaks_a_face() {
     fonts.add_source(ScriptedSource {
         family_bytes: None,
         fallback_bytes: Some(asset("fira_sans.ttf")),
+        default_bytes: None,
         asked_codepoints: Vec::new(),
     });
 
@@ -154,4 +161,104 @@ fn an_empty_collection_gives_lone_hard_breaks_a_face() {
             "the newline at {newline} has a box"
         );
     }
+}
+
+/// A collection whose source has no face for the requested family, and none for any
+/// character, measures with the source's default face, as skparagraph's `findTypefaces`
+/// asks each font manager for `legacyMakeTypeface(nullptr, style)` when no family matched:
+/// the line is the default face's height, and the text it covers is not reported missing.
+#[test]
+fn an_empty_collection_measures_with_its_sources_default_face() {
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: None,
+        fallback_bytes: None,
+        default_bytes: Some(asset("fira_sans.ttf")),
+        asked_codepoints: Vec::new(),
+    });
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text(
+        "hello",
+        &TextStyle::new("Absent", 16.0, valo_geometry::Color::BLACK),
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(1000.0);
+
+    let default_face = Font::from_bytes(asset("fira_sans.ttf")).unwrap();
+    assert_eq!(
+        paragraph.height(),
+        default_face.line_height_px(16.0).round()
+    );
+    assert!(
+        paragraph.longest_line() > 0.0,
+        "the default face shaped the text"
+    );
+    assert_eq!(paragraph.demand().families, vec!["Absent".to_owned()]);
+    assert!(paragraph.demand().codepoints.is_empty());
+}
+
+/// A collection whose sources have no face at all keeps the stand-in line, there being no
+/// font to measure.
+#[test]
+fn a_collection_with_no_face_anywhere_keeps_the_stand_in_line() {
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: None,
+        fallback_bytes: None,
+        default_bytes: None,
+        asked_codepoints: Vec::new(),
+    });
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text(
+        "hello",
+        &TextStyle::new("Absent", 16.0, valo_geometry::Color::BLACK),
+    );
+    let mut paragraph = b.build();
+    paragraph.layout(1000.0);
+
+    assert!(paragraph.faces().is_empty());
+    assert_eq!(paragraph.height(), 24.0, "the stand-in line");
+}
+
+/// The default face is a style's only when none of its families has a face, as
+/// skparagraph's `findTypefaces` answers with it: a style whose family has one asks the
+/// sources' character lookup for what that family misses, as `defaultFallback(unicode, ..)`
+/// does, though the default face covers it.
+#[test]
+fn a_style_whose_family_has_a_face_falls_back_past_the_default_face() {
+    let mut fonts = valo_text::FontCollection::new();
+    fonts.add_source(ScriptedSource {
+        family_bytes: None,
+        fallback_bytes: Some(asset("noto_sans_arabic.ttf")),
+        default_bytes: Some(asset("noto_sans_arabic.ttf")),
+        asked_codepoints: Vec::new(),
+    });
+    let black = valo_geometry::Color::BLACK;
+
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text("ع", &TextStyle::new("Absent", 16.0, black));
+    let paragraph = b.build();
+    let default_face = paragraph
+        .faces()
+        .family_variant("Noto Sans Arabic", FontAttrs::default())
+        .expect("the default face is in the set");
+    assert!(
+        paragraph.demand().codepoints.is_empty(),
+        "the default face covers it"
+    );
+
+    fonts.register("Fira Sans", asset("fira_sans.ttf")).unwrap();
+    let mut b = ParagraphBuilder::new(&mut fonts);
+    b.add_text("ع", &TextStyle::new("Fira Sans", 16.0, black));
+    let paragraph = b.build();
+    let (face, covered) =
+        paragraph
+            .faces()
+            .resolve_covered(&["Fira Sans".to_owned()], FontAttrs::default(), 'ع');
+
+    assert!(covered);
+    assert_ne!(face, default_face, "the source's character lookup answered");
+    assert_eq!(paragraph.faces().len(), 3);
 }
