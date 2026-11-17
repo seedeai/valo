@@ -299,6 +299,97 @@ pub struct PlaceholderStyle {
     pub baseline_offset: f32,
 }
 
+/// `StrutStyle` sets the least room every line of a paragraph takes and where
+/// its baseline sits: Flutter's `StrutStyle`, skparagraph's `StrutStyle`, the
+/// typesetting strut.
+///
+/// A strut is an invisible run on every line: a font, a size, and optionally
+/// a height and a leading. A line with less room above or below its baseline
+/// than the strut has takes the strut's on that side, so the strut is a floor
+/// under every line's height; a taller line keeps its own room. Set
+/// [`Self::force_height`] to make every line exactly the strut's height
+/// instead, which guarantees even line spacing at the cost of letting taller
+/// text overlap its neighbours.
+///
+/// The strut draws nothing: it is measured, not painted. Off by default, as in
+/// Skia, and a disabled strut changes no line. The defaults are Skia's:
+/// normal weight and stretch, 14 pixels, no height override, no leading.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrutStyle {
+    /// `enabled` turns the strut on. A disabled strut is ignored whole.
+    pub enabled: bool,
+    /// `families` lists the font families the strut is measured from, in
+    /// fallback order.
+    ///
+    /// Empty measures the collection's default face, as Skia's
+    /// `findTypefaces` answers with it.
+    pub families: Vec<String>,
+    /// `weight` selects the CSS font weight of the strut's font.
+    pub weight: u16,
+    /// `italic` selects an italic face of the strut's font.
+    pub italic: bool,
+    /// `stretch` selects CSS font width as a percentage, where 100 is normal.
+    pub stretch: f32,
+    /// `size` is the strut font's size in logical pixels.
+    pub size: f32,
+    /// `height` multiplies `size` to set the strut's room, and is used only
+    /// when [`Self::height_override`] is set.
+    pub height: f32,
+    /// `height_override` sets the strut's height from `height` rather than
+    /// letting its font's own line height stand: its ascent and descent scale
+    /// by the ratio of `height × size` to the font's line height, so the strut
+    /// comes out that tall except for the font's line gap. Skia's
+    /// `heightOverride`, which Flutter sets whenever a height is given.
+    ///
+    /// Set [`Self::half_leading`] to share the room evenly instead, which makes
+    /// the strut exactly `height × size`.
+    pub height_override: bool,
+    /// `leading` adds space to the strut as a multiple of `size`, half above
+    /// and half below its text: Skia's `leading`, whose negative sentinel is
+    /// `None` here. `None` adds none, not the font's own line gap.
+    pub leading: Option<f32>,
+    /// `half_leading` shares the extra room a `height_override` adds evenly
+    /// above and below the text, where the font's ascent and descent ratio
+    /// would otherwise scale it: Skia's `halfLeading`, Flutter's
+    /// `TextLeadingDistribution.even`.
+    pub half_leading: bool,
+    /// `force_height` makes every line exactly the strut's height, ignoring
+    /// the text's own metrics: Skia's `forceStrutHeight`.
+    ///
+    /// Use it for even line spacing, such as a text field's, and not for text
+    /// whose glyphs must stay inside their lines.
+    pub force_height: bool,
+}
+
+impl Default for StrutStyle {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            families: Vec::new(),
+            weight: 400,
+            italic: false,
+            stretch: FontAttrs::default().stretch,
+            size: 14.0,
+            height: 1.0,
+            height_override: false,
+            leading: None,
+            half_leading: false,
+            force_height: false,
+        }
+    }
+}
+
+impl StrutStyle {
+    /// `font_attrs` returns the attributes used to select a face within a family.
+    pub fn font_attrs(&self) -> FontAttrs {
+        FontAttrs {
+            weight: self.weight,
+            italic: self.italic,
+            stretch: self.stretch,
+        }
+    }
+}
+
 /// `ParagraphStyle` controls layout behavior for a complete paragraph.
 #[derive(Clone, Debug, Default)]
 pub struct ParagraphStyle {
@@ -331,6 +422,14 @@ pub struct ParagraphStyle {
     /// line's bottom take the room a height multiplier gives them, or only the
     /// fonts' own.
     pub text_height_behavior: TextHeightBehavior,
+    /// `strut_style` is the least room every line takes, an invisible strut:
+    /// Flutter's `strutStyle`, [`StrutStyle`].
+    ///
+    /// Use it for evenly spaced lines, such as a text field's; leave it
+    /// disabled to let each line take exactly its own text's room. It draws
+    /// nothing, and the [`TextHeightBehavior`] still trims the first and last
+    /// lines' room after the strut raises it.
+    pub strut_style: StrutStyle,
 }
 
 /// `TextHeightBehavior` is whether a paragraph's first and last lines take the

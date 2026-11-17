@@ -55,8 +55,8 @@ pub use valo_geometry::{
 pub use valo_paragraph::{
     Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, LeadingDistribution, Line,
     LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PlaceholderAlignment,
-    PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Shadow, TextAlign, TextBaseline,
-    TextDirection, TextHeightBehavior, TextStyle, VariantCaps,
+    PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Shadow, StrutStyle, TextAlign,
+    TextBaseline, TextDirection, TextHeightBehavior, TextStyle, VariantCaps,
 };
 pub use valo_renderer::{
     request_device, AtlasReport, FeatureLevel, ImageDesc, MemoryReport, NoDevice, PoolReport,

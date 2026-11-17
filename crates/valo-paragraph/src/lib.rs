@@ -10,6 +10,7 @@
 mod drawing;
 mod paragraph;
 mod shape;
+mod strut;
 mod style;
 mod wrap;
 
@@ -20,6 +21,6 @@ pub use paragraph::{
 };
 pub use style::{
     Decoration, DecorationKind, LeadingDistribution, ParagraphStyle, PlaceholderAlignment,
-    PlaceholderStyle, Shadow, TextAlign, TextBaseline, TextDirection, TextHeightBehavior,
-    TextStyle, VariantCaps,
+    PlaceholderStyle, Shadow, StrutStyle, TextAlign, TextBaseline, TextDirection,
+    TextHeightBehavior, TextStyle, VariantCaps,
 };
