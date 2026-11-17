@@ -7,7 +7,9 @@
 //! the tests name come out the same.
 
 use valo_geometry::Color;
-use valo_paragraph::{Paragraph, ParagraphBuilder, ParagraphStyle, StrutStyle, TextStyle};
+use valo_paragraph::{
+    LeadingDistribution, Paragraph, ParagraphBuilder, ParagraphStyle, StrutStyle, TextStyle,
+};
 use valo_text::{Font, FontCollection};
 
 fn fonts() -> FontCollection {
@@ -359,4 +361,47 @@ fn a_forced_strut_sizes_an_empty_line_between_text() {
         assert!(near(line.ascent + line.descent, 40.0));
     }
     assert!(near(paragraph.height(), 120.0));
+}
+
+/// Skparagraph's `computeEmptyMetrics` shares a glyphless line's height
+/// override the way the STRUT's `halfLeading` says, whatever the text style's
+/// own leading distribution asks for. The slip is Skia's, kept so Flutter's
+/// numbers hold: here the text style asks for an even leading, and only the
+/// strut's flag makes the empty paragraph even.
+#[test]
+fn a_glyphless_lines_height_override_follows_the_struts_half_leading() {
+    let mut collection = fonts();
+    let text_style = TextStyle {
+        height: Some(2.0),
+        leading_distribution: LeadingDistribution::Even,
+        ..style(20.0)
+    };
+    let proportional = laid_out(
+        &mut collection,
+        "",
+        &text_style,
+        strut_paragraph(strut(14.0)),
+    );
+    let even = laid_out(
+        &mut collection,
+        "",
+        &text_style,
+        strut_paragraph(StrutStyle {
+            half_leading: true,
+            ..strut(14.0)
+        }),
+    );
+    let font = font(&proportional);
+    let (ascent, descent) = (font.ascent_px(20.0), font.descent_px(20.0));
+    // Proportional: the font's own room scaled by 2 × 20 over its line height.
+    assert!(near(
+        proportional.lines()[0].ascent,
+        ascent * 40.0 / (ascent + descent)
+    ));
+    // Half leading: the extra room shared evenly, which the text style's own
+    // leading distribution would have done either way.
+    assert!(near(
+        even.lines()[0].ascent,
+        ascent + (40.0 - (ascent + descent)) / 2.0
+    ));
 }

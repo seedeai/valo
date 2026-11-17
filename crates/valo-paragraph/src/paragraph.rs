@@ -9,7 +9,9 @@ use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis
 
 use crate::shape::{shape_runs, ShapedRun};
 use crate::strut::Strut;
-use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
+use crate::style::{
+    LeadingDistribution, ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle,
+};
 use crate::wrap::{empty_heights, is_hard_break, place_lines, wrap_lines, LineLimit, Wrapped};
 
 /// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
@@ -501,7 +503,7 @@ impl<'a> ParagraphBuilder<'a> {
         );
         let faces = self.fonts.faces().clone();
         let strut = Strut::resolve(&faces, &self.style.strut_style);
-        let empty_metrics = empty_line_metrics(&faces, self.spans.first(), strut);
+        let empty_metrics = empty_line_metrics(&faces, self.spans.first(), &self.style, strut);
         Paragraph {
             faces,
             text: std::mem::take(&mut self.text),
@@ -860,21 +862,38 @@ fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
 fn empty_line_metrics(
     faces: &FaceSet,
     first_span: Option<&(std::ops::Range<usize>, TextStyle)>,
+    style: &ParagraphStyle,
     strut: Option<Strut>,
 ) -> Option<crate::wrap::LineHeights> {
-    let Some((_, style)) = first_span else {
+    let Some((_, text_style)) = first_span else {
         return strut.map(|strut| strut.heights());
     };
     if faces.is_empty() {
         return strut.map(|strut| strut.heights());
     }
-    let attrs = style.font_attrs();
-    let id = faces.resolve(&style.families, attrs, ' ');
+    let attrs = text_style.font_attrs();
+    let id = faces.resolve(&text_style.families, attrs, ' ');
     let heights = empty_heights(
         faces.get(id),
-        style.size,
-        style.height,
-        style.leading_distribution,
+        text_style.size,
+        text_style.height,
+        glyphless_distribution(style),
     );
     Some(strut.map_or(heights, |strut| strut.apply(heights)))
+}
+
+/// `glyphless_distribution` is how a glyphless line shares a text style's height
+/// override: skparagraph's `ParagraphImpl::computeEmptyMetrics` reads the
+/// STRUT's `halfLeading` flag there, not the text style's own
+/// [`LeadingDistribution`].
+///
+/// The slip is kept on purpose. Flutter draws through Skia, and Waft's ported
+/// Flutter tests expect Skia's numbers, so a Valo-only difference here would
+/// surface later as an unexplained mismatch.
+fn glyphless_distribution(style: &ParagraphStyle) -> LeadingDistribution {
+    if style.strut_style.half_leading {
+        LeadingDistribution::Even
+    } else {
+        LeadingDistribution::Proportional
+    }
 }
