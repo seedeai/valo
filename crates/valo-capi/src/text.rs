@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use valo::{
     Decoration, DecorationKind, Font, FontCollection, FontId, Paragraph, ParagraphBuilder,
-    ParagraphStyle, TextAlign, TextHeightBehavior, TextStyle,
+    ParagraphStyle, StrutStyle, TextAlign, TextHeightBehavior, TextStyle,
 };
 
 use crate::{borrow, borrow_mut, dispose_handle, into_handle, ValoColor, ValoRect};
@@ -632,6 +632,9 @@ fn paragraph_style(style: &ValoParagraphStyle) -> ParagraphStyle {
         // As `direction`: the committed C struct has no field for it, so both lines take the
         // height they ask for.
         text_height_behavior: TextHeightBehavior::default(),
+        // As `direction`: the committed C struct has no strut, so every
+        // paragraph the C surface builds lays out without one.
+        strut_style: StrutStyle::default(),
     }
 }
 

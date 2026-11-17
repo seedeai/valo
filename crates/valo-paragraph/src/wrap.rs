@@ -466,6 +466,7 @@ pub fn place_lines(
     max_width: f32,
     style: &ParagraphStyle,
     empty_metrics: Option<LineHeights>,
+    strut: Option<crate::strut::Strut>,
 ) -> Layout {
     let mut lines = Vec::new();
     let mut y = 0.0f32;
@@ -496,6 +497,7 @@ pub fn place_lines(
         let heights = style
             .text_height_behavior
             .applied(heights, index == 0, index + 1 == count);
+        let heights = strut.map_or(heights, |strut| strut.apply(heights));
         let baseline = y + heights.ascent;
         let ellipsis = ellipsis_for(
             collection,
@@ -1047,6 +1049,7 @@ fn fit_placeholders(
             LineHeights {
                 ascent,
                 descent,
+                leading: 0.0,
                 raw_ascent: ascent,
                 raw_descent: descent,
             }
@@ -1079,13 +1082,20 @@ fn line_heights(collection: &FaceSet, runs: &[&ShapedRun]) -> Option<LineHeights
 }
 
 /// `LineHeights` is a line's room above and below its baseline, as its text asks for it
-/// (`ascent`, `descent`) and as its fonts alone have it, at no height multiplier and with no
-/// line gap (`raw_ascent`, `raw_descent`): skparagraph's `InternalLineMetrics`, its correct and
-/// raw sets. A line is `ascent + descent` tall, rounded to a whole pixel ([`height`](Self::height)).
+/// (`ascent`, `descent`) and as its fonts alone have it, at no height multiplier and with
+/// no line gap (`raw_ascent`, `raw_descent`): skparagraph's `InternalLineMetrics`, its
+/// correct and raw sets. A line is `ascent + descent` tall, rounded to a whole pixel
+/// ([`height`](Self::height)).
+///
+/// `leading` is the line gap the ascent and descent already carry half of each, kept
+/// because skparagraph compares a strut against a line's metrics by the gap's halves
+/// (`InternalLineMetrics::updateLineMetrics`); a run's own metrics fold the gap in and
+/// report no leading, while a glyphless line's report their font's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LineHeights {
     pub ascent: f32,
     pub descent: f32,
+    pub leading: f32,
     pub raw_ascent: f32,
     pub raw_descent: f32,
 }
@@ -1095,6 +1105,7 @@ impl LineHeights {
     const FALLBACK: LineHeights = LineHeights {
         ascent: 18.0,
         descent: 6.0,
+        leading: 0.0,
         raw_ascent: 16.0,
         raw_descent: 4.0,
     };
@@ -1110,49 +1121,88 @@ impl LineHeights {
         LineHeights {
             ascent: self.ascent.max(other.ascent),
             descent: self.descent.max(other.descent),
+            leading: self.leading.max(other.leading),
             raw_ascent: self.raw_ascent.max(other.raw_ascent),
             raw_descent: self.raw_descent.max(other.raw_descent),
         }
     }
 }
 
-/// One style's room above and below the baseline at `size`: skparagraph's
-/// `Run::calculateMetrics`. The font's line gap is shared half above and half
-/// below. A `height` multiplier makes the line `height × size` tall (its
-/// heightOverride), sharing the difference from the font's own height as
-/// `distribution` says: scaling the room above and below alike, or adding half
-/// of it to each (its half leading, where the line gap cancels out). Also seeds
-/// empty-line metrics from the paragraph style.
+/// One style's room above and below the baseline at `size`, its leading shared half above
+/// and half below and so reported as none: skparagraph's `Run::calculateMetrics`. The
+/// font's line gap is that leading. A `height` multiplier makes the line `height × size`
+/// tall (its heightOverride), sharing the difference from the font's own height as
+/// `distribution` says: scaling the room above and below alike, or adding half of it to
+/// each (its half leading, where the line gap cancels out).
 pub(crate) fn style_heights(
     font: &Font,
     size: f32,
     height: Option<f32>,
     distribution: LeadingDistribution,
 ) -> LineHeights {
+    let (ascent, descent, _) = split_heights(font, size, height, distribution);
     let (raw_ascent, raw_descent) = (font.ascent_px(size), font.descent_px(size));
-    let half_gap = (font.line_height_px(size) - raw_ascent - raw_descent) / 2.0;
+    LineHeights {
+        ascent,
+        descent,
+        leading: 0.0,
+        raw_ascent,
+        raw_descent,
+    }
+}
+
+/// `empty_heights` is a glyphless line's room above and below the baseline: skparagraph's
+/// `ParagraphImpl::computeEmptyMetrics`, which keeps the leading its font metrics give it
+/// where a run's metrics fold it away, so a strut compares against the line's real gap.
+pub(crate) fn empty_heights(
+    font: &Font,
+    size: f32,
+    height: Option<f32>,
+    distribution: LeadingDistribution,
+) -> LineHeights {
+    let (ascent, descent, leading) = split_heights(font, size, height, distribution);
+    let (raw_ascent, raw_descent) = (font.ascent_px(size), font.descent_px(size));
+    LineHeights {
+        ascent,
+        descent,
+        leading,
+        raw_ascent,
+        raw_descent,
+    }
+}
+
+/// `split_heights` is a style's room above and below the baseline at `size`, and the line
+/// gap it carries half on each side: the three numbers a line's metrics are made of, before
+/// [`style_heights`] or [`empty_heights`] decides whether the gap is kept.
+fn split_heights(
+    font: &Font,
+    size: f32,
+    height: Option<f32>,
+    distribution: LeadingDistribution,
+) -> (f32, f32, f32) {
+    let (raw_ascent, raw_descent) = (font.ascent_px(size), font.descent_px(size));
+    let gap = font.line_height_px(size) - raw_ascent - raw_descent;
+    let half_gap = gap / 2.0;
     let (ascent, descent) = (raw_ascent + half_gap, raw_descent + half_gap);
-    let (ascent, descent) = match height.filter(|multiplier| multiplier.abs() > f32::EPSILON) {
-        None => (ascent, descent),
+    match height.filter(|multiplier| multiplier.abs() > f32::EPSILON) {
+        None => (ascent, descent, gap),
         Some(multiplier) => {
             let target = multiplier * size;
             match distribution {
                 LeadingDistribution::Proportional => {
                     let k = target / (ascent + descent).max(1e-3);
-                    (ascent * k, descent * k)
+                    (ascent * k, descent * k, gap * k)
                 }
                 LeadingDistribution::Even => {
                     let half_leading = (target - (ascent + descent)) / 2.0;
-                    (ascent + half_leading, descent + half_leading)
+                    (
+                        ascent + half_leading,
+                        descent + half_leading,
+                        gap + half_leading * 2.0,
+                    )
                 }
             }
         }
-    };
-    LineHeights {
-        ascent,
-        descent,
-        raw_ascent,
-        raw_descent,
     }
 }
 

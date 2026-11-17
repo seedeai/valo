@@ -10,6 +10,7 @@ mod long_words;
 mod paints;
 mod paragraph;
 mod placeholder;
+mod strut;
 
 /// `asset` reads the font file `name` from the repository's test fonts.
 fn asset(name: &str) -> Vec<u8> {

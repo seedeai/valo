@@ -8,8 +8,11 @@ use valo_geometry::{Color, Rect};
 use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis, Rasterizer};
 
 use crate::shape::{shape_runs, ShapedRun};
-use crate::style::{ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle};
-use crate::wrap::{is_hard_break, place_lines, wrap_lines, LineLimit, Wrapped};
+use crate::strut::Strut;
+use crate::style::{
+    LeadingDistribution, ParagraphStyle, PlaceholderStyle, TextDirection, TextStyle,
+};
+use crate::wrap::{empty_heights, is_hard_break, place_lines, wrap_lines, LineLimit, Wrapped};
 
 /// `PlacedGlyph` describes one shaped glyph positioned within a paragraph.
 #[derive(Clone, Copy, Debug)]
@@ -173,6 +176,9 @@ pub struct Paragraph {
     /// Precomputed at build (glyphless lines measure by the first span's
     /// style) — the paragraph needs no collection afterwards.
     empty_metrics: Option<crate::wrap::LineHeights>,
+    /// The strut every line keeps room for, measured at build against the same
+    /// faces, as skparagraph resolves it once the text is shaped.
+    strut: Option<Strut>,
     /// What THIS text could not resolve, even after the collection asked
     /// its sources — the per-paragraph half of the async loop.
     demand: FontDemand,
@@ -234,6 +240,7 @@ impl Paragraph {
             max_width,
             &self.style,
             self.empty_line_metrics(),
+            self.strut,
         )
     }
 
@@ -495,7 +502,8 @@ impl<'a> ParagraphBuilder<'a> {
             &mut demand,
         );
         let faces = self.fonts.faces().clone();
-        let empty_metrics = empty_line_metrics(&faces, self.spans.first());
+        let strut = Strut::resolve(&faces, &self.style.strut_style);
+        let empty_metrics = empty_line_metrics(&faces, self.spans.first(), &self.style, strut);
         Paragraph {
             faces,
             text: std::mem::take(&mut self.text),
@@ -504,6 +512,7 @@ impl<'a> ParagraphBuilder<'a> {
             shaped,
             layout: None,
             empty_metrics,
+            strut,
             demand,
         }
     }
@@ -846,21 +855,45 @@ fn base_level(style: &ParagraphStyle) -> Option<unicode_bidi::Level> {
     })
 }
 
-/// `empty_line_metrics` resolves glyphless line metrics from the first span.
+/// `empty_line_metrics` resolves glyphless line metrics from the first span, as
+/// skparagraph's `computeEmptyMetrics` does, and gives them to the strut to
+/// raise or replace. Without a span the strut alone measures them, where a
+/// paragraph with no text and no style would otherwise fall back to a guess.
 fn empty_line_metrics(
     faces: &FaceSet,
     first_span: Option<&(std::ops::Range<usize>, TextStyle)>,
+    style: &ParagraphStyle,
+    strut: Option<Strut>,
 ) -> Option<crate::wrap::LineHeights> {
-    let (_, style) = first_span?;
+    let Some((_, text_style)) = first_span else {
+        return strut.map(|strut| strut.heights());
+    };
     if faces.is_empty() {
-        return None;
+        return strut.map(|strut| strut.heights());
     }
-    let attrs = style.font_attrs();
-    let id = faces.resolve(&style.families, attrs, ' ');
-    Some(crate::wrap::style_heights(
+    let attrs = text_style.font_attrs();
+    let id = faces.resolve(&text_style.families, attrs, ' ');
+    let heights = empty_heights(
         faces.get(id),
-        style.size,
-        style.height,
-        style.leading_distribution,
-    ))
+        text_style.size,
+        text_style.height,
+        glyphless_distribution(style),
+    );
+    Some(strut.map_or(heights, |strut| strut.apply(heights)))
+}
+
+/// `glyphless_distribution` is how a glyphless line shares a text style's height
+/// override: skparagraph's `ParagraphImpl::computeEmptyMetrics` reads the
+/// STRUT's `halfLeading` flag there, not the text style's own
+/// [`LeadingDistribution`].
+///
+/// The slip is kept on purpose. Flutter draws through Skia, and Waft's ported
+/// Flutter tests expect Skia's numbers, so a Valo-only difference here would
+/// surface later as an unexplained mismatch.
+fn glyphless_distribution(style: &ParagraphStyle) -> LeadingDistribution {
+    if style.strut_style.half_leading {
+        LeadingDistribution::Even
+    } else {
+        LeadingDistribution::Proportional
+    }
 }
