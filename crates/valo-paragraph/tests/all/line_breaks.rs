@@ -67,15 +67,17 @@ fn assert_close(actual: f32, expected: f32) {
     );
 }
 
-/// The line's full height, as every box on it spans.
-fn line_box(paragraph: &Paragraph, line: usize, left: f32, right: f32) -> Rect {
+/// `tight_box` is the room a single-font line's boxes span in Skia's tight
+/// style: the line's whole height from the rounding offset of its advance
+/// (`InternalLineMetrics::delta`, whose boxes start above the line top when the
+/// height is rounded down), so a box of this line's runs and one of its ghosts
+/// agree.
+fn tight_box(paragraph: &Paragraph, line: usize, left: f32, right: f32) -> Rect {
     let line = &paragraph.lines()[line];
-    Rect::from_ltrb(
-        left,
-        line.baseline - line.ascent,
-        right,
-        line.baseline + line.descent,
-    )
+    let whole = line.ascent + line.descent;
+    let rounded = (f64::from(line.ascent) + f64::from(line.descent)).round() as f32;
+    let top = line.baseline - line.ascent + (rounded - whole);
+    Rect::from_ltrb(left, top, right, top + whole)
 }
 
 fn assert_same_rect(actual: Rect, expected: Rect) {
@@ -100,7 +102,7 @@ fn a_hard_break_is_a_box_of_no_width_where_its_lines_text_ends() {
     let rects = paragraph.rects_for_range(3..4);
     assert_eq!(rects.len(), 1, "{rects:?}");
     let end = 3.0 * advance();
-    assert_same_rect(rects[0], line_box(&paragraph, 0, end, end));
+    assert_same_rect(rects[0], tight_box(&paragraph, 0, end, end));
 }
 
 /// A caret before a hard break stays at the end of the line the break ends.
@@ -140,13 +142,13 @@ fn a_hard_break_comes_after_the_trailing_spaces() {
     );
     assert_same_rect(
         paragraph.rects_for_range(3..4)[0],
-        line_box(&paragraph, 0, 3.0 * a, 3.0 * a),
+        tight_box(&paragraph, 0, 3.0 * a, 3.0 * a),
     );
     let space = paragraph.rects_for_range(2..3);
-    assert_same_rect(space[0], line_box(&paragraph, 0, 2.0 * a, 3.0 * a));
+    assert_same_rect(space[0], tight_box(&paragraph, 0, 2.0 * a, 3.0 * a));
     assert_same_rect(
         paragraph.rects_for_range(0..3)[0],
-        line_box(&paragraph, 0, 0.0, 3.0 * a),
+        tight_box(&paragraph, 0, 0.0, 3.0 * a),
     );
 }
 
@@ -246,7 +248,7 @@ fn a_text_of_one_newline_has_two_lines() {
     assert!(!lines[1].ends_with_hard_break());
     assert_same_rect(
         paragraph.rects_for_range(0..1)[0],
-        line_box(&paragraph, 0, 0.0, 0.0),
+        tight_box(&paragraph, 0, 0.0, 0.0),
     );
     let after = paragraph.caret_for_offset(1);
     assert_close(after.y, lines[1].baseline - lines[1].ascent);
@@ -267,7 +269,7 @@ fn a_trailing_newlines_empty_line_is_aligned() {
     assert_close(paragraph.caret_for_offset(3).x, 100.0);
     assert_same_rect(
         paragraph.rects_for_range(2..3)[0],
-        line_box(&paragraph, 0, 100.0, 100.0),
+        tight_box(&paragraph, 0, 100.0, 100.0),
     );
 }
 
@@ -281,7 +283,7 @@ fn a_right_to_left_hard_break_is_at_its_lines_left_end() {
     let line = &paragraph.lines()[0];
     let rects = paragraph.rects_for_range(newline..newline + 1);
     assert_eq!(rects.len(), 1, "{rects:?}");
-    assert_same_rect(rects[0], line_box(&paragraph, 0, line.left, line.left));
+    assert_same_rect(rects[0], tight_box(&paragraph, 0, line.left, line.left));
     let caret = paragraph.caret_for_offset(newline);
     assert_close(caret.x, line.left);
 }
@@ -296,7 +298,7 @@ fn a_hard_break_after_right_to_left_text_in_a_left_to_right_paragraph_is_at_the_
     let end = line.left + line.width;
     assert_same_rect(
         paragraph.rects_for_range(newline..newline + 1)[0],
-        line_box(&paragraph, 0, end, end),
+        tight_box(&paragraph, 0, end, end),
     );
 }
 

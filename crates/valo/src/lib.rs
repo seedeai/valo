@@ -53,10 +53,11 @@ pub use valo_geometry::{
     PathOperationError, PathSample, Point, Rect, Size, Stroke, Winding,
 };
 pub use valo_paragraph::{
-    Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt, LeadingDistribution, Line,
-    LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun, PlaceholderAlignment,
-    PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Shadow, StrutStyle, TextAlign,
-    TextBaseline, TextDirection, TextHeightBehavior, TextStyle, VariantCaps,
+    BoxHeightStyle, BoxWidthStyle, Decoration, DecorationKind, DrawGlyphRunExt, DrawParagraphExt,
+    LeadingDistribution, Line, LineMetrics, Paragraph, ParagraphBuilder, ParagraphStyle, PlacedRun,
+    PlaceholderAlignment, PlaceholderBox, PlaceholderStyle, PositionWithAffinity, Shadow,
+    StrutStyle, TextAlign, TextBaseline, TextBox, TextDirection, TextHeightBehavior, TextStyle,
+    VariantCaps,
 };
 pub use valo_renderer::{
     request_device, AtlasReport, FeatureLevel, ImageDesc, MemoryReport, NoDevice, PoolReport,

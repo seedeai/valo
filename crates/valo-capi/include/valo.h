@@ -509,8 +509,8 @@ ValoRect valo_paragraph_caret_for_offset(const ValoParagraph *paragraph,
 size_t valo_paragraph_byte_offset_at(const ValoParagraph *paragraph, float x,
                                      float y, bool *out_downstream);
 /* valo_paragraph_rects_for_range writes selection rectangles for a UTF-8
- * byte range. Writes up to capacity rects, returns the TOTAL count (size
- * with capacity 0, then call again). */
+ * byte range in the tight height and width styles. Writes up to capacity
+ * rects, returns the TOTAL count (size with capacity 0, then call again). */
 size_t valo_paragraph_rects_for_range(const ValoParagraph *paragraph,
                                       size_t start, size_t end,
                                       ValoRect *out_rects, size_t capacity);

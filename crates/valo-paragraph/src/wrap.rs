@@ -6,7 +6,7 @@ use valo_text::{FaceSet, Font};
 
 use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
 use crate::shape::{shape_ellipsis, ShapedPlaceholder, ShapedRun};
-use crate::style::{LeadingDistribution, ParagraphStyle, TextAlign};
+use crate::style::{LeadingDistribution, ParagraphStyle, TextAlign, TextDirection};
 
 /// The wrap tier's output: chosen line ranges, truncation, and the
 /// intrinsic widths accumulated during the walk (Skia's TextWrapper carries
@@ -469,8 +469,10 @@ pub fn place_lines(
     strut: Option<crate::strut::Strut>,
 ) -> Layout {
     let mut lines = Vec::new();
+    let mut line_metrics = Vec::new();
     let mut y = 0.0f32;
     let mut para_width = 0.0f32;
+    let mut width_with_trailing_spaces = 0.0f32;
     // Lines with no clusters (the empty line after a trailing newline, an empty
     // paragraph) take the previous line's metrics, as skparagraph's last line
     // keeps them, or before any line the paragraph style's — skparagraph's
@@ -519,6 +521,8 @@ pub fn place_lines(
         };
         let placed = place_line(collection, text, bidi, &overlapping, &line, ellipsis);
         para_width = para_width.max(placed.width);
+        width_with_trailing_spaces = width_with_trailing_spaces.max(placed.width_with_spaces);
+        line_metrics.push(heights);
         lines.push(Line {
             runs: placed.runs,
             baseline,
@@ -540,6 +544,20 @@ pub fn place_lines(
         truncated: wrapped.truncated,
         wrapped,
         lines,
+        heights: line_metrics,
+        width_with_trailing_spaces,
+        direction: paragraph_direction(bidi),
+    }
+}
+
+/// `paragraph_direction` is the direction the paragraph resolved to, explicit
+/// or inferred from its first strong character: the direction a line's trailing
+/// space reports in a selection box, as skparagraph's `TextLine::getRectsForRange`
+/// gives it the paragraph's direction rather than its run's.
+fn paragraph_direction(bidi: &BidiInfo) -> TextDirection {
+    match bidi.paragraphs.first() {
+        Some(paragraph) if paragraph.level.is_rtl() => TextDirection::Rtl,
+        _ => TextDirection::Ltr,
     }
 }
 
@@ -559,6 +577,9 @@ struct LineSpec {
 struct PlacedLine {
     runs: Vec<PlacedRun>,
     width: f32,
+    /// How wide the line is with its trailing whitespace and hard break, the
+    /// ghosts a selection can reach: skparagraph's `widthWithSpaces`.
+    width_with_spaces: f32,
     left: f32,
     content_end: usize,
 }
@@ -609,6 +630,7 @@ fn place_line(
         return PlacedLine {
             runs: Vec::new(),
             width: 0.0,
+            width_with_spaces: 0.0,
             left: align_shift(line, 0.0),
             content_end: line.range.start,
         };
@@ -680,6 +702,7 @@ fn place_line(
     PlacedLine {
         runs: placed,
         width,
+        width_with_spaces: width + ghosts_width,
         left: x0,
         content_end,
     }

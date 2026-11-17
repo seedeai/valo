@@ -493,7 +493,9 @@ pub unsafe extern "C" fn valo_paragraph_byte_offset_at(
     position.offset
 }
 
-/// `valo_paragraph_rects_for_range` writes selection rectangles for a UTF-8 byte range.
+/// `valo_paragraph_rects_for_range` writes selection rectangles for a UTF-8 byte
+/// range, in the tight height and width styles (the C struct has no style fields;
+/// a Rust embedder asks [`valo::Paragraph::boxes_for_range`] for the rest).
 ///
 /// Writes up to `capacity` rects and returns the total count (call once with
 /// capacity 0 to size). Null handle returns 0.
