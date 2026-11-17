@@ -502,7 +502,7 @@ impl DisplayListBuilder {
     ///
     /// The shadow is resolved when it is drawn, as Impeller resolves it: the
     /// path moves down by the occluder's height, `device_pixel_ratio ×
-    /// elevation` in its own coordinates, and fills with a toned, lighter
+    /// elevation` device pixels, and fills with a toned, lighter
     /// `color` under a blur whose radius is that height over the vertical
     /// scale of the whole transform it is drawn under, scales of the lists
     /// and layers around it included. `transparent_occluder` is recorded and
@@ -525,7 +525,7 @@ impl DisplayListBuilder {
         else {
             return;
         };
-        let moved = spot.offset.map_rect(&path.bounds());
+        let moved = Matrix::translation(0.0, spot.local_drop(&transform)).map_rect(&path.bounds());
         let local = spot.paint.effect_bounds(moved);
         let round_rect = closed_form_shadow(path);
         let takes_group_opacity = false;
@@ -2389,8 +2389,10 @@ mod tests {
         assert!(!can_elide);
     }
 
-    /// A shadow's bounds are its path moved down by the occluder's height
-    /// and spread by its blur, resolved under the transform at record time.
+    /// A shadow's bounds are its path moved down by the occluder's height in
+    /// device pixels — four of them in the path's own coordinates at a scale
+    /// of two — and spread by its blur, from what the recorder resolves under
+    /// the transform.
     #[test]
     fn a_shadow_records_the_bounds_of_its_moved_and_blurred_path() {
         let path = rect_path(Rect::new(10.0, 10.0, 20.0, 20.0));
@@ -2405,9 +2407,9 @@ mod tests {
             panic!("one shadow recorded: {:?}", dl.ops());
         };
         assert_eq!(*round_rect, Some((Rect::new(10.0, 10.0, 20.0, 20.0), 0.0)));
-        // A height of 8 local units; a radius of 8 / 2, a σ of 4 / √3 + 0.5,
-        // padded by its 3σ rounded up, 9.
-        let local = Rect::new(10.0, 18.0, 20.0, 20.0).expand(9.0);
+        // A height of 8 device pixels, 8 / 2 = 4 local units; a radius of
+        // 8 / 2, a σ of 4 / √3 + 0.5, padded by its 3σ rounded up, 9.
+        let local = Rect::new(10.0, 14.0, 20.0, 20.0).expand(9.0);
         assert_eq!(*bounds, Matrix::scale(2.0, 2.0).map_rect(&local));
     }
 
