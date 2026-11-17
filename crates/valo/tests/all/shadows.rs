@@ -1,9 +1,9 @@
 //! A shadow resolved when it is drawn, as Impeller's `DlDispatcherBase::drawShadow`
-//! resolves it: the path moved down by the occluder's height and filled with a toned spot
-//! colour under a mask blur whose radius is that height over the vertical scale of the
-//! whole transform it is drawn under. A picture recorded at no scale and drawn under one
-//! blurs as a shadow recorded under that scale does, which a shadow resolved when it is
-//! recorded cannot.
+//! resolves it: the path moved down by the occluder's height in device pixels and filled
+//! with a toned spot colour under a mask blur whose radius is that height over the vertical
+//! scale of the whole transform it is drawn under. A picture recorded at no scale and drawn
+//! under one blurs as a shadow recorded under that scale does, which a shadow resolved when
+//! it is recorded cannot.
 
 use std::sync::Arc;
 
@@ -63,8 +63,9 @@ fn scaled(scale: f32, record: impl FnOnce(&mut DisplayListBuilder)) -> DisplayLi
 
 /// `spot_by_hand` is what Impeller draws for one shadow of a black occluder, a card or a
 /// pill, under
-/// `scale`: the path moved down by the occluder's height in its own coordinates, filled
-/// with a quarter-alpha black under a mask blur of the height over the scale, as a sigma.
+/// `scale`: the path moved down by the occluder's height in device pixels — the height over
+/// `scale` in its own coordinates — filled with a quarter-alpha black under a mask blur of
+/// the height over the scale, as a sigma.
 fn spot_by_hand(b: &mut DisplayListBuilder, path: &Arc<Path>, occluder_z: f32, scale: f32) {
     let radius = occluder_z / scale;
     let paint = Paint {
@@ -72,7 +73,7 @@ fn spot_by_hand(b: &mut DisplayListBuilder, path: &Arc<Path>, occluder_z: f32, s
         ..Paint::from_color(Color::rgba(0.0, 0.0, 0.0, 0.25))
     };
     b.save();
-    b.translate(0.0, occluder_z);
+    b.translate(0.0, occluder_z / scale);
     // Impeller draws both in closed form, as valo's builder draws a
     // mask-blurred rect and rounded rect.
     match path.as_round_rect() {
@@ -88,6 +89,24 @@ fn max_difference(a: &[u8], b: &[u8]) -> u8 {
         .map(|(a, b)| a.abs_diff(*b))
         .max()
         .unwrap_or(0)
+}
+
+/// `ink_centre_y` is the row the ink of `pixels` balances on, rows weighted by
+/// how far their colour sits from `background`: a symmetric blurred shape
+/// weighs on its own centre however far it spreads.
+fn ink_centre_y(pixels: &[u8], background: Color) -> f32 {
+    let background_luminance = (background.r + background.g + background.b) / 3.0;
+    let mut weighted_rows = 0.0f64;
+    let mut total_weight = 0.0f64;
+    for (row, row_pixels) in pixels.chunks_exact(SIZE[0] as usize * 4).enumerate() {
+        for pixel in row_pixels.chunks_exact(4) {
+            let luminance = (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / (3.0 * 255.0);
+            let darkness = (background_luminance - luminance).max(0.0) as f64;
+            weighted_rows += darkness * row as f64;
+            total_weight += darkness;
+        }
+    }
+    (weighted_rows / total_weight) as f32
 }
 
 /// A shadow draws what Impeller's dispatcher draws for it, the spot worked by hand.
@@ -110,6 +129,32 @@ fn a_shadow_draws_impellers_spot() {
     );
     let difference = max_difference(&resolved, &by_hand);
     assert!(difference <= 3, "differs by {difference}");
+}
+
+/// Flutter drops a shadow in device pixels, as Impeller pre-concatenates its
+/// translation onto the transform: elevation one in a view of pixel ratio three
+/// under a scale of three drops the spot three device pixels below the card.
+/// A drop in the path's own coordinates would put it nine there, six too far.
+#[test]
+fn a_shadow_drops_in_device_pixels_under_a_scale() {
+    let Some(mut context) = context("a_shadow_drops_in_device_pixels_under_a_scale") else {
+        return;
+    };
+    let path = card();
+    let pixels = render(
+        &mut context,
+        scaled(3.0, |b| {
+            b.draw_shadow(&path, FillRule::NonZero, Color::BLACK, 1.0, false, 3.0);
+        }),
+    );
+    // The card's centre is 35 local pixels down, at a scale of three, plus
+    // the three device pixels of the drop.
+    let expected = 35.0 * 3.0 + 3.0;
+    let centre = ink_centre_y(&pixels, BACKGROUND);
+    assert!(
+        (centre - expected).abs() < 2.0,
+        "the spot's centre is at {centre}, not {expected}"
+    );
 }
 
 /// The case a shadow resolved at record time gets wrong: a picture recorded at no scale and
