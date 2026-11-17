@@ -334,7 +334,10 @@ impl Planner<'_> {
             self.plan.stats.culled += 1;
             return;
         };
-        let at = at.with_transform(at.transform.then(&spot.offset));
+        // The drop is Impeller's pre-concatenation: after the transform, so
+        // the scale does not stretch it.
+        let drop = Matrix::translation(0.0, spot.drop).then(&at.transform);
+        let at = at.with_transform(drop);
         let blur = spot.paint.mask_blur.unwrap_or(MaskBlur::new(0.0));
         let source = match shadow.round_rect {
             Some((rect, radius)) => DrawSource::RRectBlur {

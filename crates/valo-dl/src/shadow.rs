@@ -1,8 +1,8 @@
 //! A shadow resolved into the one draw Impeller makes of it
 //! (`DlDispatcherBase::drawShadow`): the occluder's path, moved down by the
-//! light, filled with a tonal spot colour under a mask blur whose radius is
-//! the occluder's height over the vertical scale of the transform it is
-//! drawn under.
+//! light in device pixels, filled with a tonal spot colour under a mask blur
+//! whose radius is the occluder's height over the vertical scale of the
+//! transform it is drawn under.
 //!
 //! The renderer resolves a recorded shadow under the transform in force at
 //! playback, which is what the blur's radius needs; the recorder resolves it
@@ -27,7 +27,7 @@ const LIGHT_RADIUS: f32 = (800 / 600) as f32;
 const KERNEL_RADIUS_PER_SIGMA: f32 = 1.732_050_8;
 
 /// `SpotShadow` is the draw a shadow resolves to under one transform: its
-/// path, moved by `offset`, filled with `paint`.
+/// path, moved down by `drop` device pixels, filled with `paint`.
 ///
 /// Flutter's `drawShadow` names an occluder by its elevation and the view's
 /// device pixel ratio, and Impeller turns that into this draw only when it
@@ -35,10 +35,14 @@ const KERNEL_RADIUS_PER_SIGMA: f32 = 1.732_050_8;
 /// scale of the whole transform the shadow is drawn under.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpotShadow {
-    /// `offset` is appended to the current transform before the path is
-    /// filled: a move down by the occluder's height, in the path's own
-    /// coordinates, as Impeller pre-concatenates it.
-    pub offset: Matrix,
+    /// `drop` is how far below the occluder its shadow falls, in device
+    /// pixels: the occluder's height, `device_pixel_ratio × elevation`.
+    ///
+    /// Impeller pre-concatenates this translation onto the current
+    /// transform, so it applies after the transform's scale and is not
+    /// scaled by it: an elevation of one in a view of pixel ratio three
+    /// falls three device pixels at any zoom.
+    pub drop: f32,
     /// `paint` fills the moved path: the tonal spot colour, with a normal
     /// mask blur in the path's coordinates.
     pub paint: Paint,
@@ -49,11 +53,13 @@ impl SpotShadow {
     /// `elevation`, in a view of `device_pixel_ratio`, drawn under
     /// `transform`: Impeller's `DlDispatcherBase::drawShadow`.
     ///
-    /// The occluder stands `device_pixel_ratio × elevation` above the canvas.
-    /// The blur's radius is that height over the length of `transform`'s
-    /// y axis, Impeller's `GetCurrentTransform().GetScale().y`, as a sigma.
-    /// `None` when `transform` flattens the y axis, under which the shadow
-    /// shows nowhere.
+    /// The occluder stands `device_pixel_ratio × elevation` above the canvas,
+    /// and its shadow drops that far in device pixels, after `transform`, as
+    /// Impeller pre-concatenates the move. The blur's radius is that height
+    /// over the length of `transform`'s y axis, Impeller's
+    /// `GetCurrentTransform().GetScale().y`, as a sigma, so it stays a radius
+    /// in the path's coordinates. `None` when `transform` flattens the y
+    /// axis, under which the shadow shows nowhere.
     pub fn resolve(
         color: Color,
         elevation: f32,
@@ -71,9 +77,21 @@ impl SpotShadow {
             ..Paint::from_color(tonal_spot_color(color))
         };
         Some(Self {
-            offset: Matrix::translation(0.0, -occluder_z * LIGHT_POSITION_Y),
+            drop: -occluder_z * LIGHT_POSITION_Y,
             paint,
         })
+    }
+
+    /// `local_drop` is `drop` as a move in the occluder's own coordinates
+    /// under `transform`: the blur's own division, by the vertical scale that
+    /// turns a local move into device pixels.
+    ///
+    /// Recording bounds move the path by this, so they land where playback
+    /// draws the shadow; the draw itself always drops by `drop` in device
+    /// pixels, as Impeller's pre-concatenation does. It is meaningful only
+    /// under a transform whose y axis has a length, which `resolve` requires.
+    pub fn local_drop(&self, transform: &Matrix) -> f32 {
+        self.drop / vertical_scale(transform)
     }
 }
 
@@ -136,7 +154,10 @@ mod tests {
     fn a_shadow_falls_by_its_height_and_blurs_by_it_over_the_scale() {
         let shadow = SpotShadow::resolve(Color::BLACK, 4.0, 2.0, &Matrix::scale(2.0, 2.0))
             .expect("the transform keeps its y axis");
-        assert_eq!(shadow.offset, Matrix::translation(0.0, 8.0));
+        // Eight device pixels, whatever the transform's scale: the spot is
+        // not moved in the path's own coordinates.
+        assert_eq!(shadow.drop, 8.0);
+        assert_eq!(shadow.local_drop(&Matrix::scale(2.0, 2.0)), 4.0);
         // A radius of 8 / 2 = 4, as a sigma: 4 / √3 + 0.5.
         assert!((sigma(&shadow) - 2.809_401).abs() < 1e-5, "{shadow:?}");
     }
