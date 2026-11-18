@@ -467,56 +467,52 @@ fn run_text_end(run: &PlacedRun, text_start: usize) -> usize {
 
 /// `run_extent` is the horizontal stretch of `range` inside `run`, or `None`
 /// when the range misses it.
+fn run_extent(run: &PlacedRun, range: &Range<usize>) -> Option<(f32, f32)> {
+    clusters_extent(&run_clusters(run), range, run.rtl)
+}
+
+/// `clusters_extent` is the horizontal stretch of `range` over `clusters`, a
+/// run's clusters in text order, or `None` when the range touches none.
 ///
 /// The clusters the range touches are taken whole, then the first and last are
 /// trimmed by the share of their text the range leaves out, as skparagraph
 /// measures a cluster in part (`Cluster::sizeToChar`, `sizeFromChar`): a range
-/// over the "i" of an "fi" ligature takes the ligature's second half.
-fn run_extent(run: &PlacedRun, range: &Range<usize>) -> Option<(f32, f32)> {
-    let clusters = run_clusters(run);
+/// over the "i" of an "fi" ligature takes the ligature's second half. Text
+/// begins at a left-to-right run's left and at a right-to-left run's right, so
+/// what the range leaves out before its start comes off that side.
+fn clusters_extent(clusters: &[RunCluster], range: &Range<usize>, rtl: bool) -> Option<(f32, f32)> {
     let touched =
         |cluster: &RunCluster| cluster.bytes.start < range.end && range.start < cluster.bytes.end;
-    let start = clusters.iter().position(touched)?;
-    let end = clusters.iter().rposition(touched)?;
-    let selected = &clusters[start..=end];
+    let selected =
+        &clusters[clusters.iter().position(touched)?..=clusters.iter().rposition(touched)?];
     let (first, last) = (&selected[0], &selected[selected.len() - 1]);
-    let mut left = selected
-        .iter()
-        .map(|cluster| cluster.left)
-        .fold(f32::INFINITY, f32::min);
-    let mut right = selected
-        .iter()
-        .map(|cluster| cluster.right)
-        .fold(f32::NEG_INFINITY, f32::max);
-    // A range that starts inside the first cluster leaves the part of it
-    // before the start out: on the left of a left-to-right run, on the right of
-    // a right-to-left one; one that ends inside the last leaves its tail out,
-    // on the other side.
-    let mut trim = 0.0;
-    if range.start > first.bytes.start {
-        trim = trimmed(first, range.start - first.bytes.start);
-    }
-    if run.rtl {
-        right -= trim;
+    let before = share(first, range.start.saturating_sub(first.bytes.start));
+    let after = share(last, last.bytes.end.saturating_sub(range.end));
+    let (left_out, right_out) = if rtl {
+        (after, before)
     } else {
-        left += trim;
-    }
-    trim = 0.0;
-    if range.end < last.bytes.end {
-        trim = trimmed(last, last.bytes.end - range.end);
-    }
-    if run.rtl {
-        left += trim;
-    } else {
-        right -= trim;
-    }
+        (before, after)
+    };
+    let (left, right) = whole_extent(selected);
+    let (left, right) = (left + left_out, right - right_out);
+    // Glyph offsets can leave the trimmed edges crossed, as marks piled on one
+    // letter do; skparagraph then gives the box no width rather than a
+    // negative one.
     Some((left, right.max(left)))
 }
 
-/// `trimmed` is the share of `cluster`'s width that `bytes` of its text take,
-/// from the side they start on: skparagraph's `Cluster::sizeToChar` and
-/// `sizeFromChar` measure a cluster's text by its bytes.
-fn trimmed(cluster: &RunCluster, bytes: usize) -> f32 {
+/// `whole_extent` is the horizontal stretch of `clusters` taken whole.
+fn whole_extent(clusters: &[RunCluster]) -> (f32, f32) {
+    clusters.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(left, right), cluster| (left.min(cluster.left), right.max(cluster.right)),
+    )
+}
+
+/// `share` is the part of `cluster`'s width that `bytes` of its text take:
+/// skparagraph's `Cluster::sizeToChar` and `sizeFromChar` measure a cluster's
+/// text by its UTF-8 bytes.
+fn share(cluster: &RunCluster, bytes: usize) -> f32 {
     let share = bytes as f32 / cluster.bytes.len().max(1) as f32;
     (cluster.right - cluster.left) * share
 }
@@ -553,4 +549,57 @@ fn joined(last: Rect, rect: Rect) -> Rect {
         last.right().max(rect.right()),
         last.bottom(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster(bytes: Range<usize>, left: f32, right: f32) -> RunCluster {
+        RunCluster { bytes, left, right }
+    }
+
+    /// A range inside a left-to-right ligature takes the share of it its bytes
+    /// name, its first letter on the left.
+    #[test]
+    fn a_left_to_right_ligature_is_shared_from_its_left() {
+        let clusters = [cluster(0..2, 10.0, 30.0)];
+        assert_eq!(
+            clusters_extent(&clusters, &(0..1), false),
+            Some((10.0, 20.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(1..2), false),
+            Some((20.0, 30.0))
+        );
+    }
+
+    /// A right-to-left ligature's first letter is on its right, so a range
+    /// over it takes the right share: skparagraph takes `sizeToChar` off a
+    /// right-to-left clip's right and `sizeFromChar` off its left. No test
+    /// font has a right-to-left ligature, so this states the clusters.
+    #[test]
+    fn a_right_to_left_ligature_is_shared_from_its_right() {
+        // A letter, a ligature of two letters, a letter, each letter two bytes,
+        // laid out from the right.
+        let clusters = [
+            cluster(0..2, 30.0, 40.0),
+            cluster(2..6, 10.0, 30.0),
+            cluster(6..8, 0.0, 10.0),
+        ];
+        assert_eq!(
+            clusters_extent(&clusters, &(2..4), true),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(4..6), true),
+            Some((10.0, 20.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(0..4), true),
+            Some((20.0, 40.0))
+        );
+        assert_eq!(clusters_extent(&clusters, &(4..8), true), Some((0.0, 20.0)));
+        assert_eq!(clusters_extent(&clusters, &(0..8), true), Some((0.0, 40.0)));
+    }
 }
