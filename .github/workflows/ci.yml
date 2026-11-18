@@ -38,7 +38,9 @@ jobs:
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
       - uses: Swatinem/rust-cache@v2
       # The GPU-free half of the workspace. Golden pixel tests need an adapter
-      # and run in the `goldens` job instead. The system-font tests skip
+      # and run on a developer's machine, whose driver blessed them: a hosted
+      # Mac's Metal driver differs on a few pixels of a gradient seam, every
+      # run the same. The system-font tests skip
       # themselves when the host lacks the faces they ask for.
       - run: |
           cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-paragraph \
@@ -114,8 +116,8 @@ jobs:
       - run: cargo check --workspace --all-targets
       - run: cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-paragraph -p valo-svg -p valo-system-fonts
       # WARP is Windows' software Direct3D 12 adapter, so this exercises the
-      # real renderer on the real backend without a GPU. Same probation as the
-      # macOS goldens job: report until it proves stable, then require it.
+      # real renderer on the real backend without a GPU. It reports rather than
+      # blocks until it proves stable, then it is required.
       - name: Golden pixels on WARP (Direct3D 12)
         continue-on-error: true
         # WARP crashes inside d3d10warp.dll when several devices render at once.
@@ -148,25 +150,3 @@ jobs:
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
-
-  goldens:
-    name: golden pixels (GPU)
-    runs-on: macos-15
-    # The goldens were blessed on a developer Mac. A hosted runner's driver may
-    # differ by more than the ±3-per-channel tolerance allows, so this job
-    # reports rather than blocks until one real run proves it stable. Promote it
-    # to required once it has passed a few times; if it turns out to differ
-    # systematically, keep pixel goldens local and drop this job.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - name: Golden pixel tests + C ABI parity
-        run: cargo test -p valo -p valo-capi -p valo-harness
-      - name: Upload rendered mismatches
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: golden-mismatches
-          path: crates/valo/tests/goldens/*.actual.png
-          if-no-files-found: ignore
