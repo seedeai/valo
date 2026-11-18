@@ -28,12 +28,10 @@ valo-paragraph = { path = "crates/valo-paragraph", version = "0.26.0" }
 valo-renderer = { path = "crates/valo-renderer", version = "0.26.0" }
 valo-harness = { path = "crates/valo-harness" }
 valo = { path = "crates/valo", version = "0.26.0" }
-valo-svg = { path = "crates/valo-svg", version = "0.26.0" }
 valo-fontmgr = { path = "crates/valo-fontmgr", version = "0.26.0" }
 valo-system-fonts = { path = "crates/valo-system-fonts", version = "0.26.0" }
 valo-codec = { path = "crates/valo-codec", version = "0.26.0" }
 valo-codec-software = { path = "crates/valo-codec-software", version = "0.26.0", default-features = false }
-valo-pdf = { path = "crates/valo-pdf", version = "0.26.0" }
 # gpu — wgpu IS the HAL (no layer over it)
 wgpu = "30"
 naga = { version = "30", features = ["wgsl-in"] }
