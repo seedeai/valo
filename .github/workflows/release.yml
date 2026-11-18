@@ -1,0 +1,41 @@
+# A release is one tag, `v<version>`: the GPU-free tests pass, every published crate goes to
+# crates.io at the tag's version together, and a crate depending on the published `valo` builds
+# from crates.io alone. valo-web's npm package is published by hand for now.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: The tag names the workspace's version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "valo") | .version')
+          test "${GITHUB_REF_NAME#v}" = "$version" || { echo "tag $GITHUB_REF_NAME, workspace $version"; exit 1; }
+      - name: Tests (no GPU)
+        run: |
+          cargo test -p valo-geometry -p valo-dl -p valo-text -p valo-paragraph \
+                     -p valo-svg -p valo-system-fonts
+      - name: Publish every published crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace
+      - name: A crate on the published valo builds from crates.io alone
+        working-directory: ${{ runner.temp }}
+        run: |
+          cargo new --lib release-check
+          cd release-check
+          cargo add "valo@=${GITHUB_REF_NAME#v}"
+          cargo check
