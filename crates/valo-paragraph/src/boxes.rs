@@ -9,16 +9,21 @@
 //! vertical room join into one box, as skparagraph merges them, and every box
 //! reports the direction of the text in it ([`TextBox`]).
 //!
+//! A selection takes whole graphemes, never part of one, and a cluster that
+//! stands for more than one grapheme — a ligature's "fi" — is taken in part, by
+//! the share of its text the range names.
+//!
 //! Skia rounds every box coordinate to a hundredth when a paragraph style asks
 //! for its rounding hack (`applyRoundingHack`, `littleRound`). Flutter turns the
 //! hack off, and Valo leaves coordinates exact, as it does everywhere else.
 
 use std::ops::Range;
 
+use unicode_segmentation::GraphemeCursor;
 use valo_geometry::Rect;
 use valo_text::FaceSet;
 
-use crate::paragraph::{Layout, Line, PlacedRun};
+use crate::paragraph::{Layout, Line, PlacedGlyph, PlacedRun};
 use crate::strut::StrutBox;
 use crate::style::{ParagraphStyle, TextDirection, TextHeightBehavior};
 use crate::wrap::{style_heights, LineHeights};
@@ -130,6 +135,15 @@ impl Selection<'_> {
             return boxes;
         }
         if range.start >= range.end || range.start > self.text.len() || range.end == 0 {
+            return boxes;
+        }
+        // skparagraph moves a selection's ends onto grapheme boundaries before
+        // it measures anything: a selection takes whole graphemes, never part
+        // of one, so a range inside a grapheme selects none of it
+        // (`findNextGraphemeBoundary` for the start, `findPreviousGraphemeBoundary`
+        // for the end).
+        let range = grapheme_range(self.text, range);
+        if range.start >= range.end {
             return boxes;
         }
         let count = self.layout.lines.len();
@@ -358,19 +372,149 @@ impl LineEdges {
     }
 }
 
-/// `run_extent` is the horizontal stretch of `run`'s glyphs whose clusters
-/// start in `range`, or `None` when it has none there.
+/// `grapheme_range` is `range` moved onto grapheme boundaries, as skparagraph
+/// moves it: the start forward to the next grapheme's start and the end back to
+/// the previous one, so only graphemes the range covers whole are selected.
+///
+/// It reads only the text around the two ends, so a text field asking for its
+/// caret's box on every move does not walk the whole text each time.
+fn grapheme_range(text: &str, range: Range<usize>) -> Range<usize> {
+    let start = next_grapheme_boundary(text, text.ceil_char_boundary(range.start));
+    let end = previous_grapheme_boundary(text, text.floor_char_boundary(range.end));
+    start..end
+}
+
+/// `next_grapheme_boundary` is `offset` when a grapheme starts there, else the
+/// start of the next one: skparagraph's `findNextGraphemeBoundary`.
+fn next_grapheme_boundary(text: &str, offset: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+    if is_grapheme_boundary(&mut cursor, text) {
+        return offset;
+    }
+    cursor
+        .next_boundary(text, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(text.len())
+}
+
+/// `previous_grapheme_boundary` is `offset` when a grapheme starts there, else
+/// the start of the one it falls in: skparagraph's
+/// `findPreviousGraphemeBoundary`.
+fn previous_grapheme_boundary(text: &str, offset: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+    if is_grapheme_boundary(&mut cursor, text) {
+        return offset;
+    }
+    cursor.prev_boundary(text, 0).ok().flatten().unwrap_or(0)
+}
+
+/// `is_grapheme_boundary` reports whether a grapheme starts or ends at
+/// `cursor`. The cursor is given the whole of `text` as one chunk, so it never
+/// asks for text it was not given.
+fn is_grapheme_boundary(cursor: &mut GraphemeCursor, text: &str) -> bool {
+    cursor.is_boundary(text, 0).unwrap_or(true)
+}
+
+/// `RunCluster` is one shaped cluster of a run: the bytes of the paragraph's
+/// text it stands for and the horizontal stretch it takes.
+///
+/// `bytes` spans every byte of the cluster, so a ligature's cluster covers the
+/// letters it stands for and a range can fall inside one.
+struct RunCluster {
+    bytes: Range<usize>,
+    left: f32,
+    right: f32,
+}
+
+/// `run_clusters` is a run's clusters in text order.
+fn run_clusters(run: &PlacedRun) -> Vec<RunCluster> {
+    let mut glyphs: Vec<&PlacedGlyph> = run.glyphs.iter().collect();
+    glyphs.sort_by_key(|glyph| glyph.cluster);
+    let mut clusters: Vec<RunCluster> = Vec::new();
+    for glyph in glyphs {
+        match clusters.last_mut() {
+            Some(cluster) if cluster.bytes.start == glyph.cluster => {
+                cluster.left = cluster.left.min(glyph.x);
+                cluster.right = cluster.right.max(glyph.x + glyph.advance);
+            }
+            _ => clusters.push(RunCluster {
+                bytes: glyph.cluster..glyph.cluster,
+                left: glyph.x,
+                right: glyph.x + glyph.advance,
+            }),
+        }
+    }
+    let ends: Vec<usize> = clusters.iter().map(|cluster| cluster.bytes.start).collect();
+    let text_end = run_text_end(run, ends.first().copied().unwrap_or(0));
+    for (index, cluster) in clusters.iter_mut().enumerate() {
+        cluster.bytes.end = ends.get(index + 1).copied().unwrap_or(text_end);
+    }
+    clusters
+}
+
+/// `run_text_end` is the byte after a run's last cluster: the bytes its text
+/// takes, which its glyph clusters start within. A run with no source text of
+/// its own — a placeholder's box, an ellipsis — stands for one cluster of no
+/// known length, and a single byte is enough to select it with.
+fn run_text_end(run: &PlacedRun, text_start: usize) -> usize {
+    if run.text.is_empty() {
+        text_start + 1
+    } else {
+        text_start + run.text.len()
+    }
+}
+
+/// `run_extent` is the horizontal stretch of `range` inside `run`, or `None`
+/// when the range misses it.
 fn run_extent(run: &PlacedRun, range: &Range<usize>) -> Option<(f32, f32)> {
-    let mut cells = run
-        .glyphs
-        .iter()
-        .filter(|glyph| glyph.cluster >= range.start && glyph.cluster < range.end);
-    let first = cells.next()?;
-    let (left, right) = cells.fold(
-        (first.x, first.x + first.advance),
-        |(left, right), glyph| (left.min(glyph.x), right.max(glyph.x + glyph.advance)),
-    );
-    Some((left, right))
+    clusters_extent(&run_clusters(run), range, run.rtl)
+}
+
+/// `clusters_extent` is the horizontal stretch of `range` over `clusters`, a
+/// run's clusters in text order, or `None` when the range touches none.
+///
+/// The clusters the range touches are taken whole, then the first and last are
+/// trimmed by the share of their text the range leaves out, as skparagraph
+/// measures a cluster in part (`Cluster::sizeToChar`, `sizeFromChar`): a range
+/// over the "i" of an "fi" ligature takes the ligature's second half. Text
+/// begins at a left-to-right run's left and at a right-to-left run's right, so
+/// what the range leaves out before its start comes off that side.
+fn clusters_extent(clusters: &[RunCluster], range: &Range<usize>, rtl: bool) -> Option<(f32, f32)> {
+    let touched =
+        |cluster: &RunCluster| cluster.bytes.start < range.end && range.start < cluster.bytes.end;
+    let selected =
+        &clusters[clusters.iter().position(touched)?..=clusters.iter().rposition(touched)?];
+    let (first, last) = (&selected[0], &selected[selected.len() - 1]);
+    let before = share(first, range.start.saturating_sub(first.bytes.start));
+    let after = share(last, last.bytes.end.saturating_sub(range.end));
+    let (left_out, right_out) = if rtl {
+        (after, before)
+    } else {
+        (before, after)
+    };
+    let (left, right) = whole_extent(selected);
+    let (left, right) = (left + left_out, right - right_out);
+    // Glyph offsets can leave the trimmed edges crossed, as marks piled on one
+    // letter do; skparagraph then gives the box no width rather than a
+    // negative one.
+    Some((left, right.max(left)))
+}
+
+/// `whole_extent` is the horizontal stretch of `clusters` taken whole.
+fn whole_extent(clusters: &[RunCluster]) -> (f32, f32) {
+    clusters.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(left, right), cluster| (left.min(cluster.left), right.max(cluster.right)),
+    )
+}
+
+/// `share` is the part of `cluster`'s width that `bytes` of its text take:
+/// skparagraph's `Cluster::sizeToChar` and `sizeFromChar` measure a cluster's
+/// text by its UTF-8 bytes.
+fn share(cluster: &RunCluster, bytes: usize) -> f32 {
+    let share = bytes as f32 / cluster.bytes.len().max(1) as f32;
+    (cluster.right - cluster.left) * share
 }
 
 /// `joins` reports whether `run`'s box continues `last`, the box of `before`,
@@ -405,4 +549,57 @@ fn joined(last: Rect, rect: Rect) -> Rect {
         last.right().max(rect.right()),
         last.bottom(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster(bytes: Range<usize>, left: f32, right: f32) -> RunCluster {
+        RunCluster { bytes, left, right }
+    }
+
+    /// A range inside a left-to-right ligature takes the share of it its bytes
+    /// name, its first letter on the left.
+    #[test]
+    fn a_left_to_right_ligature_is_shared_from_its_left() {
+        let clusters = [cluster(0..2, 10.0, 30.0)];
+        assert_eq!(
+            clusters_extent(&clusters, &(0..1), false),
+            Some((10.0, 20.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(1..2), false),
+            Some((20.0, 30.0))
+        );
+    }
+
+    /// A right-to-left ligature's first letter is on its right, so a range
+    /// over it takes the right share: skparagraph takes `sizeToChar` off a
+    /// right-to-left clip's right and `sizeFromChar` off its left. No test
+    /// font has a right-to-left ligature, so this states the clusters.
+    #[test]
+    fn a_right_to_left_ligature_is_shared_from_its_right() {
+        // A letter, a ligature of two letters, a letter, each letter two bytes,
+        // laid out from the right.
+        let clusters = [
+            cluster(0..2, 30.0, 40.0),
+            cluster(2..6, 10.0, 30.0),
+            cluster(6..8, 0.0, 10.0),
+        ];
+        assert_eq!(
+            clusters_extent(&clusters, &(2..4), true),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(4..6), true),
+            Some((10.0, 20.0))
+        );
+        assert_eq!(
+            clusters_extent(&clusters, &(0..4), true),
+            Some((20.0, 40.0))
+        );
+        assert_eq!(clusters_extent(&clusters, &(4..8), true), Some((0.0, 20.0)));
+        assert_eq!(clusters_extent(&clusters, &(0..8), true), Some((0.0, 40.0)));
+    }
 }
