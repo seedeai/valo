@@ -377,6 +377,32 @@ fn tight_boxes_are_their_runs_own_room_under_wrapped_text() {
     );
 }
 
+/// Skparagraph's `kTight` case gives a run with a height multiplier its font's
+/// OWN ascent and descent around the line's baseline, where the line takes the
+/// multiplier's room: a 2 × 20 px line is 40 tall and its text's tight box 24.
+#[test]
+fn a_height_multiplied_run_keeps_its_fonts_own_tight_box() {
+    let paragraph = laid_out_fira(
+        "hello",
+        &TextStyle {
+            height: Some(2.0),
+            ..style(20.0)
+        },
+        ParagraphStyle::default(),
+    );
+    let line = &paragraph.lines()[0];
+    let font = font(&paragraph);
+    assert_near(line.ascent + line.descent, 40.0);
+    let tight = boxes(&paragraph, BoxHeightStyle::Tight);
+    assert_near(tight[0].rect.y, line.baseline - font.ascent_px(20.0));
+    assert_near(
+        tight[0].rect.bottom(),
+        line.baseline + font.descent_px(20.0),
+    );
+    let widest = boxes(&paragraph, BoxHeightStyle::Max);
+    assert_near(widest[0].rect.height, 40.0);
+}
+
 /// `spaced` is `WRAPPED_TEXT` at a 1.6 × 50 px height: four 80 px lines, each
 /// with 15.58 px of room added above its text, which the line-spacing tests
 /// measure from.
