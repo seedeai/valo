@@ -9,7 +9,12 @@
 //! Skia's tests draw in Roboto and Noto Sans CJK, which are not Valo's test
 //! fonts. These draw in Fira Sans — ascent and descent 0.935 and 0.265 of its
 //! size, no line gap — and state each number against the shaped advances and
-//! font metrics the paragraph reports rather than Roboto's.
+//! font metrics the paragraph reports rather than Roboto's. Skia's `Tight` and
+//! line-spacing cases draw a line of kaomoji, "(　´･‿･｀)" repeated, in Roboto
+//! with a CJK fallback; Fira Sans covers none of its wide characters, so those
+//! ports keep Skia's height styles, width styles and ranges but draw
+//! `GetRectsForRangeParagraph`'s text, and their box counts are this text's,
+//! not Skia's.
 
 use std::ops::Range;
 
@@ -19,6 +24,8 @@ use valo_paragraph::{
     TextBox, TextDirection, TextStyle,
 };
 use valo_text::{Font, FontCollection};
+
+use crate::asset;
 
 fn fonts() -> FontCollection {
     let mut collection = FontCollection::new();
@@ -30,11 +37,6 @@ fn fonts() -> FontCollection {
 
 fn style(size: f32) -> TextStyle {
     TextStyle::new("Fira Sans", size, Color::BLACK)
-}
-
-fn asset(name: &str) -> Vec<u8> {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
-    std::fs::read(format!("{dir}/{name}")).unwrap()
 }
 
 /// `laid_out` is `text` at `width`, in one style and a paragraph style of its
@@ -210,11 +212,15 @@ fn a_range_inside_a_ligature_takes_the_part_of_it_it_names() {
     assert_near(word[0].right(), glyph_span(&paragraph, 5).1);
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeCombiningCharacter`:
-/// a selection takes whole graphemes. "e" and a combining acute are one
-/// grapheme, so a range over either half of it selects nothing and only the
-/// grapheme whole has a box; Skia's case draws Thai, which no Valo test font
-/// covers, so this draws the same shapes in Latin.
+/// A selection takes whole graphemes, as `ParagraphImpl::getRectsForRange`
+/// snaps a range's start forward and its end back to grapheme boundaries. "e"
+/// and a combining acute are one grapheme, so a range over either half of it
+/// selects nothing and only the grapheme whole has a box.
+///
+/// The shapes are `SkParagraph_GetRectsForRangeIncludeCombiningCharacter`'s,
+/// drawn in Latin since no Valo test font covers its Thai. That test is
+/// disabled in Skia, and it expects what the code does not give: a box for a
+/// mark alone, the whole grapheme's. These follow the code.
 #[test]
 fn a_selection_takes_whole_graphemes() {
     let paragraph = laid_out_fira("e\u{0301}x", &style(20.0), ParagraphStyle::default());
@@ -345,7 +351,9 @@ fn wrapped_ranges_get_a_box_per_line_in_the_line_height() {
 /// Skparagraph's `SkParagraph_GetRectsForRangeTight`: a `Tight` box is its
 /// run's own room, so at 50 px of Fira Sans a box is 60 px tall, the font's
 /// ascent and descent. Skia's case draws Noto Sans CJK, whose 74 px line is
-/// taller than Roboto's; Fira Sans's is its line's own here.
+/// taller than Roboto's; Fira Sans's is its line's own here. Skia's 8..21 is
+/// two boxes, its kaomoji falling back to a second font; this text is one
+/// font's.
 #[test]
 fn tight_boxes_are_their_runs_own_room_under_wrapped_text() {
     let paragraph = wrapped(&style(50.0));
@@ -452,8 +460,9 @@ fn line_spacing_middle_boxes_touch() {
     assert_near(first[0].rect.bottom(), height + shift / 2.0);
     assert_eq!(box_for(2..8).len(), 1);
 
-    // Skia's 8..21 ends at the line's content and then reaches the paragraph's
-    // widest line in a box of its own.
+    // This text's 8..21 ends at the first line's content, so the `Max` width
+    // reaches the paragraph's widest line in a box of its own; Skia's kaomoji
+    // line has no line end there and gives one box.
     let widest = widest_with_spaces(&paragraph);
     let rest = box_for(8..21);
     assert_eq!(rest.len(), 2);
