@@ -9,8 +9,9 @@
 //! vertical room join into one box, as skparagraph merges them, and every box
 //! reports the direction of the text in it ([`TextBox`]).
 //!
-//! Skia rounds every box coordinate to a hundredth to match Flutter's tests
-//! (`littleRound`). Valo leaves coordinates exact, as it does everywhere else.
+//! Skia rounds every box coordinate to a hundredth when a paragraph style asks
+//! for its rounding hack (`applyRoundingHack`, `littleRound`). Flutter turns the
+//! hack off, and Valo leaves coordinates exact, as it does everywhere else.
 
 use std::ops::Range;
 
@@ -38,16 +39,22 @@ pub enum BoxHeightStyle {
     /// `Max` gives every box on a line the line's whole height, rounded to a
     /// whole pixel as the line is.
     Max,
-    /// `IncludeLineSpacingMiddle` gives every box the whole line and the half
-    /// of the room a height multiplier added above it, or all of it on the
-    /// first line, and the same below, so neighbouring lines' boxes touch.
+    /// `IncludeLineSpacingMiddle` gives every box its line's whole height moved
+    /// down by half the room a height multiplier or strut added above the
+    /// line's text, so the room between two lines' text is shared between their
+    /// boxes, which touch. The first line's box starts where its fonts' own
+    /// ascent does, and the last line's ends at the line's bottom.
     IncludeLineSpacingMiddle,
-    /// `IncludeLineSpacingTop` gives every box the whole line, with the room a
-    /// height multiplier added above the text on the first line only.
+    /// `IncludeLineSpacingTop` gives every box its line's whole height, the room
+    /// a height multiplier or strut added above the line's text included,
+    /// except on the first line, whose box starts where its fonts' own ascent
+    /// does.
     IncludeLineSpacingTop,
-    /// `IncludeLineSpacingBottom` gives every box the whole line and the room
-    /// a height multiplier added above the text, leaving it off the last
-    /// line's bottom.
+    /// `IncludeLineSpacingBottom` gives every box its line's whole height moved
+    /// down by the room a height multiplier or strut added above the line's
+    /// text, so a box takes the room above the next line's text. The first
+    /// line's box starts where its fonts' own ascent does, and the last line's
+    /// ends at the line's bottom.
     IncludeLineSpacingBottom,
     /// `Strut` gives every box the paragraph's strut, its leading left out:
     /// the line a text field's caret keeps whatever the text's own fonts are.
@@ -131,7 +138,14 @@ impl Selection<'_> {
                 continue;
             }
             let start = boxes.len();
-            self.line_boxes(line, index, count, &range, height_style, &mut boxes);
+            let edges = LineEdges::of(
+                line,
+                &self.layout.heights[index],
+                self.style.text_height_behavior,
+                index == 0,
+                index + 1 == count,
+            );
+            self.line_boxes(line, &edges, &range, height_style, &mut boxes);
             if width_style == BoxWidthStyle::Max && index + 1 < count {
                 self.extend_to_widest(line, start, &mut boxes);
             }
@@ -144,25 +158,17 @@ impl Selection<'_> {
     fn line_boxes(
         &self,
         line: &Line,
-        index: usize,
-        count: usize,
+        edges: &LineEdges,
         range: &Range<usize>,
         height_style: BoxHeightStyle,
         boxes: &mut Vec<TextBox>,
     ) {
-        let edges = LineEdges::of(
-            line,
-            &self.layout.heights[index],
-            self.style.text_height_behavior,
-            index == 0,
-            index + 1 == count,
-        );
         let mut previous: Option<&PlacedRun> = None;
         for run in &line.runs {
             let Some((left, right)) = run_extent(run, range) else {
                 continue;
             };
-            let (top, bottom) = self.run_edges(line, &edges, index, count, run, height_style);
+            let (top, bottom) = self.run_edges(line, edges, run, height_style);
             let direction = self.box_direction(line, run);
             let rect = Rect::from_ltrb(left, top, right, bottom);
             match (previous, boxes.last_mut()) {
@@ -185,14 +191,10 @@ impl Selection<'_> {
         &self,
         line: &Line,
         edges: &LineEdges,
-        index: usize,
-        count: usize,
         run: &PlacedRun,
         style: BoxHeightStyle,
     ) -> (f32, f32) {
-        let first = index == 0;
-        let last = index + 1 == count;
-        let shift = edges.shift;
+        let (first, last, shift) = (edges.first, edges.last, edges.shift);
         match style {
             BoxHeightStyle::Tight => self.tight_edges(line, edges, run),
             BoxHeightStyle::Max => (edges.top + edges.delta, edges.top + edges.height),
@@ -317,12 +319,15 @@ impl Selection<'_> {
 /// `LineEdges` is the vertical scale one line's boxes are measured on, as
 /// skparagraph's `TextLine` keeps it: the line's top and whole height, the
 /// rounding of that height (`delta`), and how far a height multiplier or a
-/// strut raised the line above its fonts (`shift`).
+/// strut raised the line above its fonts (`shift`), and whether it is the
+/// paragraph's first or last line, whose boxes the line-spacing styles trim.
 struct LineEdges {
     top: f32,
     height: f32,
     delta: f32,
     shift: f32,
+    first: bool,
+    last: bool,
     /// `typographic_ascent` and `typographic_descent` are whether this line
     /// takes its runs' fonts' own room on that side rather than their styled
     /// room, as skparagraph gives the first line its raw ascent and the last
@@ -345,6 +350,8 @@ impl LineEdges {
             height: heights.height(),
             delta: heights.height() - whole,
             shift: line.ascent - heights.leading / 2.0 - heights.raw_ascent,
+            first,
+            last,
             typographic_ascent: first && !behavior.apply_height_to_first_ascent,
             typographic_descent: last && !behavior.apply_height_to_last_descent,
         }

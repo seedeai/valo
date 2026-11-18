@@ -153,9 +153,9 @@ fn a_height_multiplied_run_keeps_its_fonts_own_tight_box() {
 }
 
 /// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingMiddle`: each
-/// line's box takes the whole line, the first line's top and the last line's
-/// bottom extended by the room a height multiplier added, so neighbouring
-/// lines' boxes touch.
+/// line's box is the whole line moved down by half the room a height multiplier
+/// added above its text, so neighbouring lines' boxes touch; the first line's
+/// starts at its text and the last line's ends at the paragraph's bottom.
 #[test]
 fn line_spacing_middle_boxes_touch() {
     let paragraph = multi_line();
@@ -172,8 +172,9 @@ fn line_spacing_middle_boxes_touch() {
     assert_near(edges[2].1, 3.0 * height);
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: the room
-/// a height multiplier added goes above the first line's text alone.
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: every
+/// box is its whole line, the room a height multiplier added above the text
+/// included, except the first line's, which starts at its text.
 #[test]
 fn line_spacing_top_boxes_start_at_the_first_lines_text() {
     let paragraph = multi_line();
@@ -188,9 +189,10 @@ fn line_spacing_top_boxes_start_at_the_first_lines_text() {
     assert_near(edges[2].1, 3.0 * height);
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: the
-/// room a height multiplier added goes below the last line's text alone, so
-/// every box before it starts where the one above ends.
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: every
+/// box is its whole line moved down by the room a height multiplier added above
+/// the text, so it takes the room above the next line's text; the first line's
+/// starts at its text and the last line's ends at the paragraph's bottom.
 #[test]
 fn line_spacing_bottom_boxes_end_at_the_last_lines_text() {
     let paragraph = multi_line();
@@ -258,6 +260,43 @@ fn a_strut_box_has_the_struts_own_room() {
     assert_near(result[0].rect.y, 21.0);
     assert_near(result[0].rect.bottom(), 49.0);
     assert_near(result[0].rect.height, 28.0);
+}
+
+/// A forced strut sets a line's raw metrics to its font's own, as
+/// skparagraph's `updateLineMetrics` copies them, so a strut's leading is no
+/// room a line-spacing style moves boxes by: a 20 px strut with a leading of 1
+/// makes 44 px lines, and every line-spacing box is its line's.
+#[test]
+fn a_forced_struts_leading_adds_no_line_spacing() {
+    let paragraph = laid_out(
+        "abc\ndef",
+        &style(20.0),
+        ParagraphStyle {
+            strut_style: StrutStyle {
+                enabled: true,
+                families: vec!["Fira Sans".to_owned()],
+                size: 20.0,
+                leading: Some(1.0),
+                force_height: true,
+                ..StrutStyle::default()
+            },
+            ..ParagraphStyle::default()
+        },
+    );
+    let lines = boxes(&paragraph, BoxHeightStyle::Max);
+    assert_near(lines[0].rect.height, 44.0);
+    for style in [
+        BoxHeightStyle::IncludeLineSpacingMiddle,
+        BoxHeightStyle::IncludeLineSpacingTop,
+        BoxHeightStyle::IncludeLineSpacingBottom,
+    ] {
+        let spaced = boxes(&paragraph, style);
+        assert_eq!(spaced.len(), 2, "{style:?}");
+        for (spaced, line) in spaced.iter().zip(&lines) {
+            assert_near(spaced.rect.y, line.rect.y);
+            assert_near(spaced.rect.bottom(), line.rect.bottom());
+        }
+    }
 }
 
 /// Skparagraph's `SkParagraph_GetRectsForRangeStrut`: the strut's box is the
