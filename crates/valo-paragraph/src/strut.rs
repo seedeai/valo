@@ -21,6 +21,11 @@ pub(crate) struct Strut {
     /// baseline, its leading left out, when its size gives a box at all: what
     /// skparagraph's `kStrut` height style draws for a selection.
     strut_box: Option<StrutBox>,
+    /// `font_ascent` and `font_descent` are the strut font's own room at the
+    /// strut's size, its gap and leading left out: skparagraph's raw strut
+    /// metrics, which a forced line keeps as its own raw metrics.
+    font_ascent: f32,
+    font_descent: f32,
     force: bool,
 }
 
@@ -41,8 +46,8 @@ impl Strut {
         if !style.enabled || style.size < 0.0 || faces.is_empty() {
             return None;
         }
-        let id = faces.resolve(&style.families, style.font_attrs(), ' ');
-        let heights = strut_heights(faces.get(id), style);
+        let font = faces.get(faces.resolve(&style.families, style.font_attrs(), ' '));
+        let heights = strut_heights(font, style);
         // A size of zero asks for no box, as skparagraph's `kStrut` case
         // leaves the measured run box unless the strut's size is above zero.
         let strut_box = (style.size > 0.0).then(|| StrutBox {
@@ -52,6 +57,8 @@ impl Strut {
         Some(Self {
             heights,
             strut_box,
+            font_ascent: font.ascent_px(style.size),
+            font_descent: font.descent_px(style.size),
             force: style.force_height,
         })
     }
@@ -71,14 +78,20 @@ impl Strut {
     /// `apply` is a line's room after this strut: skparagraph's
     /// `InternalLineMetrics::updateLineMetrics`.
     ///
-    /// Forced, the line takes the strut's room whole, its raw metrics included,
-    /// so every line is the same height. Otherwise the line keeps the room it
+    /// Forced, the line takes the strut's room whole, so every line is the same
+    /// height, and the strut font's own ascent and descent as its raw metrics,
+    /// as `updateLineMetrics` copies them without the gap or leading a plain
+    /// line is compared against. Otherwise the line keeps the room it
     /// has wherever that is more than the strut's on a side, and the strut's
     /// gap counts on top of the line's own half leading, as skparagraph's
     /// comparison of the two adds it.
     pub(crate) fn apply(&self, line: LineHeights) -> LineHeights {
         if self.force {
-            return self.heights;
+            return LineHeights {
+                raw_ascent: self.font_ascent,
+                raw_descent: self.font_descent,
+                ..self.heights
+            };
         }
         let half_leading = line.leading / 2.0;
         LineHeights {
@@ -255,6 +268,8 @@ mod tests {
                 raw_descent: 5.0,
             },
             strut_box: None,
+            font_ascent: 22.0,
+            font_descent: 4.0,
             force: false,
         };
         let raised = strut.apply(line);
@@ -267,6 +282,13 @@ mod tests {
             force: true,
             ..strut
         };
-        assert_eq!(forced.apply(line), forced.heights);
+        assert_eq!(
+            forced.apply(line),
+            LineHeights {
+                raw_ascent: 22.0,
+                raw_descent: 4.0,
+                ..forced.heights
+            }
+        );
     }
 }
