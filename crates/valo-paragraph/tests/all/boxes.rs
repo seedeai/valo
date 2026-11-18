@@ -1,31 +1,29 @@
-//! Selection boxes in every height and width style: skparagraph's
-//! `ParagraphImpl::getRectsForRange`, ported from `SkParagraphTest`'s
+//! Selection boxes in every height and width style, and the parts of clusters
+//! and graphemes they name: skparagraph's `ParagraphImpl::getRectsForRange` and
+//! `TextLine::getRectsForRange`, ported from `SkParagraphTest`'s
 //! `GetRectsForRangeParagraph`, `GetRectsForRangeTight`,
 //! `GetRectsForRangeIncludeLineSpacingMiddle`/`Top`/`Bottom`,
-//! `GetRectsForRangeStrut` and `BasicHalfLeading`, with the Arabic and Hebrew
-//! direction cases.
+//! `GetRectsForRangeIncludeCombiningCharacter`, `EmojiMultiLineRectsParagraph`,
+//! `GetRectsForRangeStrut` and `BasicHalfLeading`.
 //!
 //! Skia's tests draw in Roboto and Noto Sans CJK, which are not Valo's test
-//! fonts. These draw in Fira Sans, whose ascent and descent are 0.935 and 0.265
-//! of its size with no line gap, and state each number against the metrics the
-//! paragraph reports (or against the constant it resolves to), rather than
-//! against Roboto's.
+//! fonts. These draw in Fira Sans — ascent and descent 0.935 and 0.265 of its
+//! size, no line gap — and state each number against the shaped advances and
+//! font metrics the paragraph reports rather than Roboto's.
+
+use std::ops::Range;
 
 use valo_geometry::Color;
 use valo_paragraph::{
-    BoxHeightStyle, BoxWidthStyle, Paragraph, ParagraphBuilder, ParagraphStyle, StrutStyle,
+    BoxHeightStyle, BoxWidthStyle, Line, Paragraph, ParagraphBuilder, ParagraphStyle, StrutStyle,
     TextBox, TextDirection, TextStyle,
 };
 use valo_text::{Font, FontCollection};
 
 fn fonts() -> FontCollection {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
     let mut collection = FontCollection::new();
     collection
-        .register(
-            "Fira Sans",
-            std::fs::read(format!("{dir}/fira_sans.ttf")).unwrap(),
-        )
+        .register("Fira Sans", asset("fira_sans.ttf"))
         .unwrap();
     collection
 }
@@ -34,22 +32,52 @@ fn style(size: f32) -> TextStyle {
     TextStyle::new("Fira Sans", size, Color::BLACK)
 }
 
-fn laid_out(text: &str, text_style: &TextStyle, paragraph_style: ParagraphStyle) -> Paragraph {
-    laid_out_in(&mut fonts(), text, text_style, paragraph_style)
+fn asset(name: &str) -> Vec<u8> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts");
+    std::fs::read(format!("{dir}/{name}")).unwrap()
 }
 
+/// `laid_out` is `text` at `width`, in one style and a paragraph style of its
+/// own: `f32::INFINITY` disables soft wrapping.
+fn laid_out(
+    collection: &mut FontCollection,
+    text: &str,
+    text_style: &TextStyle,
+    paragraph_style: ParagraphStyle,
+    width: f32,
+) -> Paragraph {
+    let mut builder = ParagraphBuilder::new(collection);
+    builder.style(paragraph_style);
+    builder.add_text(text, text_style);
+    let mut paragraph = builder.build();
+    paragraph.layout(width);
+    paragraph
+}
+
+/// `laid_out_at` is `text` in Fira Sans, wrapped at `width`.
+fn laid_out_at(text: &str, text_style: &TextStyle, width: f32) -> Paragraph {
+    laid_out(
+        &mut fonts(),
+        text,
+        text_style,
+        ParagraphStyle::default(),
+        width,
+    )
+}
+
+/// `laid_out_in` is `text` in `collection`, unwrapped.
 fn laid_out_in(
     collection: &mut FontCollection,
     text: &str,
     text_style: &TextStyle,
     paragraph_style: ParagraphStyle,
 ) -> Paragraph {
-    let mut builder = ParagraphBuilder::new(collection);
-    builder.style(paragraph_style);
-    builder.add_text(text, text_style);
-    let mut paragraph = builder.build();
-    paragraph.layout(f32::INFINITY);
-    paragraph
+    laid_out(collection, text, text_style, paragraph_style, f32::INFINITY)
+}
+
+/// `laid_out_fira` is `text` in Fira Sans, unwrapped.
+fn laid_out_fira(text: &str, text_style: &TextStyle, paragraph_style: ParagraphStyle) -> Paragraph {
+    laid_out_in(&mut fonts(), text, text_style, paragraph_style)
 }
 
 fn near(a: f32, b: f32) -> bool {
@@ -77,161 +105,557 @@ fn line_rounding(paragraph: &Paragraph, line: usize) -> (f32, f32) {
     (whole, rounded - whole)
 }
 
+/// `glyph_span` is the horizontal stretch of the glyphs of the cluster that
+/// starts at `cluster`: a ligature's cluster is one glyph, a cluster of marks
+/// several.
+fn glyph_span(paragraph: &Paragraph, cluster: usize) -> (f32, f32) {
+    let mut left = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    for glyph in paragraph
+        .lines()
+        .iter()
+        .flat_map(|line| line.runs.iter())
+        .flat_map(|run| run.glyphs.iter())
+        .filter(|glyph| glyph.cluster == cluster)
+    {
+        left = left.min(glyph.x);
+        right = right.max(glyph.x + glyph.advance);
+    }
+    assert!(left.is_finite(), "cluster {cluster} is not laid out");
+    (left, right)
+}
+
+/// The advance of a line's trailing whitespace, its ghosts.
+fn trailing_advance(line: &Line) -> f32 {
+    line.runs
+        .iter()
+        .filter(|run| {
+            run.glyphs
+                .first()
+                .is_some_and(|glyph| glyph.cluster >= line.content_end)
+        })
+        .flat_map(|run| run.glyphs.iter())
+        .map(|glyph| glyph.advance)
+        .sum()
+}
+
+/// `widest_with_spaces` is the paragraph's widest line including its trailing
+/// whitespace: the width a `Max` width box reaches (skparagraph's
+/// `widthWithTrailingSpaces`).
+fn widest_with_spaces(paragraph: &Paragraph) -> f32 {
+    paragraph
+        .lines()
+        .iter()
+        .map(|line| line.width + trailing_advance(line))
+        .fold(0.0, f32::max)
+}
+
+/// `WRAPPED_TEXT` is `SkParagraph_GetRectsForRangeParagraph`'s text, which
+/// wraps onto four lines of 50 px Fira Sans at the 550 px Skia lays out at.
+const WRAPPED_TEXT: &str =
+    "12345,  \"67890\" 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345";
+
+/// `wrapped` is `WRAPPED_TEXT` in `text_style` at 550 px.
+fn wrapped(text_style: &TextStyle) -> Paragraph {
+    laid_out_at(WRAPPED_TEXT, text_style, 550.0)
+}
+
+/// A range that falls inside an "fi" ligature takes the part of the ligature
+/// its bytes name, as skparagraph measures a cluster in part by the share of
+/// its text the range leaves out (`Cluster::sizeToChar`, `sizeFromChar`).
+///
+/// Fira Sans shapes "office"'s "fi" as one glyph of 11.5 px at 18.38, covering
+/// bytes 2..4: the ligature's left half is bytes 2..3, its right half 3..4.
+/// Selecting half of it used to give the whole ligature, or nothing.
+#[test]
+fn a_range_inside_a_ligature_takes_the_part_of_it_it_names() {
+    let paragraph = laid_out_fira("office", &style(20.0), ParagraphStyle::default());
+    let (left, right) = glyph_span(&paragraph, 2);
+    let half = (right - left) / 2.0;
+
+    let left_half = paragraph.rects_for_range(2..3);
+    assert_eq!(left_half.len(), 1, "{left_half:?}");
+    assert_near(left_half[0].x, left);
+    assert_near(left_half[0].right(), left + half);
+
+    let right_half = paragraph.rects_for_range(3..4);
+    assert_eq!(right_half.len(), 1, "the range is inside the ligature");
+    assert_near(right_half[0].x, left + half);
+    assert_near(right_half[0].right(), right);
+
+    let whole = paragraph.rects_for_range(2..4);
+    assert_eq!(whole.len(), 1);
+    assert_near(whole[0].x, left);
+    assert_near(whole[0].right(), right);
+
+    // The "i" with the letter after it takes the ligature's right half and
+    // that letter whole.
+    let (next_left, next_right) = glyph_span(&paragraph, 4);
+    let across = paragraph.rects_for_range(3..5);
+    assert_eq!(across.len(), 1);
+    assert_near(across[0].x, left + half);
+    assert_near(across[0].right(), next_right);
+    assert!(next_left >= right);
+
+    // The letter after the ligature alone starts at its right edge.
+    let after = paragraph.rects_for_range(4..5);
+    assert_eq!(after.len(), 1);
+    assert_near(after[0].x, right);
+    assert_near(after[0].right(), next_right);
+
+    // The whole word is unchanged.
+    let word = paragraph.rects_for_range(0..6);
+    assert_eq!(word.len(), 1);
+    assert_near(word[0].x, 0.0);
+    assert_near(word[0].right(), glyph_span(&paragraph, 5).1);
+}
+
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeCombiningCharacter`:
+/// a selection takes whole graphemes. "e" and a combining acute are one
+/// grapheme, so a range over either half of it selects nothing and only the
+/// grapheme whole has a box; Skia's case draws Thai, which no Valo test font
+/// covers, so this draws the same shapes in Latin.
+#[test]
+fn a_selection_takes_whole_graphemes() {
+    let paragraph = laid_out_fira("e\u{0301}x", &style(20.0), ParagraphStyle::default());
+    assert!(paragraph.rects_for_range(0..0).is_empty());
+    let base = paragraph.rects_for_range(0..1);
+    let mark = paragraph.rects_for_range(1..3);
+    let whole = paragraph.rects_for_range(0..3);
+    assert!(base.is_empty(), "half a grapheme has no box: {base:?}");
+    assert!(mark.is_empty(), "the other half has none either: {mark:?}");
+    assert_eq!(whole.len(), 1);
+    assert_near(whole[0].x, 0.0);
+    assert_near(whole[0].right(), glyph_span(&paragraph, 0).1);
+    // The grapheme and the letter after it.
+    assert_eq!(paragraph.rects_for_range(0..4).len(), 1);
+
+    // A grapheme of a base and two marks, as Skia's third case is a run of
+    // three: the last mark alone selects nothing, the whole selects the box.
+    let stacked = laid_out_fira(
+        "x\u{0301}\u{0302}y",
+        &style(20.0),
+        ParagraphStyle::default(),
+    );
+    assert!(stacked.rects_for_range(1..3).is_empty());
+    assert!(stacked.rects_for_range(3..5).is_empty());
+    assert_eq!(stacked.rects_for_range(0..5).len(), 1);
+    assert_eq!(stacked.rects_for_range(5..6).len(), 1);
+    assert_eq!(stacked.rects_for_range(0..6).len(), 1);
+}
+
+/// A right-to-left run's characters are boxes of their own, placed from the
+/// paragraph's right: each of "لا"'s two characters selects its own box, and a
+/// range inside one of them selects none of it, as the grapheme rule says.
+#[test]
+fn right_to_left_characters_select_whole() {
+    let mut collection = FontCollection::new();
+    collection
+        .register("Noto Sans Arabic", asset("noto_sans_arabic.ttf"))
+        .unwrap();
+    let paragraph = laid_out(
+        &mut collection,
+        "لا",
+        &TextStyle::new("Noto Sans Arabic", 40.0, Color::BLACK),
+        ParagraphStyle {
+            direction: Some(TextDirection::Rtl),
+            ..ParagraphStyle::default()
+        },
+        f32::INFINITY,
+    );
+    let (left, right) = glyph_span(&paragraph, 0);
+    let (first_left, first_right) = glyph_span(&paragraph, 2);
+    assert!(first_right <= left, "the first character is the right one");
+
+    let first = paragraph.rects_for_range(0..2);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].x, left);
+    assert_near(first[0].right(), right);
+    let directed = paragraph.boxes_for_range(0..2, BoxHeightStyle::Max, BoxWidthStyle::Tight);
+    assert_eq!(directed[0].direction, TextDirection::Rtl);
+    let second = paragraph.rects_for_range(2..4);
+    assert_eq!(second.len(), 1);
+    assert_near(second[0].x, first_left);
+    assert_near(second[0].right(), first_right);
+
+    assert!(paragraph.rects_for_range(0..1).is_empty());
+    assert!(paragraph.rects_for_range(1..2).is_empty());
+    assert!(paragraph.rects_for_range(3..4).is_empty());
+}
+
 /// Skparagraph's `SkParagraph_GetRectsForRangeParagraph`: a `Max` height box is
-/// the line's whole height from the rounding offset of it, whatever the run's
-/// own font asks for, and a line's trailing spaces are a box of their own that
-/// merges with the text's.
+/// its line's whole height, a range over wrapped text gets one box per line it
+/// crosses, a line's trailing space is part of the box of text before it, and a
+/// range of no length has none.
+///
+/// Skia's numbers are Roboto's: a 0.40625 px rounding offset and 58.59 px lines
+/// at 50 px. Fira Sans is 60 px at 50 with no rounding offset.
 #[test]
-fn a_max_height_box_is_the_lines_whole_height() {
-    let paragraph = laid_out("hello", &style(20.0), ParagraphStyle::default());
-    let line = &paragraph.lines()[0];
-    let (whole, delta) = line_rounding(&paragraph, 0);
-    let result = boxes(&paragraph, BoxHeightStyle::Max);
-    assert_eq!(result.len(), 1);
-    assert_near(result[0].rect.y, delta);
-    assert_near(result[0].rect.bottom(), whole + delta);
-    assert_near(result[0].rect.x, 0.0);
-    assert_near(result[0].rect.right(), line.width);
-    assert_eq!(result[0].direction, TextDirection::Ltr);
+fn wrapped_ranges_get_a_box_per_line_in_the_line_height() {
+    let paragraph = wrapped(&style(50.0));
+    assert_eq!(paragraph.lines().len(), 4);
+    let height = 60.0;
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(range, BoxHeightStyle::Max, BoxWidthStyle::Tight)
+    };
 
-    // A line whose height rounds asks for its box to start above the line's
-    // top by the difference: 17 px of Fira Sans is 20.4 tall, rounded to 20.
-    let paragraph = laid_out("hello", &style(17.0), ParagraphStyle::default());
-    let (whole, delta) = line_rounding(&paragraph, 0);
-    assert_near(whole, 20.4);
-    let result = boxes(&paragraph, BoxHeightStyle::Max);
-    assert_near(result[0].rect.y, -0.4);
-    assert_near(result[0].rect.bottom(), 20.0);
-    assert_near(delta, -0.4);
+    assert!(box_for(0..0).is_empty());
+
+    let first = box_for(0..1);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].rect.x, 0.0);
+    assert_near(first[0].rect.right(), glyph_span(&paragraph, 0).1);
+    assert_near(first[0].rect.y, 0.0);
+    assert_near(first[0].rect.bottom(), height);
+    assert_eq!(first[0].direction, TextDirection::Ltr);
+
+    let three = box_for(2..8);
+    assert_eq!(three.len(), 1);
+    assert_near(three[0].rect.x, glyph_span(&paragraph, 2).0);
+    assert_near(three[0].rect.right(), glyph_span(&paragraph, 7).1);
+    assert_near(three[0].rect.bottom(), height);
+
+    let rest = box_for(8..21);
+    assert_eq!(rest.len(), 1);
+    assert_near(rest[0].rect.x, glyph_span(&paragraph, 8).0);
+    assert_near(rest[0].rect.right(), paragraph.lines()[0].width);
+
+    // A range across several lines, one box per line. Skia's range crosses four
+    // of its lines; Fira Sans wraps the same text so that it starts on the
+    // second of four.
+    let across = box_for(30..100);
+    assert_eq!(across.len(), 3);
+    for (index, text_box) in across.iter().enumerate() {
+        let line = index + 1;
+        assert_near(text_box.rect.y, line as f32 * height);
+        assert_near(text_box.rect.bottom(), (line + 1) as f32 * height);
+    }
+    assert_near(across[0].rect.x, glyph_span(&paragraph, 30).0);
+    assert_near(across[2].rect.right(), paragraph.lines()[3].width);
+    assert_near(across[2].rect.bottom(), 4.0 * height);
+
+    // A range over the first line's last letters and its trailing space.
+    let space = box_for(19..22);
+    assert_eq!(space.len(), 1);
+    assert_near(space[0].rect.x, glyph_span(&paragraph, 19).0);
+    assert_near(space[0].rect.right(), glyph_span(&paragraph, 21).1);
+    assert!(box_for(21..21).is_empty());
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeTight`: a `Tight` box is the
-/// run's own room, the font's ascent and descent at its size, placed against
-/// the line's baseline — not the line's taller room.
+/// Skparagraph's `SkParagraph_GetRectsForRangeTight`: a `Tight` box is its
+/// run's own room, so at 50 px of Fira Sans a box is 60 px tall, the font's
+/// ascent and descent. Skia's case draws Noto Sans CJK, whose 74 px line is
+/// taller than Roboto's; Fira Sans's is its line's own here.
 #[test]
-fn a_tight_box_is_the_runs_own_room() {
-    let paragraph = laid_out("hello", &style(20.0), ParagraphStyle::default());
-    let line = &paragraph.lines()[0];
-    let font = font(&paragraph);
-    let result = boxes(&paragraph, BoxHeightStyle::Tight);
-    assert_eq!(result.len(), 1);
-    assert_near(result[0].rect.y, line.baseline - font.ascent_px(20.0));
+fn tight_boxes_are_their_runs_own_room_under_wrapped_text() {
+    let paragraph = wrapped(&style(50.0));
+    let room = font(&paragraph).line_height_px(50.0);
+    assert_near(room, 60.0);
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(range, BoxHeightStyle::Tight, BoxWidthStyle::Tight)
+    };
+
+    assert!(box_for(0..0).is_empty());
+    let first = box_for(0..1);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].rect.x, 0.0);
+    assert_near(first[0].rect.right(), glyph_span(&paragraph, 0).1);
+    assert_near(first[0].rect.y, 0.0);
+    assert_near(first[0].rect.bottom(), room);
+
+    assert_eq!(box_for(2..8).len(), 1);
+    assert_eq!(box_for(8..21).len(), 1);
+    // Across the wrap: one run per line, each the run's own room.
+    let across = box_for(8..46);
+    assert_eq!(across.len(), 2);
+    for text_box in &across {
+        assert_near(text_box.rect.height, room);
+    }
     assert_near(
-        result[0].rect.bottom(),
-        line.baseline + font.descent_px(20.0),
-    );
-    assert_near(
-        result[0].rect.height,
-        font.ascent_px(20.0) + font.descent_px(20.0),
+        across[1].rect.y,
+        paragraph.lines()[1].baseline - font(&paragraph).ascent_px(50.0),
     );
 }
 
-/// Skparagraph's `kTight` case gives a run with a height multiplier its font's
-/// OWN ascent and descent around the line's baseline, where the line takes the
-/// multiplier's room: a 2 × 20 px line is 40 tall and its text's tight box 24.
-#[test]
-fn a_height_multiplied_run_keeps_its_fonts_own_tight_box() {
-    let paragraph = laid_out(
-        "hello",
-        &TextStyle {
-            height: Some(2.0),
-            ..style(20.0)
-        },
-        ParagraphStyle::default(),
-    );
-    let line = &paragraph.lines()[0];
-    let font = font(&paragraph);
-    assert_near(line.ascent + line.descent, 40.0);
-    let tight = boxes(&paragraph, BoxHeightStyle::Tight);
-    assert_near(tight[0].rect.y, line.baseline - font.ascent_px(20.0));
-    assert_near(
-        tight[0].rect.bottom(),
-        line.baseline + font.descent_px(20.0),
-    );
-    let widest = boxes(&paragraph, BoxHeightStyle::Max);
-    assert_near(widest[0].rect.height, 40.0);
-}
-
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingMiddle`: each
-/// line's box is the whole line moved down by half the room a height multiplier
-/// added above its text, so neighbouring lines' boxes touch; the first line's
-/// starts at its text and the last line's ends at the paragraph's bottom.
-#[test]
-fn line_spacing_middle_boxes_touch() {
-    let paragraph = multi_line();
-    let (height, shift) = spacing(&paragraph);
-    assert_near(height, 32.0);
-    assert_near(shift, 6.233_333);
-    let result = boxes(&paragraph, BoxHeightStyle::IncludeLineSpacingMiddle);
-    let edges: Vec<(f32, f32)> = result.iter().map(|b| (b.rect.y, b.rect.bottom())).collect();
-    assert_near(edges[0].0, shift);
-    assert_near(edges[0].1, height + shift / 2.0);
-    assert_near(edges[1].0, edges[0].1);
-    assert_near(edges[1].1, 2.0 * height + shift / 2.0);
-    assert_near(edges[2].0, edges[1].1);
-    assert_near(edges[2].1, 3.0 * height);
-}
-
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: every
-/// box is its whole line, the room a height multiplier added above the text
-/// included, except the first line's, which starts at its text.
-#[test]
-fn line_spacing_top_boxes_start_at_the_first_lines_text() {
-    let paragraph = multi_line();
-    let (height, shift) = spacing(&paragraph);
-    let result = boxes(&paragraph, BoxHeightStyle::IncludeLineSpacingTop);
-    let edges: Vec<(f32, f32)> = result.iter().map(|b| (b.rect.y, b.rect.bottom())).collect();
-    assert_near(edges[0].0, shift);
-    assert_near(edges[0].1, height);
-    assert_near(edges[1].0, height);
-    assert_near(edges[1].1, 2.0 * height);
-    assert_near(edges[2].0, 2.0 * height);
-    assert_near(edges[2].1, 3.0 * height);
-}
-
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: every
-/// box is its whole line moved down by the room a height multiplier added above
-/// the text, so it takes the room above the next line's text; the first line's
-/// starts at its text and the last line's ends at the paragraph's bottom.
-#[test]
-fn line_spacing_bottom_boxes_end_at_the_last_lines_text() {
-    let paragraph = multi_line();
-    let (height, shift) = spacing(&paragraph);
-    let result = boxes(&paragraph, BoxHeightStyle::IncludeLineSpacingBottom);
-    let edges: Vec<(f32, f32)> = result.iter().map(|b| (b.rect.y, b.rect.bottom())).collect();
-    assert_near(edges[0].0, shift);
-    assert_near(edges[0].1, height + shift);
-    assert_near(edges[1].0, height + shift);
-    assert_near(edges[1].1, 2.0 * height + shift);
-    assert_near(edges[2].0, 2.0 * height + shift);
-    assert_near(edges[2].1, 3.0 * height);
-}
-
-/// A three-line paragraph at a 1.6 × 20 px height: 32 px lines, each with
-/// 6.23 px of room added above its text, which the line-spacing tests measure
-/// from.
-fn multi_line() -> Paragraph {
-    let paragraph = laid_out(
-        "abc\ndef\nghi",
-        &TextStyle {
-            height: Some(1.6),
-            ..style(20.0)
-        },
-        ParagraphStyle::default(),
-    );
-    assert_eq!(paragraph.lines().len(), 3);
+/// `spaced` is `WRAPPED_TEXT` at a 1.6 × 50 px height: four 80 px lines, each
+/// with 15.58 px of room added above its text, which the line-spacing tests
+/// measure from.
+fn spaced() -> Paragraph {
+    let paragraph = wrapped(&TextStyle {
+        height: Some(1.6),
+        ..style(50.0)
+    });
+    assert_eq!(paragraph.lines().len(), 4);
     paragraph
 }
 
-/// `spacing` is the paragraph's line height and the room its height multiplier
-/// added above each line's text.
+/// `spacing` is a spacing paragraph's line height and the room its height
+/// multiplier added above each line's text.
 fn spacing(paragraph: &Paragraph) -> (f32, f32) {
     let font = font(paragraph);
     let line = &paragraph.lines()[0];
     let (_, delta) = line_rounding(paragraph, 0);
-    let height = line.ascent + line.descent;
     assert_near(delta, 0.0);
-    (height, line.ascent - font.ascent_px(20.0))
+    (
+        line.ascent + line.descent,
+        line.ascent - font.ascent_px(50.0),
+    )
+}
+
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingMiddle`: every
+/// box takes its line and half the room a height multiplier added above its
+/// text, all of it on the first line and none below the last, so neighbouring
+/// lines' boxes touch. `Max` width boxes reach the paragraph's widest line.
+#[test]
+fn line_spacing_middle_boxes_touch() {
+    let paragraph = spaced();
+    let (height, shift) = spacing(&paragraph);
+    assert_near(height, 80.0);
+    assert_near(shift, 15.583_334);
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(
+            range,
+            BoxHeightStyle::IncludeLineSpacingMiddle,
+            BoxWidthStyle::Max,
+        )
+    };
+
+    let first = box_for(0..1);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].rect.y, shift);
+    assert_near(first[0].rect.bottom(), height + shift / 2.0);
+    assert_eq!(box_for(2..8).len(), 1);
+
+    // Skia's 8..21 ends at the line's content and then reaches the paragraph's
+    // widest line in a box of its own.
+    let widest = widest_with_spaces(&paragraph);
+    let rest = box_for(8..21);
+    assert_eq!(rest.len(), 2);
+    assert_near(rest[0].rect.x, glyph_span(&paragraph, 8).0);
+    assert_near(rest[0].rect.right(), paragraph.lines()[0].width);
+    assert_near(rest[1].rect.x, paragraph.lines()[0].width);
+    assert_near(rest[1].rect.right(), widest);
+    assert_near(rest[0].rect.y, rest[1].rect.y);
+
+    // Across lines: each line's box starts where the one above ends.
+    let across = box_for(30..150);
+    let lines = paragraph.lines();
+    assert_eq!(across.len(), 3);
+    assert_near(across[0].rect.y, height + shift / 2.0);
+    assert_near(across[0].rect.bottom(), 2.0 * height + shift / 2.0);
+    assert_near(across[1].rect.y, across[0].rect.bottom());
+    assert_near(across[1].rect.bottom(), 3.0 * height + shift / 2.0);
+    assert_near(across[2].rect.y, across[1].rect.bottom());
+    assert_near(across[2].rect.bottom(), 4.0 * height);
+    assert_near(across[0].rect.x, glyph_span(&paragraph, 30).0);
+    assert_near(across[2].rect.right(), lines[3].width);
+
+    let space = box_for(19..22);
+    assert_eq!(space.len(), 2);
+    assert_near(space[0].rect.right(), glyph_span(&paragraph, 21).1);
+    assert_near(space[1].rect.right(), widest);
+    assert!(box_for(21..21).is_empty());
+}
+
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: every box
+/// takes its line and the room a height multiplier added above its text,
+/// except the first line's, which starts where its fonts' own ascent does.
+#[test]
+fn line_spacing_top_boxes_start_at_the_first_lines_text() {
+    let paragraph = spaced();
+    let (height, shift) = spacing(&paragraph);
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(
+            range,
+            BoxHeightStyle::IncludeLineSpacingTop,
+            BoxWidthStyle::Max,
+        )
+    };
+
+    let first = box_for(0..1);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].rect.y, shift);
+    assert_near(first[0].rect.bottom(), height);
+
+    let across = box_for(30..150);
+    assert_eq!(across.len(), 3);
+    assert_near(across[0].rect.y, height);
+    assert_near(across[0].rect.bottom(), 2.0 * height);
+    assert_near(across[1].rect.y, 2.0 * height);
+    assert_near(across[1].rect.bottom(), 3.0 * height);
+    assert_near(across[2].rect.y, 3.0 * height);
+    assert_near(across[2].rect.bottom(), 4.0 * height);
+
+    assert_eq!(box_for(8..21).len(), 2);
+    assert_eq!(box_for(19..22).len(), 2);
+    assert!(box_for(21..21).is_empty());
+}
+
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: every
+/// box takes its line and the room a height multiplier added above its text, so
+/// it starts where the box above ends, except the last line's, which ends at
+/// the line's bottom.
+#[test]
+fn line_spacing_bottom_boxes_end_at_the_last_lines_text() {
+    let paragraph = spaced();
+    let (height, shift) = spacing(&paragraph);
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(
+            range,
+            BoxHeightStyle::IncludeLineSpacingBottom,
+            BoxWidthStyle::Max,
+        )
+    };
+
+    let first = box_for(0..1);
+    assert_eq!(first.len(), 1);
+    assert_near(first[0].rect.y, shift);
+    assert_near(first[0].rect.bottom(), height + shift);
+
+    let across = box_for(30..150);
+    assert_eq!(across.len(), 3);
+    assert_near(across[0].rect.y, height + shift);
+    assert_near(across[0].rect.bottom(), 2.0 * height + shift);
+    assert_near(across[1].rect.y, 2.0 * height + shift);
+    assert_near(across[1].rect.bottom(), 3.0 * height + shift);
+    assert_near(across[2].rect.y, 3.0 * height + shift);
+    assert_near(across[2].rect.bottom(), 4.0 * height);
+
+    assert_eq!(box_for(8..21).len(), 2);
+    assert_eq!(box_for(19..22).len(), 2);
+    assert!(box_for(21..21).is_empty());
+}
+
+/// Boxes of runs in different fonts, as a fallback face makes on one line, stay
+/// apart and keep their own tight room; boxes of runs in one font join; and a
+/// `Max` height box gives every one of them the line's room.
+#[test]
+fn boxes_of_different_fonts_stay_apart_and_of_one_font_join() {
+    let mut collection = fonts();
+    let fira = collection
+        .register("Fira Sans", asset("fira_sans.ttf"))
+        .unwrap();
+    let hebrew = collection
+        .register("Noto Sans Hebrew", asset("noto_sans_hebrew.ttf"))
+        .unwrap();
+    collection.add_fallback(hebrew);
+    let (fira_room, hebrew_room) = {
+        let faces = collection.faces();
+        (
+            faces.get(fira).line_height_px(20.0),
+            faces.get(hebrew).line_height_px(20.0),
+        )
+    };
+    assert_near(fira_room, 24.0);
+    assert!(hebrew_room > fira_room);
+    let paragraph = laid_out(
+        &mut collection,
+        "abc שלום abc",
+        &style(20.0),
+        ParagraphStyle::default(),
+        f32::INFINITY,
+    );
+    assert_eq!(paragraph.lines().len(), 1);
+    let line = &paragraph.lines()[0];
+    assert_near(line.ascent + line.descent, hebrew_room);
+
+    let tight = paragraph.boxes_for_range(
+        0..paragraph.text().len(),
+        BoxHeightStyle::Tight,
+        BoxWidthStyle::Tight,
+    );
+    assert_eq!(tight.len(), 3, "{tight:?}");
+    assert_eq!(tight[0].direction, TextDirection::Ltr);
+    assert_eq!(tight[1].direction, TextDirection::Rtl);
+    assert_eq!(tight[2].direction, TextDirection::Ltr);
+    assert_near(tight[0].rect.height, fira_room);
+    assert_near(tight[1].rect.height, hebrew_room);
+    assert_near(tight[2].rect.height, fira_room);
+    // Adjacent, and separate: the fonts are not one run.
+    assert_near(tight[0].rect.right(), tight[1].rect.x);
+    assert_near(tight[1].rect.right(), tight[2].rect.x);
+
+    let widest = paragraph.boxes_for_range(
+        0..paragraph.text().len(),
+        BoxHeightStyle::Max,
+        BoxWidthStyle::Tight,
+    );
+    assert_eq!(widest.len(), 3);
+    for text_box in &widest {
+        assert_near(text_box.rect.y, tight[1].rect.y);
+        assert_near(text_box.rect.bottom(), tight[1].rect.bottom());
+        assert_near(text_box.rect.height, hebrew_room);
+    }
+
+    // Two spans of one font touch, and their boxes join into one.
+    let mut collection = fonts();
+    let mut builder = ParagraphBuilder::new(&mut collection);
+    builder.add_text("ab", &style(20.0));
+    builder.add_text("cd", &style(20.0));
+    let mut joined = builder.build();
+    joined.layout(f32::INFINITY);
+    assert_eq!(joined.lines()[0].runs.len(), 2);
+    let boxes = joined.rects_for_range(0..4);
+    assert_eq!(boxes.len(), 1, "{boxes:?}");
+    assert_near(boxes[0].x, 0.0);
+    assert_near(boxes[0].right(), joined.lines()[0].width);
+}
+
+/// Skparagraph's `SkParagraph_EmojiMultiLineRectsParagraph`: an emoji is one
+/// cluster, a selection of whole emoji gets one box per line, and a range
+/// inside an emoji's cluster selects nothing.
+///
+/// Skia's case draws 119 bytes over two lines; this one draws 24 emoji of the
+/// test subset at 50 px, which wraps onto three lines of eight.
+#[test]
+fn emoji_clusters_get_a_box_of_their_own_across_lines() {
+    let mut collection = FontCollection::new();
+    collection
+        .register("Noto Color Emoji", asset("noto_color_emoji_subset.ttf"))
+        .unwrap();
+    let text = "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀";
+    let paragraph = laid_out(
+        &mut collection,
+        text,
+        &TextStyle::new("Noto Color Emoji", 50.0, Color::BLACK),
+        ParagraphStyle::default(),
+        550.0,
+    );
+    assert_eq!(paragraph.lines().len(), 3);
+    let box_for = |range: Range<usize>| {
+        paragraph.boxes_for_range(range, BoxHeightStyle::Tight, BoxWidthStyle::Tight)
+    };
+
+    assert!(box_for(0..0).is_empty());
+    let one = box_for(0..4);
+    assert_eq!(one.len(), 1);
+    assert_near(one[0].rect.x, 0.0);
+    assert_near(one[0].rect.right(), glyph_span(&paragraph, 0).1);
+
+    let all = box_for(0..text.len());
+    assert_eq!(all.len(), 3, "{all:?}");
+    for (index, text_box) in paragraph.lines().iter().enumerate() {
+        assert_near(all[index].rect.right(), text_box.width);
+    }
+
+    // A range inside an emoji's cluster takes none of it, as Skia's
+    // 122..132 case says.
+    assert!(box_for(1..3).is_empty());
+}
+
+/// A line's height rounds to a whole pixel, and its boxes start where the
+/// rounding leaves the line's top (`InternalLineMetrics::delta`): 17 px of
+/// Fira Sans is 20.4 tall, so a `Max` box starts 0.4 above its line's top and
+/// is 20 tall.
+#[test]
+fn a_box_starts_at_the_rounding_of_its_lines_height() {
+    let paragraph = laid_out_fira("hello", &style(17.0), ParagraphStyle::default());
+    let (whole, delta) = line_rounding(&paragraph, 0);
+    assert_near(whole, 20.4);
+    assert_near(delta, -0.4);
+    let result = boxes(&paragraph, BoxHeightStyle::Max);
+    assert_near(result[0].rect.y, -0.4);
+    assert_near(result[0].rect.bottom(), 20.0);
 }
 
 /// Skparagraph's `SkParagraph_GetRectsForRangeStrutWithHeight`: a 14 px strut
@@ -239,7 +663,7 @@ fn spacing(paragraph: &Paragraph) -> (f32, f32) {
 /// 3 × 14 / 2 = 21 px below the line's top.
 #[test]
 fn a_strut_box_has_the_struts_own_room() {
-    let paragraph = laid_out(
+    let paragraph = laid_out_fira(
         "A",
         &style(10.0),
         ParagraphStyle {
@@ -268,7 +692,7 @@ fn a_strut_box_has_the_struts_own_room() {
 /// makes 44 px lines, and every line-spacing box is its line's.
 #[test]
 fn a_forced_struts_leading_adds_no_line_spacing() {
-    let paragraph = laid_out(
+    let paragraph = laid_out_fira(
         "abc\ndef",
         &style(20.0),
         ParagraphStyle {
@@ -304,7 +728,7 @@ fn a_forced_struts_leading_adds_no_line_spacing() {
 /// strut leaves the run's measured box where the strut's would be.
 #[test]
 fn a_strut_box_is_the_struts_even_under_taller_text() {
-    let paragraph = laid_out(
+    let paragraph = laid_out_fira(
         "A",
         &style(20.0),
         ParagraphStyle {
@@ -329,7 +753,7 @@ fn a_strut_box_is_the_struts_even_under_taller_text() {
     // The line itself is taller than the strut's box.
     assert!(line.ascent + line.descent > result[0].rect.height);
 
-    let plain = laid_out("A", &style(20.0), ParagraphStyle::default());
+    let plain = laid_out_fira("A", &style(20.0), ParagraphStyle::default());
     let strutless = boxes(&plain, BoxHeightStyle::Strut);
     let tight = boxes(&plain, BoxHeightStyle::Tight);
     assert_eq!(strutless, tight);
@@ -340,7 +764,7 @@ fn a_strut_box_is_the_struts_even_under_taller_text() {
 /// and the line boxes share the remaining 24.345 px evenly over and under.
 #[test]
 fn half_leading_lines_are_uniform_and_centred_on_their_text() {
-    let paragraph = laid_out(
+    let paragraph = laid_out_fira(
         "abc\ndef\nghi",
         &TextStyle {
             height: Some(3.6345),
@@ -430,7 +854,7 @@ fn a_max_width_box_reaches_the_widest_line() {
 /// a selection that reaches it merges it into the content's box.
 #[test]
 fn trailing_whitespace_is_a_box_of_its_own() {
-    let paragraph = laid_out("aa bb  ", &style(20.0), ParagraphStyle::default());
+    let paragraph = laid_out_fira("aa bb  ", &style(20.0), ParagraphStyle::default());
     let line = &paragraph.lines()[0];
     let all = boxes(&paragraph, BoxHeightStyle::Max);
     assert_eq!(all.len(), 1, "{all:?}");
@@ -439,20 +863,6 @@ fn trailing_whitespace_is_a_box_of_its_own() {
     assert_eq!(space.len(), 1);
     assert_near(space[0].rect.x, line.width);
     assert_near(space[0].rect.right(), line.width + trailing_advance(line));
-}
-
-/// The advance of a line's trailing whitespace, its ghosts.
-fn trailing_advance(line: &valo_paragraph::Line) -> f32 {
-    line.runs
-        .iter()
-        .filter(|run| {
-            run.glyphs
-                .first()
-                .is_some_and(|glyph| glyph.cluster >= line.content_end)
-        })
-        .flat_map(|run| run.glyphs.iter())
-        .map(|glyph| glyph.advance)
-        .sum()
 }
 
 /// Skparagraph's Arabic boxes: a right-to-left run's box reports the run's
@@ -517,7 +927,7 @@ fn boxes_report_their_text_direction() {
 /// implied last line break answers.
 #[test]
 fn an_empty_paragraph_has_one_box() {
-    let paragraph = laid_out("", &style(20.0), ParagraphStyle::default());
+    let paragraph = laid_out_fira("", &style(20.0), ParagraphStyle::default());
     assert_eq!(
         paragraph.boxes_for_range(0..0, BoxHeightStyle::Tight, BoxWidthStyle::Tight),
         []
@@ -536,7 +946,7 @@ fn an_empty_paragraph_has_one_box() {
 /// boxes; a run's part gets only its own characters.
 #[test]
 fn a_range_selects_only_its_own_characters() {
-    let paragraph = laid_out("hello world", &style(20.0), ParagraphStyle::default());
+    let paragraph = laid_out_fira("hello world", &style(20.0), ParagraphStyle::default());
     assert!(paragraph
         .boxes_for_range(3..3, BoxHeightStyle::Max, BoxWidthStyle::Tight)
         .is_empty());

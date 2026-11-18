@@ -684,6 +684,11 @@ impl Paragraph {
     /// whether a box stops at its text or reaches the paragraph's widest line.
     /// Each box reports the direction of the text in it.
     ///
+    /// A range takes whole graphemes: one that cuts into a grapheme selects
+    /// none of it. A cluster that stands for more than one grapheme, as a
+    /// ligature's "fi" does, is shared by the bytes the range names, so
+    /// selecting the "i" alone is the right half of the ligature's box.
+    ///
     /// It is empty before [`Self::layout`] is called. An empty paragraph has
     /// one zero-width box of its whole height for a range that starts at zero.
     pub fn boxes_for_range(
