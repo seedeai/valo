@@ -3,6 +3,7 @@
 //! file. A new subject is a module here, not a file beside `all/`: Cargo builds
 //! each of those as a binary of its own.
 
+mod boxes;
 mod font_fallback;
 mod font_synthesis;
 mod line_breaks;

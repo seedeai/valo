@@ -7,6 +7,7 @@ use valo_dl::Paint;
 use valo_geometry::{Color, Rect};
 use valo_text::{FaceSet, Font, FontCollection, FontDemand, FontId, FontSynthesis, Rasterizer};
 
+use crate::boxes::{BoxHeightStyle, BoxWidthStyle, Selection, TextBox};
 use crate::shape::{shape_runs, ShapedRun};
 use crate::strut::Strut;
 use crate::style::{
@@ -135,7 +136,7 @@ impl Line {
 
     /// A ghost shows text at or past the content's end; a placeholder or an ellipsis shows
     /// none of the text.
-    fn is_ghost(&self, run: &PlacedRun) -> bool {
+    pub(crate) fn is_ghost(&self, run: &PlacedRun) -> bool {
         !run.text.is_empty()
             && run
                 .glyphs
@@ -156,6 +157,16 @@ pub(crate) struct Layout {
     pub truncated: bool,
     /// The chosen line ranges — re-placing (recolor) skips re-wrapping.
     pub wrapped: Wrapped,
+    /// Each line's room above and below its baseline as the placer resolved it,
+    /// strut and height behavior included: the metrics a selection's
+    /// line-spacing height styles measure from (`TextLine::getRectsForRange`).
+    pub heights: Vec<crate::wrap::LineHeights>,
+    /// The widest line with its trailing whitespace: skparagraph's
+    /// `fMaxWidthWithTrailingSpaces`, which a `Max` width box extends to.
+    pub width_with_trailing_spaces: f32,
+    /// The direction the paragraph resolved to, which a trailing space's
+    /// selection box reports rather than its run's direction.
+    pub direction: TextDirection,
 }
 
 /// `Paragraph` is the primary API for laying out and drawing text.
@@ -663,33 +674,46 @@ impl Paragraph {
         }
     }
 
-    /// `rects_for_range` returns boxes for painting a selected UTF-8 byte range.
+    /// `boxes_for_range` returns where a UTF-8 byte range of the paragraph is:
+    /// Flutter's `Paragraph.getBoxesForRange`, Skia's `getRectsForRange`.
     ///
-    /// It returns one box per intersecting line and visual run, so bidirectional
-    /// text may produce multiple boxes on one line. Neighbouring boxes of runs in one
-    /// direction and font join into one, as skparagraph merges them
-    /// (`TextLine::getRectsForRange`), so a line's ghosts extend its content's box.
-    pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Rect> {
-        let mut out = Vec::new();
-        for line in self.lines() {
-            if range.end <= line.range.start || range.start >= line.range.end {
-                continue;
-            }
-            let mut previous: Option<&PlacedRun> = None;
-            for run in &line.runs {
-                let Some(rect) = run_rect_in(line, run, &range) else {
-                    continue;
-                };
-                match (out.last_mut(), previous) {
-                    (Some(last), Some(before)) if boxes_join(before, run, last, &rect) => {
-                        *last = last.union(&rect);
-                    }
-                    _ => out.push(rect),
-                }
-                previous = Some(run);
-            }
+    /// A box is one visual run's stretch of one line, so bidirectional text may
+    /// produce several boxes on one line, and runs whose boxes touch join into
+    /// one. `height_style` says how much of the line's height a box takes —
+    /// its run's own, the line's, or the paragraph's strut — and `width_style`
+    /// whether a box stops at its text or reaches the paragraph's widest line.
+    /// Each box reports the direction of the text in it.
+    ///
+    /// It is empty before [`Self::layout`] is called. An empty paragraph has
+    /// one zero-width box of its whole height for a range that starts at zero.
+    pub fn boxes_for_range(
+        &self,
+        range: Range<usize>,
+        height_style: BoxHeightStyle,
+        width_style: BoxWidthStyle,
+    ) -> Vec<TextBox> {
+        let Some(layout) = self.layout.as_ref() else {
+            return Vec::new();
+        };
+        Selection {
+            faces: &self.faces,
+            layout,
+            strut: self.strut.and_then(|strut| strut.strut_box()),
+            text: &self.text,
+            style: &self.style,
         }
-        out
+        .boxes(range, height_style, width_style)
+    }
+
+    /// `rects_for_range` returns boxes for painting a selected UTF-8 byte range
+    /// in the tightest style: [`Self::boxes_for_range`] with
+    /// [`BoxHeightStyle::Tight`] and [`BoxWidthStyle::Tight`], without the
+    /// directions.
+    pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Rect> {
+        self.boxes_for_range(range, BoxHeightStyle::Tight, BoxWidthStyle::Tight)
+            .into_iter()
+            .map(|text_box| text_box.rect)
+            .collect()
     }
 
     /// `word_boundary` returns the text segment selected as a word at an offset.
@@ -747,39 +771,6 @@ impl Paragraph {
             .next()
             .map_or(self.text.len(), |g| offset + g.len())
     }
-}
-
-/// `run_rect_in` is the box of `run`'s glyphs whose clusters start in `range`, across the
-/// line's height, or `None` when it has none there.
-fn run_rect_in(line: &Line, run: &PlacedRun, range: &Range<usize>) -> Option<Rect> {
-    let mut cells = run
-        .glyphs
-        .iter()
-        .filter(|g| g.cluster >= range.start && g.cluster < range.end);
-    let first = cells.next()?;
-    let (left, right) = cells.fold((first.x, first.x + first.advance), |(left, right), g| {
-        (left.min(g.x), right.max(g.x + g.advance))
-    });
-    Some(Rect::from_ltrb(
-        left,
-        line.baseline - line.ascent,
-        right,
-        line.baseline + line.descent,
-    ))
-}
-
-/// `boxes_join` reports whether the box of `run` continues `last`, the box of `before`, the
-/// run left of it: skparagraph merges the boxes of text runs in one direction, font and
-/// height multiplier that touch.
-fn boxes_join(before: &PlacedRun, run: &PlacedRun, last: &Rect, rect: &Rect) -> bool {
-    let touching = (last.right() - rect.x).abs() < 1e-3 || (rect.right() - last.x).abs() < 1e-3;
-    before.placeholder.is_none()
-        && run.placeholder.is_none()
-        && before.rtl == run.rtl
-        && before.font == run.font
-        && before.size == run.size
-        && before.height == run.height
-        && touching
 }
 
 /// `caret_x` returns the leading edge at an offset or the nearest prior edge.

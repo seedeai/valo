@@ -17,7 +17,20 @@ use crate::wrap::LineHeights;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Strut {
     heights: LineHeights,
+    /// `strut_box` is the room the strut itself takes above and below the
+    /// baseline, its leading left out, when its size gives a box at all: what
+    /// skparagraph's `kStrut` height style draws for a selection.
+    strut_box: Option<StrutBox>,
     force: bool,
+}
+
+/// `StrutBox` is a strut's own ascent and descent about the baseline, its
+/// leading left out: skparagraph's `strutMetrics()` as `TextLine`'s `kStrut`
+/// case reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StrutBox {
+    pub ascent: f32,
+    pub descent: f32,
 }
 
 impl Strut {
@@ -29,8 +42,16 @@ impl Strut {
             return None;
         }
         let id = faces.resolve(&style.families, style.font_attrs(), ' ');
+        let heights = strut_heights(faces.get(id), style);
+        // A size of zero asks for no box, as skparagraph's `kStrut` case
+        // leaves the measured run box unless the strut's size is above zero.
+        let strut_box = (style.size > 0.0).then(|| StrutBox {
+            ascent: heights.ascent - heights.leading / 2.0,
+            descent: heights.descent - heights.leading / 2.0,
+        });
         Some(Self {
-            heights: strut_heights(faces.get(id), style),
+            heights,
+            strut_box,
             force: style.force_height,
         })
     }
@@ -39,6 +60,12 @@ impl Strut {
     /// forced, and what a paragraph with no text has to measure by.
     pub(crate) fn heights(&self) -> LineHeights {
         self.heights
+    }
+
+    /// `strut_box` is the box the strut's own metrics make for a selection,
+    /// when its size is above zero.
+    pub(crate) fn strut_box(&self) -> Option<StrutBox> {
+        self.strut_box
     }
 
     /// `apply` is a line's room after this strut: skparagraph's
@@ -227,6 +254,7 @@ mod tests {
                 raw_ascent: 25.0,
                 raw_descent: 5.0,
             },
+            strut_box: None,
             force: false,
         };
         let raised = strut.apply(line);

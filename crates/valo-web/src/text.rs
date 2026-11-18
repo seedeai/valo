@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use valo::{
-    Color, Decoration, DecorationKind, Font, FontCollection, Paragraph, ParagraphBuilder,
-    ParagraphStyle, Point, Shadow, TextAlign, TextDirection, TextHeightBehavior, TextStyle,
-    VariantCaps,
+    BoxHeightStyle, BoxWidthStyle, Color, Decoration, DecorationKind, Font, FontCollection,
+    Paragraph, ParagraphBuilder, ParagraphStyle, Point, Shadow, StrutStyle, TextAlign,
+    TextDirection, TextHeightBehavior, TextStyle, VariantCaps,
 };
 use wasm_bindgen::prelude::*;
 
@@ -39,6 +39,18 @@ pub struct WebTextPosition {
     pub offset: u32,
     /// `downstream` selects the text after the offset when true.
     pub downstream: bool,
+}
+
+/// `WebTextBox` is one selection box: a rectangle and the direction of the
+/// text in it.
+#[wasm_bindgen(js_name = TextBox)]
+#[derive(Clone, Copy, Default)]
+pub struct WebTextBox {
+    /// `rect` is the box in paragraph-local logical pixels.
+    pub rect: WebRect,
+    /// `direction` is the direction of the text in the box: 0 for left to
+    /// right, 1 for right to left.
+    pub direction: u32,
 }
 
 /// `WebLineMetrics` measures one laid-out line in paragraph-local logical pixels.
@@ -483,6 +495,9 @@ impl WebParagraph {
             max_lines: (max_lines > 0).then_some(max_lines),
             ellipsis: (!ellipsis.is_empty()).then(|| ellipsis.to_owned()),
             text_height_behavior: TextHeightBehavior::default(),
+            // The web surface has no strut parameter yet, so every paragraph it
+            // builds lays out without one.
+            strut_style: StrutStyle::default(),
         };
         let mut paragraph = shape_spans(fonts, &paragraph_style, &[(text.to_owned(), style)])?;
         paragraph.layout(max_width);
@@ -766,15 +781,48 @@ impl WebParagraph {
         }
     }
 
-    /// `rectsForRange` returns selection boxes for a UTF-8 byte range.
+    /// `rectsForRange` returns selection boxes for a UTF-8 byte range, at the
+    /// tight height and width styles.
     ///
-    /// Bidirectional text may produce several boxes on one line.
+    /// Bidirectional text may produce several boxes on one line. Use
+    /// [`Self::boxes_for_range`] for the other styles and the boxes' directions.
     #[wasm_bindgen(js_name = rectsForRange)]
     pub fn rects_for_range(&self, start: u32, end: u32) -> Vec<WebRect> {
         self.inner
             .rects_for_range((start as usize)..(end as usize))
             .into_iter()
             .map(from_rect)
+            .collect()
+    }
+
+    /// `boxesForRange` returns selection boxes for a UTF-8 byte range in a
+    /// height and width style, with the direction of each box's text.
+    ///
+    /// `heightStyle` is 0 for tight, 1 for the line's height, 2, 3 and 4 for
+    /// the line-spacing styles (middle, top and bottom), and 5 for the
+    /// paragraph's strut; `widthStyle` is 0 for tight and 1 for the widest
+    /// line. They are `BoxHeightStyle` and `BoxWidthStyle`'s orders, as
+    /// Flutter names them. Bidirectional text may produce several boxes on one
+    /// line.
+    #[wasm_bindgen(js_name = boxesForRange)]
+    pub fn boxes_for_range(
+        &self,
+        start: u32,
+        end: u32,
+        height_style: u32,
+        width_style: u32,
+    ) -> Vec<WebTextBox> {
+        self.inner
+            .boxes_for_range(
+                (start as usize)..(end as usize),
+                box_height_style(height_style),
+                box_width_style(width_style),
+            )
+            .into_iter()
+            .map(|text_box| WebTextBox {
+                rect: from_rect(text_box.rect),
+                direction: matches!(text_box.direction, TextDirection::Rtl) as u32,
+            })
             .collect()
     }
 
@@ -897,4 +945,25 @@ fn text_align(value: u32) -> TextAlign {
     .get(value as usize)
     .copied()
     .unwrap_or_default()
+}
+
+fn box_height_style(value: u32) -> BoxHeightStyle {
+    [
+        BoxHeightStyle::Tight,
+        BoxHeightStyle::Max,
+        BoxHeightStyle::IncludeLineSpacingMiddle,
+        BoxHeightStyle::IncludeLineSpacingTop,
+        BoxHeightStyle::IncludeLineSpacingBottom,
+        BoxHeightStyle::Strut,
+    ]
+    .get(value as usize)
+    .copied()
+    .unwrap_or(BoxHeightStyle::Tight)
+}
+
+fn box_width_style(value: u32) -> BoxWidthStyle {
+    [BoxWidthStyle::Tight, BoxWidthStyle::Max]
+        .get(value as usize)
+        .copied()
+        .unwrap_or(BoxWidthStyle::Tight)
 }

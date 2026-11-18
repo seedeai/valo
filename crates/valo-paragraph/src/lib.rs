@@ -7,6 +7,7 @@
 //! into a display list.
 //! Fonts, the shaper and glyph raster are `valo-text`'s, beneath.
 
+mod boxes;
 mod drawing;
 mod paragraph;
 mod shape;
@@ -14,6 +15,7 @@ mod strut;
 mod style;
 mod wrap;
 
+pub use boxes::{BoxHeightStyle, BoxWidthStyle, TextBox};
 pub use drawing::{DrawGlyphRunExt, DrawParagraphExt};
 pub use paragraph::{
     Line, LineMetrics, Paragraph, ParagraphBuilder, PlacedGlyph, PlacedRun, PlaceholderBox,
