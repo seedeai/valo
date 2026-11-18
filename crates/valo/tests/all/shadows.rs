@@ -15,6 +15,8 @@ use valo::{
 use crate::{context, goldens_dir};
 
 const SIZE: [u32; 2] = [240, 160];
+/// One row of `SIZE` RGBA pixels, so a readback splits into rows at compile time.
+const BYTES_PER_ROW: usize = SIZE[0] as usize * 4;
 const BACKGROUND: Color = Color::rgb(0.96, 0.96, 0.96);
 
 /// `KERNEL_RADIUS_PER_SIGMA` is Impeller's `kKernelRadiusPerSigma`, √3.
@@ -98,8 +100,8 @@ fn ink_centre_y(pixels: &[u8], background: Color) -> f32 {
     let background_luminance = (background.r + background.g + background.b) / 3.0;
     let mut weighted_rows = 0.0f64;
     let mut total_weight = 0.0f64;
-    for (row, row_pixels) in pixels.chunks_exact(SIZE[0] as usize * 4).enumerate() {
-        for pixel in row_pixels.chunks_exact(4) {
+    for (row, row_pixels) in pixels.as_chunks::<BYTES_PER_ROW>().0.iter().enumerate() {
+        for pixel in row_pixels.as_chunks::<4>().0 {
             let luminance = (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / (3.0 * 255.0);
             let darkness = (background_luminance - luminance).max(0.0) as f64;
             weighted_rows += darkness * row as f64;

@@ -5,7 +5,11 @@
  * artifact every visitor installs — so this script only copies files out of
  * `node_modules` and the repository. No Rust toolchain, no wasm build: it
  * runs anywhere `npm install` ran, which is what makes the site deployable
- * to a plain Node host such as Vercel.
+ * to a plain Node host such as Vercel. Vercel installs the site alone
+ * (`vercel.json`, `--workspaces=false`): from the repository's root, npm would
+ * link the workspace's `packages/valo-web` in place of the published package,
+ * since both are the same version, and that folder has no wasm until a Rust
+ * build makes it.
  *
  * Three kinds of asset, each for a different reason:
  *

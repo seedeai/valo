@@ -11,7 +11,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[dependencies]
+# Everything this crate uses is inside its `#![cfg(target_arch = "wasm32")]` body, so a
+# host build would see each dependency unused: they are declared for wasm only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 valo = { workspace = true }
 wgpu = { workspace = true }
 wasm-bindgen = "0.2"
