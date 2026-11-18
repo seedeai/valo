@@ -153,9 +153,9 @@ fn a_height_multiplied_run_keeps_its_fonts_own_tight_box() {
 }
 
 /// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingMiddle`: each
-/// line's box takes the whole line, the first line's top and the last line's
-/// bottom extended by the room a height multiplier added, so neighbouring
-/// lines' boxes touch.
+/// line's box is the whole line moved down by half the room a height multiplier
+/// added above its text, so neighbouring lines' boxes touch; the first line's
+/// starts at its text and the last line's ends at the paragraph's bottom.
 #[test]
 fn line_spacing_middle_boxes_touch() {
     let paragraph = multi_line();
@@ -172,8 +172,9 @@ fn line_spacing_middle_boxes_touch() {
     assert_near(edges[2].1, 3.0 * height);
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: the room
-/// a height multiplier added goes above the first line's text alone.
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingTop`: every
+/// box is its whole line, the room a height multiplier added above the text
+/// included, except the first line's, which starts at its text.
 #[test]
 fn line_spacing_top_boxes_start_at_the_first_lines_text() {
     let paragraph = multi_line();
@@ -188,9 +189,10 @@ fn line_spacing_top_boxes_start_at_the_first_lines_text() {
     assert_near(edges[2].1, 3.0 * height);
 }
 
-/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: the
-/// room a height multiplier added goes below the last line's text alone, so
-/// every box before it starts where the one above ends.
+/// Skparagraph's `SkParagraph_GetRectsForRangeIncludeLineSpacingBottom`: every
+/// box is its whole line moved down by the room a height multiplier added above
+/// the text, so it takes the room above the next line's text; the first line's
+/// starts at its text and the last line's ends at the paragraph's bottom.
 #[test]
 fn line_spacing_bottom_boxes_end_at_the_last_lines_text() {
     let paragraph = multi_line();
