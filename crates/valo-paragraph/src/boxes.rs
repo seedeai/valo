@@ -19,7 +19,7 @@
 
 use std::ops::Range;
 
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::GraphemeCursor;
 use valo_geometry::Rect;
 use valo_text::FaceSet;
 
@@ -375,20 +375,45 @@ impl LineEdges {
 /// `grapheme_range` is `range` moved onto grapheme boundaries, as skparagraph
 /// moves it: the start forward to the next grapheme's start and the end back to
 /// the previous one, so only graphemes the range covers whole are selected.
+///
+/// It reads only the text around the two ends, so a text field asking for its
+/// caret's box on every move does not walk the whole text each time.
 fn grapheme_range(text: &str, range: Range<usize>) -> Range<usize> {
-    let starts: Vec<usize> = text
-        .grapheme_indices(true)
-        .map(|(offset, _)| offset)
-        .chain(std::iter::once(text.len()))
-        .collect();
-    let start = starts.partition_point(|&offset| offset < range.start);
-    let start = starts.get(start).copied().unwrap_or(text.len());
-    let end = starts.partition_point(|&offset| offset <= range.end.min(text.len()));
-    let end = end
-        .checked_sub(1)
-        .and_then(|index| starts.get(index).copied())
-        .unwrap_or(0);
+    let start = next_grapheme_boundary(text, text.ceil_char_boundary(range.start));
+    let end = previous_grapheme_boundary(text, text.floor_char_boundary(range.end));
     start..end
+}
+
+/// `next_grapheme_boundary` is `offset` when a grapheme starts there, else the
+/// start of the next one: skparagraph's `findNextGraphemeBoundary`.
+fn next_grapheme_boundary(text: &str, offset: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+    if is_grapheme_boundary(&mut cursor, text) {
+        return offset;
+    }
+    cursor
+        .next_boundary(text, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(text.len())
+}
+
+/// `previous_grapheme_boundary` is `offset` when a grapheme starts there, else
+/// the start of the one it falls in: skparagraph's
+/// `findPreviousGraphemeBoundary`.
+fn previous_grapheme_boundary(text: &str, offset: usize) -> usize {
+    let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+    if is_grapheme_boundary(&mut cursor, text) {
+        return offset;
+    }
+    cursor.prev_boundary(text, 0).ok().flatten().unwrap_or(0)
+}
+
+/// `is_grapheme_boundary` reports whether a grapheme starts or ends at
+/// `cursor`. The cursor is given the whole of `text` as one chunk, so it never
+/// asks for text it was not given.
+fn is_grapheme_boundary(cursor: &mut GraphemeCursor, text: &str) -> bool {
+    cursor.is_boundary(text, 0).unwrap_or(true)
 }
 
 /// `RunCluster` is one shaped cluster of a run: the bytes of the paragraph's
